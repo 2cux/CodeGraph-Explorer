@@ -39,13 +39,16 @@ class IndexResponse(BaseModel):
 @router.get("/summary", response_model=RepoSummaryResponse)
 async def get_repo_summary(store: GraphStore = Depends(get_store)):
     """Return metadata about the indexed repository."""
-    nodes = store.search_nodes("")
-    edges = []
+    nodes = store.all_nodes()
+    edges = store.all_edges()
 
     function_count = sum(
         1 for n in nodes if n.type.value in ("function", "method")
     )
     class_count = sum(1 for n in nodes if n.type.value == "class")
+
+    low_conf = sum(1 for e in edges if e.confidence < 0.6)
+    low_conf_ratio = low_conf / len(edges) if edges else 0.0
 
     return RepoSummaryResponse(
         name=Path.cwd().name,
@@ -56,6 +59,7 @@ async def get_repo_summary(store: GraphStore = Depends(get_store)):
         class_count=class_count,
         edge_count=len(edges),
         indexed_at=datetime.now(timezone.utc).isoformat(),
+        low_confidence_ratio=round(low_conf_ratio, 4),
     )
 
 
