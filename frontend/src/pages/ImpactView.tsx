@@ -1,41 +1,7 @@
 import { useState } from "react";
+import { api, type ImpactResponse } from "../api";
 
-interface SymbolItem {
-  symbol_id: string;
-  name?: string;
-  type?: string;
-  file_path?: string;
-  reason: string;
-  impact_type: string;
-  distance: number;
-  confidence: number;
-}
-
-interface FileItem {
-  file_path: string;
-  reason: string;
-  priority: string;
-}
-
-interface RiskInfo {
-  level: string;
-  reasons: string[];
-}
-
-interface Recommendation {
-  step: number;
-  message: string;
-}
-
-interface ImpactResult {
-  changed_symbol: string;
-  changed_symbol_type: string;
-  affected_symbols: SymbolItem[];
-  affected_files: FileItem[];
-  risk: RiskInfo | null;
-  recommendations: Recommendation[];
-  warnings: string[];
-}
+// Types are imported from "../api" as ImpactResponse
 
 const RISK_COLORS: Record<string, string> = {
   critical: "bg-red-100 text-red-800 border-red-300",
@@ -66,7 +32,7 @@ function ImpactBadge({ level }: { level: string }) {
 export default function ImpactView() {
   const [symbolId, setSymbolId] = useState("");
   const [depth, setDepth] = useState(2);
-  const [result, setResult] = useState<ImpactResult | null>(null);
+  const [result, setResult] = useState<ImpactResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -77,14 +43,7 @@ export default function ImpactView() {
     setResult(null);
 
     try {
-      const resp = await fetch(
-        `/api/symbols/${encodeURIComponent(symbolId)}/impact?depth=${depth}`
-      );
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => null);
-        throw new Error(body?.detail || `HTTP ${resp.status}`);
-      }
-      const data: ImpactResult = await resp.json();
+      const data = await api.symbols.impact(symbolId, depth);
       setResult(data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error");

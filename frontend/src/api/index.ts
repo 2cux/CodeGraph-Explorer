@@ -14,6 +14,21 @@ export interface RepoSummary {
   low_confidence_ratio: number;
 }
 
+export interface CallerCalleeItem {
+  node_id: string;
+  name: string;
+  type: string;
+  file_path: string;
+  edge_type: string;
+}
+
+export interface CallerCalleeResponse {
+  symbol_id: string;
+  callers?: CallerCalleeItem[];
+  callees?: CallerCalleeItem[];
+  total: number;
+}
+
 export interface SearchResult {
   symbol_id: string;
   name: string;
@@ -64,6 +79,9 @@ export interface NeighborsResponse {
 
 export interface ImpactSymbol {
   symbol_id: string;
+  name?: string;
+  type?: string;
+  file_path?: string;
   reason: string;
   impact_type: string;
   distance: number;
@@ -78,9 +96,12 @@ export interface ImpactFile {
 
 export interface ImpactResponse {
   changed_symbol: string;
+  changed_symbol_type: string;
   affected_symbols: ImpactSymbol[];
   affected_files: ImpactFile[];
   risk: { level: string; reasons: string[] } | null;
+  recommendations: { step: number; message: string }[];
+  warnings: string[];
 }
 
 export interface GraphNodeItem {
@@ -126,6 +147,78 @@ export interface GraphStats {
 export interface TypesResponse {
   types: string[];
   total: number;
+}
+
+export interface ContextPackResponse {
+  schema_version: string;
+  pack_id: string;
+  task: {
+    raw_request: string;
+    intent: string;
+    keywords: string[];
+    target_symbols: string[];
+    constraints: Record<string, unknown>;
+  };
+  repo: Record<string, unknown>;
+  entry_points: {
+    symbol_id: string;
+    type: string;
+    name: string;
+    file_path: string;
+    location: { line_start?: number; line_end?: number } | null;
+    signature: string | null;
+    reason: string;
+    score: number;
+    match_sources: string[];
+  }[];
+  related_symbols: {
+    symbol_id: string;
+    relation: string;
+    distance: number;
+    direction: string;
+    reason: string;
+    importance: string;
+    confidence: number;
+  }[];
+  call_graph: {
+    center: string;
+    depth: number;
+    nodes: { id: string; label: string; type: string }[];
+    edges: { source: string; target: string; type: string; confidence: number }[];
+  };
+  impact: {
+    changed_symbol: string;
+    affected_symbols: { symbol_id: string; reason: string; impact_type: string; distance: number; confidence: number }[];
+    affected_files: { file_path: string; reason: string; priority: string }[];
+    risk: { level: string; reasons: string[] };
+  };
+  recommended_context: {
+    context_id: string;
+    type: string;
+    symbol_id: string;
+    file_path: string;
+    line_start: number;
+    line_end: number;
+    priority: string;
+    reason: string;
+    content: string;
+    estimated_tokens: number;
+  }[];
+  reading_plan: {
+    step: number;
+    action: string;
+    target: string;
+    reason: string;
+  }[];
+  agent_instructions: {
+    summary: string;
+    recommended_strategy: string[];
+    warnings: string[];
+  };
+  exports: {
+    markdown_path: string;
+    json_path: string;
+  };
 }
 
 export interface DashboardStats {
@@ -184,11 +277,11 @@ export const api = {
     detail: (nodeId: string) =>
       fetchJSON<SymbolDetail>(`${BASE}/symbols/${encodeURIComponent(nodeId)}`),
     callers: (nodeId: string) =>
-      fetchJSON<{ symbol_id: string; callers: unknown[]; total: number }>(
+      fetchJSON<CallerCalleeResponse>(
         `${BASE}/symbols/${encodeURIComponent(nodeId)}/callers`,
       ),
     callees: (nodeId: string) =>
-      fetchJSON<{ symbol_id: string; callees: unknown[]; total: number }>(
+      fetchJSON<CallerCalleeResponse>(
         `${BASE}/symbols/${encodeURIComponent(nodeId)}/callees`,
       ),
     neighbors: (nodeId: string, depth = 1) =>
@@ -215,12 +308,12 @@ export const api = {
   },
 
   context: {
-    generate: (task: string, maxTokens = 6000) =>
-      postJSON<unknown>(`${BASE}/context-pack`, {
+    generate: (task: string, maxTokens = 6000, includeTests = true, depth = 2) =>
+      postJSON<ContextPackResponse>(`${BASE}/context-pack`, {
         task,
         max_tokens: maxTokens,
-        include_tests: true,
-        depth: 2,
+        include_tests: includeTests,
+        depth,
       }),
   },
 };

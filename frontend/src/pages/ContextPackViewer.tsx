@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, type ContextPackResponse } from "../api";
 
 /* ── Types matching the API response ─────────────────────────── */
 
@@ -113,7 +113,7 @@ type ViewMode = "initial" | "loading" | "pack" | "error";
 
 interface ViewState {
   mode: ViewMode;
-  pack: ContextPack | null;
+  pack: ContextPackResponse | null;
   error: string;
 }
 
@@ -134,8 +134,8 @@ export default function ContextPackViewer() {
     if (!task.trim()) return;
     setState({ mode: "loading", pack: null, error: "" });
     try {
-      const data = await api.context.generate(task, maxTokens);
-      setState({ mode: "pack", pack: data as ContextPack, error: "" });
+      const data = await api.context.generate(task, maxTokens, includeTests, depth);
+      setState({ mode: "pack", pack: data, error: "" });
     } catch (e: unknown) {
       setState({
         mode: "error",

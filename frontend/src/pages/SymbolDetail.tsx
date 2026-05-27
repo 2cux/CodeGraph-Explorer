@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { api, type SymbolDetail as SymbolDetailType, type NeighborItem } from "../api";
+import { api, type SymbolDetail as SymbolDetailType, type NeighborItem, type CallerCalleeItem } from "../api";
 
 type ViewMode = "loading" | "detail" | "error";
 
@@ -25,6 +25,10 @@ export default function SymbolDetail() {
   });
   const [activeTab, setActiveTab] = useState<Tab>("neighbors");
   const [neighborsLoading, setNeighborsLoading] = useState(false);
+  const [callers, setCallers] = useState<CallerCalleeItem[]>([]);
+  const [callees, setCallees] = useState<CallerCalleeItem[]>([]);
+  const [callersLoading, setCallersLoading] = useState(false);
+  const [calleesLoading, setCalleesLoading] = useState(false);
 
   useEffect(() => {
     if (!decoded) return;
@@ -64,6 +68,43 @@ export default function SymbolDetail() {
     }
   }
 
+  async function loadCallers(id: string) {
+    setCallersLoading(true);
+    try {
+      const resp = await api.symbols.callers(id);
+      setCallers(resp.callers ?? []);
+    } catch {
+      setCallers([]);
+    } finally {
+      setCallersLoading(false);
+    }
+  }
+
+  async function loadCallees(id: string) {
+    setCalleesLoading(true);
+    try {
+      const resp = await api.symbols.callees(id);
+      setCallees(resp.callees ?? []);
+    } catch {
+      setCallees([]);
+    } finally {
+      setCalleesLoading(false);
+    }
+  }
+
+  function handleTabChange(tab: Tab) {
+    setActiveTab(tab);
+    if (tab === "callers" && callers.length === 0 && !callersLoading && state.symbol) {
+      loadCallers(state.symbol.id);
+    }
+    if (tab === "callees" && callees.length === 0 && !calleesLoading && state.symbol) {
+      loadCallees(state.symbol.id);
+    }
+    if (tab === "neighbors" && state.neighbors.length === 0 && !neighborsLoading && state.symbol) {
+      loadNeighbors(state.symbol.id);
+    }
+  }
+
   const renderContent = () => {
     switch (state.mode) {
       case "loading":
@@ -76,8 +117,12 @@ export default function SymbolDetail() {
             symbol={state.symbol!}
             neighbors={state.neighbors}
             neighborsLoading={neighborsLoading}
+            callers={callers}
+            callersLoading={callersLoading}
+            callees={callees}
+            calleesLoading={calleesLoading}
             activeTab={activeTab}
-            onTabChange={setActiveTab}
+            onTabChange={handleTabChange}
           />
         );
     }
@@ -154,16 +199,67 @@ function DetailContent({
   symbol,
   neighbors,
   neighborsLoading,
+  callers,
+  callersLoading,
+  callees,
+  calleesLoading,
   activeTab,
   onTabChange,
 }: {
   symbol: SymbolDetailType;
   neighbors: NeighborItem[];
   neighborsLoading: boolean;
+  callers: CallerCalleeItem[];
+  callersLoading: boolean;
+  callees: CallerCalleeItem[];
+  calleesLoading: boolean;
   activeTab: Tab;
   onTabChange: (t: Tab) => void;
 }) {
-  // Neighbors are shown in tabs below; no pre-filtering needed here
+  function renderTabContent() {
+    const isLoading =
+      (activeTab === "neighbors" && neighborsLoading) ||
+      (activeTab === "callers" && callersLoading) ||
+      (activeTab === "callees" && calleesLoading);
+
+    if (isLoading) {
+      return <div className="text-sm text-gray-400">Loading...</div>;
+    }
+
+    type TabItem = NeighborItem | CallerCalleeItem;
+    const items: TabItem[] = activeTab === "neighbors" ? neighbors : activeTab === "callers" ? callers : callees;
+    if (items.length === 0) {
+      return <p className="text-sm text-gray-400">No {activeTab} found for this symbol.</p>;
+    }
+
+    return (
+      <div className="space-y-2">
+        {items.map((item) => {
+          const edgeType = 'edge_type' in item ? item.edge_type : '';
+          const confidence = 'confidence' in item ? item.confidence : undefined;
+          return (
+            <a
+              key={`${item.node_id}-${edgeType}`}
+              href={`/symbol/${encodeURIComponent(item.node_id)}`}
+              className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 transition-colors text-sm"
+            >
+              <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                {edgeType}
+              </span>
+              <span className="font-mono font-medium text-gray-800">
+                {item.name}
+              </span>
+              {confidence !== undefined && confidence !== "unknown" && (
+                <span className="text-[10px] text-gray-400 ml-auto">
+                  conf={confidence}
+                </span>
+              )}
+            </a>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -282,62 +378,17 @@ function DetailContent({
               }`}
             >
               {tab}
-              {tab === "neighbors" && (
-                <span className="ml-1.5 text-xs text-gray-400">
-                  ({neighbors.length})
-                </span>
-              )}
+              <span className="ml-1.5 text-xs text-gray-400">
+                ({tab === "neighbors" ? neighbors.length : tab === "callers" ? callers.length : callees.length})
+              </span>
             </button>
           ))}
         </div>
         <div className="p-4">
-          {neighborsLoading ? (
-            <div className="text-sm text-gray-400">Loading...</div>
-          ) : (
-            <NeighborList items={neighbors} tab={activeTab} />
-          )}
+          {renderTabContent()}
         </div>
       </div>
     </div>
   );
 }
 
-function NeighborList({
-  items,
-  tab,
-}: {
-  items: NeighborItem[];
-  tab: string;
-}) {
-  if (items.length === 0) {
-    return (
-      <p className="text-sm text-gray-400">
-        No {tab} found for this symbol.
-      </p>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      {items.map((item) => (
-        <a
-          key={`${item.node_id}-${item.edge_type}`}
-          href={`/symbol/${encodeURIComponent(item.node_id)}`}
-          className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 transition-colors text-sm"
-        >
-          <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-            {item.edge_type}
-          </span>
-          <span className="font-mono font-medium text-gray-800">
-            {item.name}
-          </span>
-          {item.confidence !== "unknown" && (
-            <span className="text-[10px] text-gray-400 ml-auto">
-              conf={item.confidence}
-            </span>
-          )}
-        </a>
-      ))}
-    </div>
-  );
-}
