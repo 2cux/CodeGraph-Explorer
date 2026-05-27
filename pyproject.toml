@@ -23,3 +23,18 @@ where = ["backend"]
 
 [tool.setuptools.package-data]
 codegraph = ["py.typed"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+python_files = ["test_*.py"]
+pythonpath = ["backend"]
+
+[tool.coverage.run]
+source = ["codegraph"]
+omit = ["*/tests/*"]
