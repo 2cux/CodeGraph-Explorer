@@ -399,9 +399,90 @@ def impact(
 
 
 @app.command()
-def context():
-    """Generate a Context Pack for a natural language task."""
-    typer.echo("Not yet implemented (Phase 3).")
+def context(
+    task: str = typer.Argument(
+        ..., help="Natural language task description",
+    ),
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted)",
+    ),
+    max_tokens: int = typer.Option(
+        6000, "--max-tokens", "-t",
+        help="Maximum token budget for context",
+    ),
+    depth: int = typer.Option(
+        2, "--depth", "-d",
+        help="Call chain traversal depth",
+    ),
+    no_tests: bool = typer.Option(
+        False, "--no-tests",
+        help="Skip test discovery",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", "-j",
+        help="Output pack JSON to stdout",
+    ),
+) -> None:
+    """Generate a Context Pack for a natural language task.
+
+    This is the core command of CodeGraph Explorer. It analyzes the
+    indexed code graph and produces a task-aware context package
+    with entry points, call graph, impact analysis, reading plan,
+    and agent instructions.
+    """
+    from codegraph.context.pack_builder import build_context_pack
+
+    store, cg_dir = _load_store(root)
+    output_dir = cg_dir / "context_packs"
+
+    pack = build_context_pack(
+        store=store,
+        task_description=task,
+        max_tokens=max_tokens,
+        depth=depth,
+        include_tests=not no_tests,
+        output_dir=str(output_dir),
+    )
+
+    if json_output:
+        import json
+        typer.echo(json.dumps(json.loads(pack.model_dump_json(exclude_none=True)), indent=2))
+        return
+
+    typer.echo(f"Context Pack: {pack.pack_id}")
+    typer.echo(f"  Task:         {pack.task.raw_request[:60]}{'...' if len(pack.task.raw_request) > 60 else ''}")
+    typer.echo(f"  Intent:       {pack.task.intent.value}")
+    typer.echo(f"  Entry Points: {len(pack.entry_points)}")
+    typer.echo(f"  Related:      {len(pack.related_symbols)}")
+    typer.echo(f"  Call Graph:   {len(pack.call_graph.nodes)} nodes, {len(pack.call_graph.edges)} edges")
+    typer.echo(f"  Reading Plan: {len(pack.reading_plan)} steps")
+    if pack.impact.changed_symbol:
+        risk_level = pack.impact.risk.level.value if hasattr(pack.impact.risk.level, 'value') else pack.impact.risk.level
+        typer.echo(f"  Risk Level:   {risk_level}")
+    if pack.exports.markdown_path:
+        typer.echo(f"  Markdown:     {pack.exports.markdown_path}")
+    if pack.exports.json_path:
+        typer.echo(f"  JSON:         {pack.exports.json_path}")
+    typer.echo()
+
+    if pack.entry_points:
+        typer.echo("Entry Points:")
+        for ep in pack.entry_points[:5]:
+            typer.echo(f"  [{ep.score:.2f}] {ep.symbol_id}")
+            typer.echo(f"         {ep.reason}")
+        typer.echo()
+
+    if pack.reading_plan:
+        typer.echo("Recommended Reading Order:")
+        for step in pack.reading_plan[:6]:
+            typer.echo(f"  {step.step}. {step.target}")
+        typer.echo()
+
+    if pack.agent_instructions.warnings:
+        typer.echo("Warnings:")
+        for w in pack.agent_instructions.warnings:
+            typer.echo(f"  ! {w}")
 
 
 # ── dashboard command ─────────────────────────────────────────────────
