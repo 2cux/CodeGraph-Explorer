@@ -3,11 +3,13 @@
 Serves the CodeGraph Explorer local API on http://localhost:8765.
 Loads the graph from ``.codegraph/graph.json`` on startup if available.
 """
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from codegraph.api.deps import init_store
 from codegraph.api.routes_context import router as context_router
@@ -70,3 +72,10 @@ app.include_router(symbols_router)
 app.include_router(graph_router)
 app.include_router(context_router)
 app.include_router(dashboard_router)
+
+# ── Frontend static files (production mode) ──────────────────────────
+_dev = os.environ.get("_DEV_MODE", "0") == "1"
+if not _dev:
+    _frontend_dist = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "dist"
+    if _frontend_dist.exists() and (_frontend_dist / "index.html").exists():
+        app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")

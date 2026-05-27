@@ -1,5 +1,6 @@
 """CLI entry point for codegraph commands."""
 
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -205,20 +206,22 @@ def search(
 ) -> None:
     """Search for code symbols across the indexed codebase."""
     store, _ = _load_store(root)
-    results = graph_query.search_symbols(store, query)
+    result_dict = graph_query.search_symbols(store, query)
+    items = result_dict.get("results", []) if isinstance(result_dict, dict) else result_dict
+    total = result_dict.get("total", len(items)) if isinstance(result_dict, dict) else len(items)
 
-    if not results:
+    if not items:
         typer.echo("No results found.")
         return
 
     if json_output:
         import json
-        typer.echo(json.dumps(results, indent=2, ensure_ascii=False))
+        typer.echo(json.dumps(result_dict, indent=2, ensure_ascii=False))
         return
 
-    typer.echo(f"Found {len(results)} result(s) for '{query}':\n")
-    for r in results[:30]:
-        score_display = f"{r['score']:.1f}" if r["score"] else "?"
+    typer.echo(f"Found {total} result(s) for '{query}':\n")
+    for r in items[:30]:
+        score_display = f"{r['score']:.1f}" if r.get("score") else "?"
         sources = ", ".join(r.get("match_sources", []))
         typer.echo(f"  [{score_display}] {r['symbol_id']}")
         typer.echo(f"       type: {r['type']}  file: {r['file_path']}")
@@ -226,8 +229,8 @@ def search(
             typer.echo(f"       match: {sources}")
         typer.echo()
 
-    if len(results) > 30:
-        typer.echo(f"  ... and {len(results) - 30} more.")
+    if total > 30:
+        typer.echo(f"  ... and {total - 30} more.")
 
 
 # ── explain command ───────────────────────────────────────────────────
@@ -489,9 +492,89 @@ def context(
 
 
 @app.command()
-def dashboard():
-    """Start the local Dashboard (FastAPI backend + React frontend)."""
-    typer.echo("Not yet implemented (Phase 5).")
+def dashboard(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (optional, auto-detected from cwd)",
+    ),
+    port: int = typer.Option(
+        8765, "--port", "-p",
+        help="Dashboard server port",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Bind address",
+    ),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open",
+        help="Auto-open browser on startup",
+    ),
+    dev: bool = typer.Option(
+        False, "--dev",
+        help="Start in dev mode (no frontend build required, uses Vite proxy)",
+    ),
+) -> None:
+    """Start the local Dashboard (FastAPI backend + React frontend).
+
+    Launches the FastAPI server with the built frontend or in dev mode.
+    Default address: http://localhost:8765
+    """
+    import subprocess
+    import sys
+    import time
+    import webbrowser
+
+    # Check whether .codegraph exists
+    cg_dir = _find_codegraph_dir(root)
+    if cg_dir is None:
+        typer.echo(
+            "Warning: No .codegraph directory found. "
+            "Run 'codegraph index <project>' first to enable full functionality.",
+            err=True,
+        )
+
+    # ── Start server in a subprocess ─────────────────────────────────
+    typer.echo(f"Starting CodeGraph Dashboard at http://{host}:{port} ...")
+
+    env = dict(
+        _ROOT_DIR=str(Path.cwd()),
+        _DEV_MODE="1" if dev else "0",
+    )
+    if root:
+        env["_PROJECT_ROOT"] = str(Path(root).resolve())
+
+    merged_env = {**os.environ, **env}
+
+    server_process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "codegraph.api.main:app",
+         "--host", host, "--port", str(port),
+         "--log-level", "info"],
+        env=merged_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    # Give the server a moment to start
+    time.sleep(1.5)
+
+    url = f"http://{host}:{port}"
+
+    if open_browser:
+        webbrowser.open(url)
+
+    typer.echo(f"\n  Dashboard: {url}")
+    typer.echo(f"  API:       {url}/api/repo/summary")
+    typer.echo("  Press Ctrl+C to stop.\n")
+
+    # Stream server output until interrupted
+    try:
+        for line in server_process.stdout or []:
+            print(line.decode("utf-8", errors="replace"), end="")
+    except KeyboardInterrupt:
+        typer.echo("\nShutting down...")
+    finally:
+        server_process.terminate()
+        server_process.wait()
 
 
 if __name__ == "__main__":
