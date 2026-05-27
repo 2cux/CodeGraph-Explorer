@@ -3,7 +3,9 @@
 PRD §16.1 — POST /api/context-pack
 PRD §16.2 — request / response schema
 """
-from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
+
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from codegraph.api.deps import get_store
@@ -109,8 +111,11 @@ class RecommendedContextItem(BaseModel):
     type: str = "code_snippet"
     symbol_id: str = ""
     file_path: str = ""
+    line_start: int = 0
+    line_end: int = 0
     priority: str = "medium"
     reason: str = ""
+    content: str = ""
     estimated_tokens: int = 0
 
 
@@ -156,18 +161,17 @@ async def generate_context_pack(
     store: GraphStore = Depends(get_store),
 ):
     """Generate a Context Pack for a natural language task description."""
-    try:
-        pack = build_context_pack(
-            store=store,
-            task_description=req.task,
-            max_tokens=req.max_tokens,
-        )
-    except NotImplementedError:
-        raise HTTPException(
-            status_code=501,
-            detail="Context Pack generation is not yet implemented. "
-            "Phase 3 development required.",
-        )
+    output_dir = str(Path.cwd() / ".codegraph" / "context_packs")
+    pack = build_context_pack(
+        store=store,
+        task_description=req.task,
+        query=req.query,
+        target_symbols=req.target_symbols or None,
+        max_tokens=req.max_tokens,
+        include_tests=req.include_tests,
+        depth=req.depth,
+        output_dir=output_dir,
+    )
 
     response = ContextPackResponse(
         schema_version="1.0.0",
@@ -246,8 +250,11 @@ async def generate_context_pack(
                 type=rc.type.value if hasattr(rc.type, "value") else rc.type,
                 symbol_id=rc.symbol_id,
                 file_path=rc.file_path,
+                line_start=rc.line_start,
+                line_end=rc.line_end,
                 priority=rc.priority,
                 reason=rc.reason,
+                content=rc.content,
                 estimated_tokens=rc.estimated_tokens,
             )
             for rc in pack.recommended_context

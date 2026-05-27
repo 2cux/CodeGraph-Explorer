@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from codegraph.api.deps import get_store
+from codegraph.api.deps import get_store, get_commit_hash
 from codegraph.graph.store import GraphStore
 
 router = APIRouter(prefix="/api/repo", tags=["repo"])
@@ -59,6 +59,7 @@ async def get_repo_summary(store: GraphStore = Depends(get_store)):
         class_count=class_count,
         edge_count=len(edges),
         indexed_at=datetime.now(timezone.utc).isoformat(),
+        commit_hash=get_commit_hash(),
         low_confidence_ratio=round(low_conf_ratio, 4),
     )
 

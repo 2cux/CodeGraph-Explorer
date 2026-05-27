@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from codegraph.api.deps import get_store
+from codegraph.api.deps import get_store, get_commit_hash
 from codegraph.graph.store import GraphStore
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -45,6 +45,7 @@ async def get_dashboard_stats(store: GraphStore = Depends(get_store)):
     return DashboardStatsResponse(
         project_name=Path.cwd().name,
         root_path=str(Path.cwd()),
+        commit_hash=get_commit_hash(),
         file_count=len({n.file_path for n in nodes}),
         symbol_count=len(nodes),
         function_count=function_count,
