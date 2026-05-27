@@ -378,6 +378,22 @@ def impact(
             typer.echo(f"  {marker} {f['file_path']} [{priority}]")
             typer.echo(f"       {f['reason']}")
 
+    # ── Recommendations ──────────────────────────────────────────
+    recommendations = result.get("recommendations", [])
+    if recommendations:
+        typer.echo()
+        typer.echo("Recommendations:")
+        for i, rec in enumerate(recommendations, 1):
+            typer.echo(f"  {i}. {rec}")
+
+    # ── Warnings ─────────────────────────────────────────────────
+    warnings = result.get("warnings", [])
+    if warnings:
+        typer.echo()
+        typer.echo("Warnings:")
+        for w in warnings:
+            typer.echo(f"  ! {w}")
+
 
 # ── context command ───────────────────────────────────────────────────
 
