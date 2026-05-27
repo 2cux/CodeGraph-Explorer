@@ -171,60 +171,104 @@ async def generate_context_pack(
 
     response = ContextPackResponse(
         schema_version="1.0.0",
-        pack_id=f"ctx_{id(pack):x}",
+        pack_id=pack.pack_id or f"ctx_{id(pack):x}",
         task=TaskSchema(
-            raw_request=req.task,
-            keywords=req.task.split(),
-            target_symbols=req.target_symbols,
+            raw_request=pack.task.raw_request or req.task,
+            intent=pack.task.intent.value if pack.task.intent else "understand_code",
+            keywords=pack.task.keywords or req.task.split(),
+            target_symbols=pack.task.target_symbols or req.target_symbols,
             constraints={
-                "max_tokens": req.max_tokens,
+                "max_tokens": pack.task.constraints.max_tokens if pack.task.constraints else req.max_tokens,
                 "depth": req.depth,
-                "include_tests": req.include_tests,
+                "include_tests": pack.task.constraints.include_tests if pack.task.constraints else req.include_tests,
             },
         ),
         entry_points=[
             EntryPointItem(
-                symbol_id=ep.node_id,
-                type=ep.relevance,
+                symbol_id=ep.symbol_id,
+                type=ep.type,
                 name=ep.name,
+                file_path=ep.file_path,
+                location=ep.location,
+                signature=ep.signature,
                 reason=ep.reason,
+                score=ep.score,
+                match_sources=ep.match_sources,
             )
             for ep in pack.entry_points
         ],
         related_symbols=[
             RelatedSymbolItem(
-                symbol_id=rs.node_id,
+                symbol_id=rs.symbol_id,
+                relation=rs.relation,
+                distance=rs.distance,
+                direction=rs.direction,
                 reason=rs.reason,
-                importance=rs.relevance,
+                importance=rs.importance.value if hasattr(rs.importance, "value") else rs.importance,
+                confidence=rs.confidence,
             )
             for rs in pack.related_symbols
         ],
         call_graph=CallGraphSchema(
-            nodes=[CallGraphNode(id=cg.caller, label=cg.caller, type=cg.edge_type) for cg in pack.call_graph],
-            edges=[CallGraphEdge(source=cg.caller, target=cg.callee, type=cg.edge_type) for cg in pack.call_graph],
+            center=pack.call_graph.center,
+            depth=pack.call_graph.depth,
+            nodes=[CallGraphNode(id=n.id, label=n.label, type=n.type) for n in pack.call_graph.nodes],
+            edges=[CallGraphEdge(source=e.source, target=e.target, type=e.type, confidence=e.confidence) for e in pack.call_graph.edges],
         ),
         impact=ImpactSchema(
+            changed_symbol=pack.impact.changed_symbol,
             affected_symbols=[
                 AffectedSymbolItem(
-                    symbol_id=imp.symbol,
-                    impact_type=imp.impact_type,
-                    reason=imp.description,
+                    symbol_id=sym.symbol_id,
+                    reason=sym.reason,
+                    impact_type=sym.impact_type.value if hasattr(sym.impact_type, "value") else sym.impact_type,
+                    distance=sym.distance,
+                    confidence=sym.confidence,
                 )
-                for imp in pack.impact
+                for sym in pack.impact.affected_symbols
             ],
+            affected_files=[
+                AffectedFileItem(
+                    file_path=f.file_path,
+                    reason=f.reason,
+                    priority=f.priority,
+                )
+                for f in pack.impact.affected_files
+            ],
+            risk=RiskSchema(
+                level=pack.impact.risk.level.value if hasattr(pack.impact.risk.level, "value") else pack.impact.risk.level,
+                reasons=pack.impact.risk.reasons,
+            ),
         ),
+        recommended_context=[
+            RecommendedContextItem(
+                context_id=rc.context_id,
+                type=rc.type.value if hasattr(rc.type, "value") else rc.type,
+                symbol_id=rc.symbol_id,
+                file_path=rc.file_path,
+                priority=rc.priority,
+                reason=rc.reason,
+                estimated_tokens=rc.estimated_tokens,
+            )
+            for rc in pack.recommended_context
+        ],
         reading_plan=[
             ReadingStepItem(
                 step=rp.step,
-                target=rp.file_path,
-                reason=rp.focus,
+                action=rp.action,
+                target=rp.target,
+                reason=rp.reason,
             )
             for rp in pack.reading_plan
         ],
         agent_instructions=AgentInstructionsSchema(
             summary=pack.agent_instructions.summary,
-            recommended_strategy=[pack.agent_instructions.recommended_strategy],
+            recommended_strategy=pack.agent_instructions.recommended_strategy,
             warnings=pack.agent_instructions.warnings,
+        ),
+        exports=ExportsInfo(
+            markdown_path=pack.exports.markdown_path,
+            json_path=pack.exports.json_path,
         ),
     )
 

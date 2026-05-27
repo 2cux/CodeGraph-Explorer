@@ -84,9 +84,7 @@ async def get_subgraph(
                     type=edge.type.value
                     if hasattr(edge.type, "value")
                     else str(edge.type),
-                    confidence=edge.confidence.value
-                    if hasattr(edge.confidence, "value")
-                    else None,
+                    confidence=edge.confidence,
                 )
             )
             walk(neighbor.id, current_depth + 1)

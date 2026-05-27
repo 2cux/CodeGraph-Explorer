@@ -101,18 +101,27 @@ class ImpactResponse(BaseModel):
 
 def _node_to_detail(node: GraphNode) -> SymbolDetailResponse:
     pos = None
-    if node.position:
+    if node.location:
         pos = PositionModel(
-            line_start=node.position.start_line,
-            line_end=node.position.end_line,
+            line_start=node.location.line_start,
+            line_end=node.location.line_end,
+            column_start=node.location.column_start,
+            column_end=node.location.column_end,
         )
     return SymbolDetailResponse(
         id=node.id,
         name=node.name,
         type=node.type.value if isinstance(node.type, NodeType) else str(node.type),
         file_path=node.file_path,
+        module=node.module,
+        qualified_name=node.qualified_name,
+        display_name=node.display_name,
         position=pos,
+        signature=node.signature,
         docstring=node.docstring,
+        code_preview=node.code_preview,
+        visibility=node.visibility,
+        tags=node.tags,
     )
 
 
@@ -219,9 +228,7 @@ async def get_neighbors(
                 edge_type=edge.type.value
                 if hasattr(edge.type, "value")
                 else str(edge.type),
-                confidence=edge.confidence.value
-                if hasattr(edge.confidence, "value")
-                else str(edge.confidence),
+                confidence=edge.confidence,
             )
         )
 

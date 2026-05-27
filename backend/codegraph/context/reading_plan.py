@@ -8,5 +8,9 @@ def build_reading_plan(
     related_ids: list[str],
     max_steps: int = 10,
 ) -> list[ReadingStep]:
-    """Generate an ordered reading plan from entry points outward."""
+    """Build an ordered reading plan from entry points outward.
+
+    Each step is a ReadingStep with step number, action (read_symbol/read_file),
+    target (symbol_id or file_path), and a reason string.
+    """
     ...
