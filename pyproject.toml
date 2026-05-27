@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "codegraph"
+version = "0.1.0"
+description = "AI Agent-first code context and exploration tool"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.9.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "networkx>=3.2.0",
+]
+
+[project.scripts]
+codegraph = "codegraph.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.setuptools.package-data]
+codegraph = ["py.typed"]
