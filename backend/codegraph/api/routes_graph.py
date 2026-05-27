@@ -1,12 +1,13 @@
 """Graph exploration API routes.
 
-PRD §16.1 — GET /api/graph/subgraph
+PRD §16.1 — GET /api/graph/subgraph, GET /api/graph/stats
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from codegraph.api.deps import get_store
 from codegraph.graph.store import GraphStore
+from codegraph.graph import query as graph_query
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -22,7 +23,7 @@ class GraphEdgeItem(BaseModel):
     source: str
     target: str
     type: str
-    confidence: str | None = None
+    confidence: float | None = None
 
 
 class LayoutHints(BaseModel):
@@ -39,6 +40,38 @@ class SubgraphResponse(BaseModel):
     layout_hints: LayoutHints = LayoutHints()
 
 
+class GraphStatsResponse(BaseModel):
+    symbol_count: int = 0
+    file_count: int = 0
+    edge_count: int = 0
+    function_count: int = 0
+    method_count: int = 0
+    class_count: int = 0
+    module_count: int = 0
+    test_count: int = 0
+    import_count: int = 0
+    low_confidence_edges: int = 0
+    low_confidence_ratio: float = 0.0
+
+
+def _node_to_item(node) -> GraphNodeItem:
+    return GraphNodeItem(
+        id=node.id,
+        label=node.name,
+        type=node.type.value if hasattr(node.type, "value") else str(node.type),
+        file_path=node.file_path,
+    )
+
+
+def _edge_to_item(edge) -> GraphEdgeItem:
+    return GraphEdgeItem(
+        source=edge.source,
+        target=edge.target,
+        type=edge.type.value if hasattr(edge.type, "value") else str(edge.type),
+        confidence=edge.confidence,
+    )
+
+
 @router.get("/subgraph", response_model=SubgraphResponse)
 async def get_subgraph(
     symbol_id: str = Query(..., description="Center node ID"),
@@ -49,60 +82,26 @@ async def get_subgraph(
     normalized = symbol_id.rstrip("/")
     center = store.get_node(normalized)
     if not center:
-        raise HTTPException(
-            status_code=404, detail=f"Symbol not found: {normalized}"
-        )
+        raise HTTPException(status_code=404, detail=f"Symbol not found: {normalized}")
 
-    visited: set[str] = set()
-    nodes: list[GraphNodeItem] = []
-    edges: list[GraphEdgeItem] = []
-
-    def walk(current_id: str, current_depth: int) -> None:
-        if current_depth > depth or current_id in visited:
-            return
-        visited.add(current_id)
-
-        current_node = store.get_node(current_id)
-        if current_node:
-            nodes.append(
-                GraphNodeItem(
-                    id=current_node.id,
-                    label=current_node.name,
-                    type=current_node.type.value
-                    if hasattr(current_node.type, "value")
-                    else str(current_node.type),
-                    file_path=current_node.file_path,
-                )
-            )
-
-        neighbors = store.get_neighbors(current_id)
-        for neighbor, edge in neighbors:
-            edges.append(
-                GraphEdgeItem(
-                    source=current_id,
-                    target=neighbor.id,
-                    type=edge.type.value
-                    if hasattr(edge.type, "value")
-                    else str(edge.type),
-                    confidence=edge.confidence,
-                )
-            )
-            walk(neighbor.id, current_depth + 1)
-
-    walk(normalized, 0)
-
-    max_nodes = 100
-    if len(nodes) > max_nodes:
-        nodes = nodes[:max_nodes]
-
+    result = graph_query.get_subgraph(store, normalized, depth=depth)
     return SubgraphResponse(
         center_node_id=normalized,
         depth=depth,
-        nodes=nodes,
-        edges=edges,
+        nodes=[_node_to_item(n) for n in result["nodes"]],
+        edges=[_edge_to_item(e) for e in result["edges"]],
         layout_hints=LayoutHints(
             group_by="file",
-            max_nodes=max_nodes,
+            max_nodes=100,
             suggested_view="local_call_graph",
         ),
     )
+
+
+@router.get("/stats", response_model=GraphStatsResponse)
+async def get_graph_stats(
+    store: GraphStore = Depends(get_store),
+):
+    """Return aggregate statistics for the entire code graph."""
+    stats = graph_query.get_graph_stats(store)
+    return GraphStatsResponse(**stats)

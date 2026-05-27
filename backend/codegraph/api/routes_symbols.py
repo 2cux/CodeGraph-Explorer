@@ -53,6 +53,13 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem]
     total: int
     query: str
+    limit: int = 50
+    offset: int = 0
+
+
+class TypesResponse(BaseModel):
+    types: list[str]
+    total: int
 
 
 class NeighborItem(BaseModel):
@@ -151,28 +158,34 @@ async def search_symbols(
     query: str = Query("", description="Search keyword"),
     type_filter: str | None = Query(None, alias="type", description="Filter by node type"),
     file_filter: str | None = Query(None, alias="file", description="Filter by file path"),
+    limit: int = Query(50, ge=1, le=200, description="Max results"),
+    offset: int = Query(0, ge=0, description="Result offset"),
     store: GraphStore = Depends(get_store),
 ):
     """Search for symbols by name, file path, or docstring."""
-    results = graph_query.search_symbols(store, query)
+    result = graph_query.search_symbols(
+        store, query=query,
+        type_filter=type_filter,
+        file_filter=file_filter,
+        limit=limit,
+        offset=offset,
+    )
     items = [
         SearchResultItem(
-            symbol_id=r.get("id", r.get("symbol_id", "")),
-            name=r.get("name", ""),
-            type=r.get("type", ""),
-            file_path=r.get("file_path", ""),
-            score=r.get("score", 0.0),
-            match_sources=r.get("match_sources", []),
+            symbol_id=r["symbol_id"],
+            name=r["name"],
+            type=r["type"],
+            file_path=r["file_path"],
+            score=r["score"],
+            match_sources=r["match_sources"],
         )
-        for r in results
+        for r in result["results"]
     ]
 
-    if type_filter:
-        items = [i for i in items if i.type == type_filter]
-    if file_filter:
-        items = [i for i in items if file_filter in i.file_path]
-
-    return SearchResponse(results=items, total=len(items), query=query)
+    return SearchResponse(
+        results=items, total=result["total"],
+        query=query, limit=limit, offset=offset,
+    )
 
 
 @router.get("/{node_id:path}/impact", response_model=ImpactResponse)
@@ -291,6 +304,18 @@ async def get_callers(
         )
 
     return {"symbol_id": normalized, "callers": items, "total": len(items)}
+
+
+@router.get("/types", response_model=TypesResponse)
+async def get_symbol_types(
+    store: GraphStore = Depends(get_store),
+):
+    """Return all distinct node types present in the graph."""
+    types: set[str] = set()
+    for node in store.all_nodes():
+        types.add(node.type.value if hasattr(node.type, "value") else str(node.type))
+    sorted_types = sorted(types)
+    return TypesResponse(types=sorted_types, total=len(sorted_types))
 
 
 @router.get("/{node_id:path}", response_model=SymbolDetailResponse)
