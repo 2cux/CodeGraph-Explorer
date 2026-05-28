@@ -1,113 +1,7 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, type ContextPackResponse } from "../api";
-
-/* ── Types matching the API response ─────────────────────────── */
-
-interface EntryPoint {
-  symbol_id: string;
-  type: string;
-  name: string;
-  file_path: string;
-  location: { line_start?: number; line_end?: number } | null;
-  signature: string | null;
-  reason: string;
-  score: number;
-  match_sources: string[];
-}
-
-interface RelatedSymbol {
-  symbol_id: string;
-  relation: string;
-  distance: number;
-  direction: string;
-  reason: string;
-  importance: string;
-  confidence: number;
-}
-
-interface CallGraphNode {
-  id: string;
-  label: string;
-  type: string;
-}
-
-interface CallGraphEdge {
-  source: string;
-  target: string;
-  type: string;
-  confidence: number;
-}
-
-interface CallGraph {
-  center: string;
-  depth: number;
-  nodes: CallGraphNode[];
-  edges: CallGraphEdge[];
-}
-
-interface AffectedSymbol {
-  symbol_id: string;
-  reason: string;
-  impact_type: string;
-  distance: number;
-  confidence: number;
-}
-
-interface AffectedFile {
-  file_path: string;
-  reason: string;
-  priority: string;
-}
-
-interface Risk {
-  level: string;
-  reasons: string[];
-}
-
-interface Impact {
-  changed_symbol: string;
-  affected_symbols: AffectedSymbol[];
-  affected_files: AffectedFile[];
-  risk: Risk;
-}
-
-interface ContextItem {
-  context_id: string;
-  type: string;
-  symbol_id: string;
-  file_path: string;
-  line_start: number;
-  line_end: number;
-  priority: string;
-  reason: string;
-  content: string;
-  estimated_tokens: number;
-}
-
-interface ReadingStep {
-  step: number;
-  action: string;
-  target: string;
-  reason: string;
-}
-
-interface AgentInstructions {
-  summary: string;
-  recommended_strategy: string[];
-  warnings: string[];
-}
-
-interface ContextPack {
-  pack_id: string;
-  task: { raw_request: string; intent: string; keywords: string[] };
-  entry_points: EntryPoint[];
-  related_symbols: RelatedSymbol[];
-  call_graph: CallGraph;
-  impact: Impact;
-  recommended_context: ContextItem[];
-  reading_plan: ReadingStep[];
-  agent_instructions: AgentInstructions;
-}
+import { Spinner } from "../components/Spinner";
 
 type ViewMode = "initial" | "loading" | "pack" | "error";
 
@@ -117,18 +11,32 @@ interface ViewState {
   error: string;
 }
 
-/* ── Main component ──────────────────────────────────────────── */
+const RISK_COLORS: Record<string, string> = {
+  critical: "var(--cg-error)", high: "var(--cg-warning)",
+  medium: "var(--cg-accent)", low: "var(--cg-success)", unknown: "var(--cg-text-muted)",
+};
+const RISK_BG: Record<string, string> = {
+  critical: "var(--cg-error-alpha)", high: "var(--cg-warning-alpha)",
+  medium: "var(--cg-accent-alpha)", low: "var(--cg-success-alpha)",
+  unknown: "color-mix(in srgb, var(--cg-text-muted) 14%, transparent)",
+};
+
+const PRIORITY_COLORS: Record<string, string> = {
+  critical: "var(--cg-error)", high: "var(--cg-warning)",
+  medium: "var(--cg-accent)", low: "var(--cg-text-secondary)",
+};
+const PRIORITY_BG: Record<string, string> = {
+  critical: "var(--cg-error-alpha)", high: "var(--cg-warning-alpha)",
+  medium: "var(--cg-accent-alpha)", low: "color-mix(in srgb, var(--cg-text-secondary) 14%, transparent)",
+};
 
 export default function ContextPackViewer() {
+  const navigate = useNavigate();
   const [task, setTask] = useState("");
   const [maxTokens, setMaxTokens] = useState(6000);
   const [includeTests, setIncludeTests] = useState(true);
   const [depth, setDepth] = useState(2);
-  const [state, setState] = useState<ViewState>({
-    mode: "initial",
-    pack: null,
-    error: "",
-  });
+  const [state, setState] = useState<ViewState>({ mode: "initial", pack: null, error: "" });
 
   async function generate() {
     if (!task.trim()) return;
@@ -137,40 +45,42 @@ export default function ContextPackViewer() {
       const data = await api.context.generate(task, maxTokens, includeTests, depth);
       setState({ mode: "pack", pack: data, error: "" });
     } catch (e: unknown) {
-      setState({
-        mode: "error",
-        pack: null,
-        error: e instanceof Error ? e.message : "Generation failed",
-      });
+      setState({ mode: "error", pack: null, error: e instanceof Error ? e.message : "Generation failed" });
     }
   }
 
   const renderContent = () => {
     switch (state.mode) {
-      case "initial":
-        return <InitialState />;
-      case "loading":
-        return <LoadingState task={task} />;
-      case "error":
-        return <ErrorState message={state.error} />;
-      case "pack":
-        return <PackContent pack={state.pack!} />;
+      case "initial": return <InitialState />;
+      case "loading": return <LoadingState task={task} />;
+      case "error": return <ErrorState message={state.error} />;
+      case "pack": return <PackContent pack={state.pack!} onNavigate={(id) => navigate(`/symbol/${encodeURIComponent(id)}`)} />;
     }
   };
 
   return (
-    <div className="space-y-4">
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Context Pack Viewer</h1>
-        <p className="text-gray-500 text-sm mt-1">
+        <h1 style={{ fontSize: 18, fontWeight: 500, color: "var(--cg-text-primary)", margin: 0 }}>
+          Context Pack Viewer
+        </h1>
+        <p style={{ fontSize: 12, color: "var(--cg-text-secondary)", margin: "4px 0 0" }}>
           Generate a task-aware code context pack for AI coding agents.
         </p>
       </div>
 
       {/* Form */}
-      <div className="bg-white border rounded-xl p-4 space-y-3">
+      <div style={{
+        padding: 14,
+        background: "var(--cg-bg-panel)",
+        border: "1px solid var(--cg-border)",
+        borderRadius: 6,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label style={{ fontSize: 10, color: "var(--cg-text-muted)", marginBottom: 4, display: "block" }}>
             Task Description
           </label>
           <textarea
@@ -178,18 +88,28 @@ export default function ContextPackViewer() {
             onChange={(e) => setTask(e.target.value)}
             placeholder="e.g. Add MFA support to the login flow"
             rows={3}
-            className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            style={{
+              width: "100%", padding: "8px",
+              border: "1px solid var(--cg-border)", borderRadius: 4,
+              background: "var(--cg-bg-canvas)", color: "var(--cg-text-primary)",
+              fontSize: 12, fontFamily: "inherit", outline: "none", resize: "vertical",
+            }}
+            onFocus={(e) => e.currentTarget.style.borderColor = "var(--cg-accent)"}
+            onBlur={(e) => e.currentTarget.style.borderColor = "var(--cg-border)"}
           />
         </div>
-        <div className="flex gap-4 flex-wrap">
+        <div className="flex items-center" style={{ gap: 10, flexWrap: "wrap" }}>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Max Tokens
-            </label>
+            <label style={{ fontSize: 10, color: "var(--cg-text-muted)", marginBottom: 4, display: "block" }}>Max Tokens</label>
             <select
               value={maxTokens}
               onChange={(e) => setMaxTokens(Number(e.target.value))}
-              className="px-3 py-2 border rounded-lg bg-white text-sm"
+              style={{
+                height: 28, padding: "0 8px",
+                border: "1px solid var(--cg-border)", borderRadius: 4,
+                background: "var(--cg-bg-panel)", color: "var(--cg-text-primary)",
+                fontSize: 11, fontFamily: "inherit", outline: "none",
+              }}
             >
               <option value={3000}>3,000</option>
               <option value={6000}>6,000</option>
@@ -198,39 +118,37 @@ export default function ContextPackViewer() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Depth
-            </label>
+            <label style={{ fontSize: 10, color: "var(--cg-text-muted)", marginBottom: 4, display: "block" }}>Depth</label>
             <select
               value={depth}
               onChange={(e) => setDepth(Number(e.target.value))}
-              className="px-3 py-2 border rounded-lg bg-white text-sm"
+              style={{
+                height: 28, padding: "0 8px",
+                border: "1px solid var(--cg-border)", borderRadius: 4,
+                background: "var(--cg-bg-panel)", color: "var(--cg-text-primary)",
+                fontSize: 11, fontFamily: "inherit", outline: "none",
+              }}
             >
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-              <option value={3}>3</option>
+              {[1, 2, 3].map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
-          <div className="flex items-end">
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={includeTests}
-                onChange={(e) => setIncludeTests(e.target.checked)}
-                className="rounded"
-              />
-              Include tests
-            </label>
-          </div>
-          <div className="flex items-end">
-            <button
-              onClick={generate}
-              disabled={state.mode === "loading" || !task.trim()}
-              className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              {state.mode === "loading" ? "Generating..." : "Generate"}
-            </button>
-          </div>
+          <label className="flex items-center" style={{ gap: 6, fontSize: 11, color: "var(--cg-text-secondary)", cursor: "pointer" }}>
+            <input type="checkbox" checked={includeTests} onChange={(e) => setIncludeTests(e.target.checked)} style={{ accentColor: "var(--cg-accent)" }} />
+            Include tests
+          </label>
+          <button
+            onClick={generate}
+            disabled={state.mode === "loading" || !task.trim()}
+            style={{
+              height: 28, padding: "0 14px",
+              background: "var(--cg-accent)", color: "#fff",
+              border: "none", borderRadius: 4,
+              fontSize: 11, fontWeight: 500, cursor: state.mode === "loading" ? "default" : "pointer",
+              fontFamily: "inherit", opacity: state.mode === "loading" || !task.trim() ? 0.6 : 1,
+            }}
+          >
+            {state.mode === "loading" ? "Generating..." : "Generate"}
+          </button>
         </div>
       </div>
 
@@ -239,14 +157,16 @@ export default function ContextPackViewer() {
   );
 }
 
-/* ── Sub-components ───────────────────────────────────────────── */
+/* ── States ──────────────────────────────────────────────────── */
 
 function InitialState() {
   return (
-    <div className="text-center py-16 border-2 border-dashed border-gray-300 rounded-xl">
-      <div className="text-5xl text-gray-300 mb-4">⊞</div>
-      <h2 className="text-lg font-semibold text-gray-500">Describe your task</h2>
-      <p className="text-sm text-gray-400 mt-1">
+    <div style={{ textAlign: "center", padding: "40px 20px", border: "1px dashed var(--cg-border)", borderRadius: 8 }}>
+      <div style={{ fontSize: 32, color: "var(--cg-text-muted)", marginBottom: 12 }}>⊞</div>
+      <h2 style={{ fontSize: 14, fontWeight: 500, color: "var(--cg-text-secondary)", margin: "0 0 4px" }}>
+        Describe your task
+      </h2>
+      <p style={{ fontSize: 11, color: "var(--cg-text-muted)", margin: 0 }}>
         Enter a natural language task description to generate a Context Pack.
       </p>
     </div>
@@ -255,18 +175,19 @@ function InitialState() {
 
 function LoadingState({ task }: { task: string }) {
   return (
-    <div className="p-6 border rounded-xl bg-white space-y-4">
-      <div className="flex items-center gap-3">
-        <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-        <p className="text-sm text-gray-600">
+    <div style={{
+      padding: 14, background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)", borderRadius: 6,
+    }}>
+      <div className="flex items-center" style={{ gap: 8, marginBottom: 12 }}>
+        <Spinner size={12} />
+        <span style={{ fontSize: 11, color: "var(--cg-text-secondary)" }}>
           Analyzing codebase for: <strong>"{task}"</strong>
-        </p>
+        </span>
       </div>
-      <div className="animate-pulse space-y-2">
-        <div className="h-4 bg-gray-100 rounded w-3/4" />
-        <div className="h-4 bg-gray-100 rounded w-1/2" />
-        <div className="h-4 bg-gray-100 rounded w-5/6" />
-        <div className="h-4 bg-gray-100 rounded w-2/3" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {[240, 180, 220, 160].map((w, i) => (
+          <div key={i} className="cg-skeleton" style={{ height: 10, width: w, borderRadius: 2, animationDelay: `${i * 0.08}s` }} />
+        ))}
       </div>
     </div>
   );
@@ -274,7 +195,12 @@ function LoadingState({ task }: { task: string }) {
 
 function ErrorState({ message }: { message: string }) {
   return (
-    <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+    <div style={{
+      padding: "8px 10px",
+      background: "var(--cg-error-alpha)",
+      border: "1px solid color-mix(in srgb, var(--cg-error) 30%, transparent)",
+      borderRadius: 4, fontSize: 11, color: "var(--cg-text-secondary)",
+    }}>
       {message}
     </div>
   );
@@ -282,276 +208,286 @@ function ErrorState({ message }: { message: string }) {
 
 /* ── Pack content ────────────────────────────────────────────── */
 
-function PackContent({ pack }: { pack: ContextPack }) {
+function PackContent({ pack, onNavigate }: { pack: ContextPackResponse; onNavigate: (id: string) => void }) {
   return (
-    <div className="space-y-4">
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {/* Pack header */}
-      <div className="bg-white border rounded-xl p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-gray-800">
-              Context Pack: <span className="font-mono text-sm">{pack.pack_id}</span>
-            </h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Intent: {pack.task.intent} &middot; Keywords:{" "}
-              {pack.task.keywords.join(", ")}
-            </p>
+      <div style={{
+        padding: "12px 14px",
+        background: "var(--cg-bg-panel)",
+        border: "1px solid var(--cg-border)",
+        borderRadius: 6,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}>
+        <div>
+          <div className="flex items-center" style={{ gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--cg-text-primary)" }}>Context Pack</span>
+            <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>{pack.pack_id}</span>
           </div>
+          <p style={{ fontSize: 11, color: "var(--cg-text-secondary)", margin: "4px 0 0" }}>
+            Intent: {pack.task.intent} · Keywords: {pack.task.keywords.join(", ")}
+          </p>
         </div>
       </div>
 
-      {/* Agent instructions */}
-      <Section title="Agent Instructions">
-        <p className="text-sm text-gray-700 mb-2">{pack.agent_instructions.summary}</p>
+      {/* Agent Instructions */}
+      <CardSection title="Agent Instructions">
+        <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "var(--cg-text-secondary)" }}>
+          {pack.agent_instructions.summary}
+        </p>
         {pack.agent_instructions.recommended_strategy.length > 0 && (
-          <div className="mb-2">
-            <p className="text-xs font-medium text-gray-600 mb-1">Recommended Strategy:</p>
-            <ul className="space-y-1">
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--cg-text-muted)", marginBottom: 4 }}>Recommended Strategy</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {pack.agent_instructions.recommended_strategy.map((s, i) => (
-                <li key={i} className="text-sm text-gray-700 flex gap-2">
-                  <span className="text-blue-500">{i + 1}.</span>
-                  {s}
-                </li>
+                <div key={i} className="flex items-start" style={{ gap: 6, fontSize: 11, color: "var(--cg-text-secondary)" }}>
+                  <span className="cg-mono" style={{ color: "var(--cg-accent)", flexShrink: 0 }}>{i + 1}.</span>
+                  <span>{s}</span>
+                </div>
               ))}
-            </ul>
+            </div>
           </div>
         )}
         {pack.agent_instructions.warnings.length > 0 && (
-          <div className="p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+          <div style={{
+            marginTop: 8, padding: "6px 8px",
+            background: "var(--cg-warning-alpha)",
+            border: "1px solid color-mix(in srgb, var(--cg-warning) 30%, transparent)",
+            borderRadius: 4,
+          }}>
             {pack.agent_instructions.warnings.map((w, i) => (
-              <p key={i}>{w}</p>
+              <p key={i} style={{ margin: 0, fontSize: 10, color: "var(--cg-text-secondary)" }}>{w}</p>
             ))}
           </div>
         )}
-      </Section>
+      </CardSection>
 
-      {/* Entry points */}
-      <Section title={`Entry Points (${pack.entry_points.length})`}>
+      {/* Entry Points */}
+      <CardSection title={`Entry Points (${pack.entry_points.length})`}>
         {pack.entry_points.length === 0 ? (
           <EmptyText />
         ) : (
-          <div className="space-y-2">
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {pack.entry_points.map((ep, i) => (
-              <SymbolCard key={i} symbolId={ep.symbol_id} name={ep.name} type={ep.type} filePath={ep.file_path}>
-                <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-                  <span>score: {ep.score.toFixed(2)}</span>
-                  <span>{ep.reason}</span>
+              <div key={i} style={{
+                padding: "8px 10px", cursor: "pointer",
+                background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)",
+                borderRadius: 4, fontSize: 11,
+                transition: "border-color 120ms ease, background 120ms ease",
+              }}
+                onClick={() => onNavigate(ep.symbol_id)}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--cg-border-hover)"; e.currentTarget.style.background = "var(--cg-bg-elevated)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--cg-border)"; e.currentTarget.style.background = "var(--cg-bg-panel)"; }}
+              >
+                <div className="flex items-center" style={{ gap: 6, marginBottom: 2 }}>
+                  <span className="cg-mono" style={{ fontSize: 9, padding: "1px 4px", background: "var(--cg-bg-subtle)", color: "var(--cg-text-muted)", borderRadius: 2 }}>
+                    {ep.type}
+                  </span>
+                  <span className="cg-mono" style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>
+                    {ep.name}
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>
+                    {ep.score.toFixed(2)}
+                  </span>
                 </div>
-                {ep.match_sources.length > 0 && (
-                  <div className="flex gap-1 mt-1">
-                    {ep.match_sources.map((s) => (
-                      <span
-                        key={s}
-                        className="px-1 py-0.5 bg-gray-100 rounded text-[10px] text-gray-500"
-                      >
-                        {s}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </SymbolCard>
+                <p style={{ margin: 0, fontSize: 10, color: "var(--cg-text-secondary)" }}>{ep.reason}</p>
+              </div>
             ))}
           </div>
         )}
-      </Section>
+      </CardSection>
 
-      {/* Related symbols */}
-      <Section title={`Related Symbols (${pack.related_symbols.length})`}>
+      {/* Related Symbols */}
+      <CardSection title={`Related Symbols (${pack.related_symbols.length})`}>
         {pack.related_symbols.length === 0 ? (
           <EmptyText />
         ) : (
-          <div className="space-y-2">
-            {pack.related_symbols.map((rs, i) => (
-              <SymbolCard key={i} symbolId={rs.symbol_id} name={rs.symbol_id} type={rs.relation} filePath="">
-                <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-                  <span className={`px-1 py-0.5 rounded ${
-                    rs.importance === "high" ? "bg-red-100 text-red-700" : rs.importance === "critical" ? "bg-red-200 text-red-800" : "bg-gray-100"
-                  }`}>
-                    {rs.importance}
-                  </span>
-                  <span>D{rs.distance} {rs.direction}</span>
-                  <span>conf={rs.confidence.toFixed(2)}</span>
-                  <span>{rs.reason}</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {pack.related_symbols.map((rs, i) => {
+              const impColor = rs.importance === "critical" ? "var(--cg-error)" : rs.importance === "high" ? "var(--cg-warning)" : "var(--cg-text-secondary)";
+              const impBg = rs.importance === "critical" ? "var(--cg-error-alpha)" : rs.importance === "high" ? "var(--cg-warning-alpha)" : "color-mix(in srgb, var(--cg-text-secondary) 14%, transparent)";
+              return (
+                <div key={i} style={{ padding: "6px 8px", borderBottom: "1px solid var(--cg-border)", fontSize: 11 }}>
+                  <div className="flex items-center" style={{ gap: 6 }}>
+                    <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, color: impColor, background: impBg, letterSpacing: 0.3 }}>
+                      {rs.importance}
+                    </span>
+                    <span className="cg-mono" style={{ color: "var(--cg-text-primary)" }}>{rs.symbol_id}</span>
+                    <span style={{ color: "var(--cg-text-muted)", fontSize: 10 }}>D{rs.distance} {rs.direction}</span>
+                    <span style={{ flex: 1 }} />
+                    <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>
+                      conf={rs.confidence.toFixed(2)}
+                    </span>
+                  </div>
+                  <p style={{ margin: "2px 0 0", fontSize: 10, color: "var(--cg-text-secondary)" }}>{rs.reason}</p>
                 </div>
-              </SymbolCard>
-            ))}
+              );
+            })}
           </div>
         )}
-      </Section>
+      </CardSection>
 
-      {/* Call graph */}
-      <Section title="Call Graph">
+      {/* Call Graph */}
+      <CardSection title="Call Graph">
         {pack.call_graph.nodes.length === 0 ? (
           <EmptyText />
         ) : (
-          <div className="text-sm text-gray-600">
-            <p className="mb-2">
-              Center: <code className="bg-gray-100 px-1 rounded">{pack.call_graph.center}</code>
-              {" "}&middot; Depth: {pack.call_graph.depth}
-              {" "}&middot; {pack.call_graph.nodes.length} nodes, {pack.call_graph.edges.length} edges
+          <div style={{ fontSize: 11, color: "var(--cg-text-secondary)" }}>
+            <p style={{ margin: "0 0 8px" }}>
+              Center: <span className="cg-mono" style={{ background: "var(--cg-bg-subtle)", padding: "1px 4px", borderRadius: 2 }}>{pack.call_graph.center}</span>
+              {" · "}Depth: {pack.call_graph.depth}
+              {" · "}{pack.call_graph.nodes.length} nodes, {pack.call_graph.edges.length} edges
             </p>
             {pack.call_graph.edges.length > 0 && (
-              <div className="space-y-1 max-h-40 overflow-y-auto">
+              <div style={{ maxHeight: 160, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
                 {pack.call_graph.edges.map((e, i) => (
-                  <div key={i} className="flex items-center gap-2 text-xs font-mono text-gray-500">
-                    <span>{e.source}</span>
-                    <span className="text-gray-300">→</span>
-                    <span>{e.target}</span>
-                    <span className="text-[10px] text-gray-400">({e.type}, conf={e.confidence.toFixed(2)})</span>
+                  <div key={i} className="flex items-center" style={{ gap: 4, fontSize: 10 }}>
+                    <span className="cg-mono" style={{ color: "var(--cg-text-primary)" }}>{e.source}</span>
+                    <span style={{ color: "var(--cg-text-muted)" }}>→</span>
+                    <span className="cg-mono" style={{ color: "var(--cg-text-primary)" }}>{e.target}</span>
+                    <span style={{ color: "var(--cg-text-muted)", fontSize: 9 }}>
+                      ({e.type}, conf={e.confidence.toFixed(2)})
+                    </span>
                   </div>
                 ))}
               </div>
             )}
           </div>
         )}
-      </Section>
+      </CardSection>
 
       {/* Impact */}
-      <Section title="Impact Analysis">
+      <CardSection title="Impact Analysis">
         {!pack.impact.changed_symbol ? (
           <EmptyText />
         ) : (
-          <div className="space-y-2 text-sm">
-            <p>
-              Changing: <code className="bg-gray-100 px-1 rounded">{pack.impact.changed_symbol}</code>
-            </p>
-            <div className="flex items-center gap-2">
-              <RiskBadge level={pack.impact.risk.level} />
-              <span className="text-gray-500">
-                {pack.impact.affected_symbols.length} symbols, {pack.impact.affected_files.length} files
-              </span>
+          <div style={{ fontSize: 11, color: "var(--cg-text-secondary)" }}>
+            <div className="flex items-center" style={{ gap: 6, marginBottom: 6 }}>
+              <span style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>Changing:</span>
+              <span className="cg-mono" style={{ background: "var(--cg-bg-subtle)", padding: "1px 4px", borderRadius: 2 }}>{pack.impact.changed_symbol}</span>
             </div>
-            {pack.impact.risk.reasons.length > 0 && (
-              <ul className="space-y-1">
+            <div className="flex items-center" style={{ gap: 8, marginBottom: 6 }}>
+              <span style={{
+                fontSize: 9, fontWeight: 500, padding: "2px 6px", borderRadius: 2,
+                color: RISK_COLORS[pack.impact.risk?.level || "unknown"],
+                background: RISK_BG[pack.impact.risk?.level || "unknown"],
+                letterSpacing: 0.5,
+              }}>
+                {pack.impact.risk?.level?.toUpperCase()}
+              </span>
+              <span>{pack.impact.affected_symbols.length} symbols, {pack.impact.affected_files.length} files</span>
+            </div>
+            {pack.impact.risk?.reasons?.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                 {pack.impact.risk.reasons.map((r, i) => (
-                  <li key={i} className="text-xs text-gray-600 flex gap-1">
-                    <span className="text-blue-500">&bull;</span> {r}
-                  </li>
+                  <div key={i} className="flex items-start" style={{ gap: 4, fontSize: 10 }}>
+                    <span style={{ color: "var(--cg-accent)" }}>•</span>
+                    <span>{r}</span>
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
           </div>
         )}
-      </Section>
+      </CardSection>
 
-      {/* Reading plan */}
-      <Section title="Reading Plan">
+      {/* Reading Plan */}
+      <CardSection title="Reading Plan">
         {pack.reading_plan.length === 0 ? (
           <EmptyText />
         ) : (
-          <ol className="space-y-2">
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {pack.reading_plan.map((step) => (
-              <li key={step.step} className="flex gap-3 text-sm">
-                <span className="font-medium text-blue-600 min-w-[1.5rem]">
-                  {step.step}.
-                </span>
+              <div key={step.step} className="flex items-start" style={{ gap: 8, padding: "6px 0", borderBottom: "1px solid var(--cg-border)", fontSize: 11 }}>
+                <span className="cg-mono" style={{ color: "var(--cg-accent)", fontWeight: 500, flexShrink: 0, width: 20 }}>{step.step}.</span>
                 <div>
-                  <span className="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">
-                    {step.action}
-                  </span>
-                  <code className="ml-2 text-gray-800">{step.target}</code>
+                  <div className="flex items-center" style={{ gap: 6 }}>
+                    <span className="cg-mono" style={{
+                      fontSize: 9, padding: "1px 5px", borderRadius: 2,
+                      color: "var(--cg-success)", background: "var(--cg-success-alpha)",
+                    }}>
+                      {step.action}
+                    </span>
+                    <span className="cg-mono" style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>
+                      {step.target}
+                    </span>
+                  </div>
                   {step.reason && (
-                    <p className="text-xs text-gray-500 mt-0.5">{step.reason}</p>
+                    <p style={{ margin: "2px 0 0", fontSize: 10, color: "var(--cg-text-secondary)" }}>{step.reason}</p>
                   )}
                 </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </Section>
-
-      {/* Recommended context */}
-      {pack.recommended_context.length > 0 && (
-        <Section title={`Recommended Context (${pack.recommended_context.length})`}>
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {pack.recommended_context.map((rc, i) => (
-              <div key={i} className="p-2 border rounded text-sm hover:bg-gray-50">
-                <div className="flex items-center gap-2">
-                  <PriorityBadge priority={rc.priority} />
-                  <code className="text-xs">{rc.file_path}:{rc.line_start}–{rc.line_end}</code>
-                  <span className="text-xs text-gray-400 ml-auto">~{rc.estimated_tokens} tokens</span>
-                </div>
-                <p className="text-xs text-gray-500 mt-0.5">{rc.reason}</p>
               </div>
             ))}
           </div>
-        </Section>
+        )}
+      </CardSection>
+
+      {/* Recommended Context */}
+      {pack.recommended_context.length > 0 && (
+        <CardSection title={`Recommended Context (${pack.recommended_context.length})`}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 320, overflowY: "auto" }}>
+            {pack.recommended_context.map((rc, i) => {
+              const priColor = PRIORITY_COLORS[rc.priority] || "var(--cg-text-muted)";
+              const priBg = PRIORITY_BG[rc.priority] || "color-mix(in srgb, var(--cg-text-muted) 14%, transparent)";
+              return (
+                <div key={i} style={{
+                  padding: "8px 10px",
+                  background: "var(--cg-bg-panel)",
+                  border: "1px solid var(--cg-border)",
+                  borderRadius: 4,
+                  fontSize: 11,
+                  cursor: "pointer",
+                  transition: "border-color 120ms ease",
+                }}
+                  onClick={() => onNavigate(rc.symbol_id)}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--cg-border-hover)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--cg-border)"; }}
+                >
+                  <div className="flex items-center" style={{ gap: 6, marginBottom: 2 }}>
+                    <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, color: priColor, background: priBg, letterSpacing: 0.3 }}>
+                      {rc.priority}
+                    </span>
+                    <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>
+                      {rc.file_path}:{rc.line_start}–{rc.line_end}
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <span className="cg-mono" style={{ fontSize: 9, color: "var(--cg-text-muted)" }}>
+                      ~{rc.estimated_tokens}tok
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: 10, color: "var(--cg-text-secondary)" }}>{rc.reason}</p>
+                </div>
+              );
+            })}
+          </div>
+        </CardSection>
       )}
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function CardSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white border rounded-xl p-4">
-      <h3 className="font-semibold text-gray-800 mb-3 text-sm">{title}</h3>
+    <div style={{
+      padding: 14,
+      background: "var(--cg-bg-panel)",
+      border: "1px solid var(--cg-border)",
+      borderRadius: 6,
+      display: "flex",
+      flexDirection: "column",
+    }}>
+      <div className="flex items-center" style={{ gap: 6, fontSize: 10, letterSpacing: 0.5, fontWeight: 600, color: "var(--cg-text-secondary)", marginBottom: 10 }}>
+        <span style={{ color: "var(--cg-text-muted)" }}>──</span>
+        <span>{title}</span>
+      </div>
       {children}
     </div>
   );
 }
 
 function EmptyText() {
-  return <p className="text-sm text-gray-400 italic">None</p>;
-}
-
-function SymbolCard({
-  symbolId,
-  name,
-  type,
-  filePath,
-  children,
-}: {
-  symbolId: string;
-  name: string;
-  type: string;
-  filePath: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <a
-      href={`/symbol/${encodeURIComponent(symbolId)}`}
-      className="block p-2 border rounded hover:bg-gray-50 transition-colors"
-    >
-      <div className="flex items-center gap-2">
-        <span className="px-1.5 py-0.5 bg-gray-100 rounded text-xs text-gray-600">
-          {type}
-        </span>
-        <span className="font-mono text-sm font-medium">{name}</span>
-        {filePath && <span className="text-xs text-gray-400 ml-auto">{filePath}</span>}
-      </div>
-      {children}
-    </a>
-  );
-}
-
-const RISK_COLORS: Record<string, string> = {
-  critical: "bg-red-100 text-red-800",
-  high: "bg-orange-100 text-orange-800",
-  medium: "bg-yellow-100 text-yellow-800",
-  low: "bg-green-100 text-green-800",
-};
-
-function RiskBadge({ level }: { level: string }) {
-  const colors = RISK_COLORS[level] || "bg-gray-100 text-gray-600";
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${colors}`}>
-      {level.toUpperCase()}
-    </span>
-  );
-}
-
-const PRIORITY_COLORS: Record<string, string> = {
-  critical: "bg-red-100 text-red-700",
-  high: "bg-orange-100 text-orange-700",
-  medium: "bg-blue-100 text-blue-700",
-  low: "bg-gray-100 text-gray-600",
-};
-
-function PriorityBadge({ priority }: { priority: string }) {
-  const colors = PRIORITY_COLORS[priority] || "bg-gray-100 text-gray-600";
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors}`}>
-      {priority}
-    </span>
-  );
+  return <p style={{ fontSize: 11, color: "var(--cg-text-muted)", margin: 0, fontStyle: "italic" }}>None</p>;
 }

@@ -1,32 +1,47 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { api, type SymbolDetail as SymbolDetailType, type NeighborItem, type CallerCalleeItem } from "../api";
+import { CodeBlock } from "../components/CodeBlock";
+import { InspectorSection } from "../components/Section";
+import { SkeletonLine, SkeletonBlock } from "../components/Skeleton";
+import { IconArrow } from "../components/icons";
 
 type ViewMode = "loading" | "detail" | "error";
-
-interface ViewState {
-  mode: ViewMode;
-  symbol: SymbolDetailType | null;
-  neighbors: NeighborItem[];
-  error: string;
-}
-
 type Tab = "callers" | "callees" | "neighbors";
 
+const KIND_COLORS: Record<string, string> = {
+  function: "var(--cg-accent)",
+  method: "#A78BFA",
+  class: "var(--cg-success)",
+  module: "var(--cg-text-secondary)",
+  variable: "var(--cg-warning)",
+  test: "#4ADE80",
+  file: "var(--cg-text-secondary)",
+};
+
+const KIND_BG: Record<string, string> = {
+  function: "var(--cg-accent-alpha)",
+  method: "color-mix(in srgb, #A78BFA 14%, transparent)",
+  class: "var(--cg-success-alpha)",
+  module: "color-mix(in srgb, var(--cg-text-secondary) 14%, transparent)",
+  variable: "var(--cg-warning-alpha)",
+  test: "color-mix(in srgb, #4ADE80 14%, transparent)",
+  file: "color-mix(in srgb, var(--cg-text-secondary) 14%, transparent)",
+};
+
 export default function SymbolDetail() {
+  const navigate = useNavigate();
   const { nodeId } = useParams<{ nodeId: string }>();
   const decoded = nodeId ? decodeURIComponent(nodeId) : "";
 
-  const [state, setState] = useState<ViewState>({
-    mode: "loading",
-    symbol: null,
-    neighbors: [],
-    error: "",
+  const [state, setState] = useState<{ mode: ViewMode; symbol: SymbolDetailType | null; error: string }>({
+    mode: "loading", symbol: null, error: "",
   });
   const [activeTab, setActiveTab] = useState<Tab>("neighbors");
-  const [neighborsLoading, setNeighborsLoading] = useState(false);
+  const [neighbors, setNeighbors] = useState<NeighborItem[]>([]);
   const [callers, setCallers] = useState<CallerCalleeItem[]>([]);
   const [callees, setCallees] = useState<CallerCalleeItem[]>([]);
+  const [neighborsLoading, setNeighborsLoading] = useState(false);
   const [callersLoading, setCallersLoading] = useState(false);
   const [calleesLoading, setCalleesLoading] = useState(false);
 
@@ -34,125 +49,88 @@ export default function SymbolDetail() {
     if (!decoded) return;
     let cancelled = false;
     (async () => {
-      setState((s) => ({ ...s, mode: "loading", error: "" }));
+      setState({ mode: "loading", symbol: null, error: "" });
       try {
         const sym = await api.symbols.detail(decoded);
         if (cancelled) return;
-        setState({ mode: "detail", symbol: sym, neighbors: [], error: "" });
-        // Fetch neighbors once detail loads
+        setState({ mode: "detail", symbol: sym, error: "" });
         loadNeighbors(sym.id);
       } catch (e: unknown) {
         if (cancelled) return;
-        setState({
-          mode: "error",
-          symbol: null,
-          neighbors: [],
-          error: e instanceof Error ? e.message : "Failed to load symbol",
-        });
+        setState({ mode: "error", symbol: null, error: e instanceof Error ? e.message : "Failed to load symbol" });
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [decoded]);
 
   async function loadNeighbors(id: string) {
     setNeighborsLoading(true);
-    try {
-      const resp = await api.symbols.neighbors(id, 1);
-      setState((s) => ({ ...s, neighbors: resp.neighbors }));
-    } catch {
-      // silently fail
-    } finally {
-      setNeighborsLoading(false);
-    }
+    try { const resp = await api.symbols.neighbors(id, 1); setNeighbors(resp.neighbors); }
+    catch { /* silent */ }
+    finally { setNeighborsLoading(false); }
   }
-
   async function loadCallers(id: string) {
     setCallersLoading(true);
-    try {
-      const resp = await api.symbols.callers(id);
-      setCallers(resp.callers ?? []);
-    } catch {
-      setCallers([]);
-    } finally {
-      setCallersLoading(false);
-    }
+    try { const resp = await api.symbols.callers(id); setCallers(resp.callers ?? []); }
+    catch { setCallers([]); }
+    finally { setCallersLoading(false); }
   }
-
   async function loadCallees(id: string) {
     setCalleesLoading(true);
-    try {
-      const resp = await api.symbols.callees(id);
-      setCallees(resp.callees ?? []);
-    } catch {
-      setCallees([]);
-    } finally {
-      setCalleesLoading(false);
-    }
+    try { const resp = await api.symbols.callees(id); setCallees(resp.callees ?? []); }
+    catch { setCallees([]); }
+    finally { setCalleesLoading(false); }
   }
 
   function handleTabChange(tab: Tab) {
     setActiveTab(tab);
-    if (tab === "callers" && callers.length === 0 && !callersLoading && state.symbol) {
-      loadCallers(state.symbol.id);
-    }
-    if (tab === "callees" && callees.length === 0 && !calleesLoading && state.symbol) {
-      loadCallees(state.symbol.id);
-    }
-    if (tab === "neighbors" && state.neighbors.length === 0 && !neighborsLoading && state.symbol) {
-      loadNeighbors(state.symbol.id);
-    }
+    if (tab === "callers" && callers.length === 0 && !callersLoading && state.symbol) loadCallers(state.symbol.id);
+    if (tab === "callees" && callees.length === 0 && !calleesLoading && state.symbol) loadCallees(state.symbol.id);
+    if (tab === "neighbors" && neighbors.length === 0 && !neighborsLoading && state.symbol) loadNeighbors(state.symbol.id);
   }
 
-  const renderContent = () => {
-    switch (state.mode) {
-      case "loading":
-        return <LoadingSkeleton />;
-      case "error":
-        return <ErrorState message={state.error} symbolId={decoded} />;
-      case "detail":
-        return (
-          <DetailContent
-            symbol={state.symbol!}
-            neighbors={state.neighbors}
-            neighborsLoading={neighborsLoading}
-            callers={callers}
-            callersLoading={callersLoading}
-            callees={callees}
-            calleesLoading={calleesLoading}
-            activeTab={activeTab}
-            onTabChange={handleTabChange}
-          />
-        );
-    }
-  };
-
   return (
-    <div className="space-y-4">
-      <div>
-        <Link
-          to="/search"
-          className="text-sm text-blue-600 hover:text-blue-800"
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="flex items-center" style={{ gap: 8 }}>
+        <button
+          onClick={() => navigate(-1)}
+          style={{
+            background: "transparent", border: "none", color: "var(--cg-text-secondary)",
+            cursor: "pointer", display: "flex", alignItems: "center", padding: 0, fontFamily: "inherit",
+            fontSize: 11,
+          }}
         >
-          &larr; Back to Search
-        </Link>
-        <h1 className="text-2xl font-bold text-gray-900 mt-1">Symbol Detail</h1>
+          <IconArrow size={10} style={{ transform: "rotate(180deg)" }} />
+          <span style={{ marginLeft: 4 }}>Back</span>
+        </button>
       </div>
-      {renderContent()}
+
+      {state.mode === "loading" && <LoadingSkeleton />}
+      {state.mode === "error" && <ErrorState message={state.error} symbolId={decoded} />}
+      {state.mode === "detail" && (
+        <DetailContent
+          symbol={state.symbol!}
+          neighbors={neighbors} neighborsLoading={neighborsLoading}
+          callers={callers} callersLoading={callersLoading}
+          callees={callees} calleesLoading={calleesLoading}
+          activeTab={activeTab} onTabChange={handleTabChange}
+          onNavigate={navigate}
+        />
+      )}
     </div>
   );
 }
 
-/* ── Sub-components ───────────────────────────────────────────── */
-
 function LoadingSkeleton() {
   return (
-    <div className="animate-pulse space-y-4">
-      <div className="h-8 bg-gray-200 rounded w-1/3" />
-      <div className="h-4 bg-gray-200 rounded w-1/2" />
-      <div className="h-32 bg-gray-200 rounded" />
-      <div className="h-64 bg-gray-200 rounded" />
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+        <SkeletonLine width={48} height={16} radius={2} />
+        <SkeletonLine width={160} height={14} radius={2} />
+      </div>
+      <SkeletonLine width={200} height={10} radius={2} />
+      <SkeletonBlock height={60} />
+      <SkeletonBlock height={120} />
     </div>
   );
 }
@@ -160,157 +138,76 @@ function LoadingSkeleton() {
 function ErrorState({ message, symbolId }: { message: string; symbolId: string }) {
   const is404 = message.includes("not found") || message.includes("404");
   return (
-    <div className="p-6 bg-red-50 border border-red-200 rounded-lg">
-      <h2 className="font-semibold text-red-700 mb-1">
+    <div style={{
+      padding: "10px 12px",
+      background: "var(--cg-error-alpha)",
+      border: "1px solid color-mix(in srgb, var(--cg-error) 30%, transparent)",
+      borderRadius: 6,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 500, color: "var(--cg-error)", marginBottom: 4 }}>
         {is404 ? "Symbol Not Found" : "Error Loading Symbol"}
-      </h2>
+      </div>
       {is404 ? (
-        <p className="text-sm text-red-600">
-          No symbol with ID <code className="bg-red-100 px-1 rounded">{symbolId}</code> was found in the graph.
-          Make sure the symbol exists and the repo has been indexed.
+        <p style={{ fontSize: 11, color: "var(--cg-text-secondary)", margin: 0 }}>
+          No symbol with ID <span className="cg-mono" style={{ background: "var(--cg-bg-subtle)", padding: "1px 4px", borderRadius: 2 }}>{symbolId}</span> was found.
         </p>
       ) : (
-        <p className="text-sm text-red-600">{message}</p>
+        <p style={{ fontSize: 11, color: "var(--cg-text-secondary)", margin: 0 }}>{message}</p>
       )}
     </div>
   );
 }
 
-/* ── Detail content ───────────────────────────────────────────── */
-
-const TYPE_COLORS: Record<string, string> = {
-  function: "bg-emerald-100 text-emerald-700",
-  method: "bg-blue-100 text-blue-700",
-  class: "bg-violet-100 text-violet-700",
-  module: "bg-gray-100 text-gray-700",
-  variable: "bg-amber-100 text-amber-700",
-};
-
-function TypeBadge({ type }: { type: string }) {
-  const colors = TYPE_COLORS[type] || "bg-gray-100 text-gray-600";
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${colors}`}>
-      {type}
-    </span>
-  );
-}
-
 function DetailContent({
-  symbol,
-  neighbors,
-  neighborsLoading,
-  callers,
-  callersLoading,
-  callees,
-  calleesLoading,
-  activeTab,
-  onTabChange,
+  symbol, neighbors, neighborsLoading, callers, callersLoading, callees, calleesLoading,
+  activeTab, onTabChange, onNavigate,
 }: {
   symbol: SymbolDetailType;
-  neighbors: NeighborItem[];
-  neighborsLoading: boolean;
-  callers: CallerCalleeItem[];
-  callersLoading: boolean;
-  callees: CallerCalleeItem[];
-  calleesLoading: boolean;
-  activeTab: Tab;
-  onTabChange: (t: Tab) => void;
+  neighbors: NeighborItem[]; neighborsLoading: boolean;
+  callers: CallerCalleeItem[]; callersLoading: boolean;
+  callees: CallerCalleeItem[]; calleesLoading: boolean;
+  activeTab: Tab; onTabChange: (t: Tab) => void;
+  onNavigate: (to: string) => void;
 }) {
-  function renderTabContent() {
-    const isLoading =
-      (activeTab === "neighbors" && neighborsLoading) ||
-      (activeTab === "callers" && callersLoading) ||
-      (activeTab === "callees" && calleesLoading);
-
-    if (isLoading) {
-      return <div className="text-sm text-gray-400">Loading...</div>;
-    }
-
-    type TabItem = NeighborItem | CallerCalleeItem;
-    const items: TabItem[] = activeTab === "neighbors" ? neighbors : activeTab === "callers" ? callers : callees;
-    if (items.length === 0) {
-      return <p className="text-sm text-gray-400">No {activeTab} found for this symbol.</p>;
-    }
-
-    return (
-      <div className="space-y-2">
-        {items.map((item) => {
-          const edgeType = 'edge_type' in item ? item.edge_type : '';
-          const confidence = 'confidence' in item ? item.confidence : undefined;
-          return (
-            <a
-              key={`${item.node_id}-${edgeType}`}
-              href={`/symbol/${encodeURIComponent(item.node_id)}`}
-              className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 transition-colors text-sm"
-            >
-              <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-                {edgeType}
-              </span>
-              <span className="font-mono font-medium text-gray-800">
-                {item.name}
-              </span>
-              {confidence !== undefined && confidence !== "unknown" && (
-                <span className="text-[10px] text-gray-400 ml-auto">
-                  conf={confidence}
-                </span>
-              )}
-            </a>
-          );
-        })}
-      </div>
-    );
-  }
+  const kindColor = KIND_COLORS[symbol.type] || "var(--cg-text-secondary)";
+  const kindBg = KIND_BG[symbol.type] || "color-mix(in srgb, var(--cg-text-secondary) 14%, transparent)";
 
   return (
-    <div className="space-y-4">
+    <>
       {/* Header card */}
-      <div className="bg-white border rounded-xl p-5 space-y-3">
-        <div className="flex items-center gap-3">
-          <TypeBadge type={symbol.type} />
-          <h2 className="text-xl font-bold font-mono text-gray-900">
+      <div style={{
+        padding: 16,
+        background: "var(--cg-bg-panel)",
+        border: "1px solid var(--cg-border)",
+        borderRadius: 6,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span className="cg-mono" style={{ fontSize: 10, color: kindColor, background: kindBg, padding: "1px 6px", borderRadius: 2, letterSpacing: 0.5 }}>
+            {symbol.type.toUpperCase()}
+          </span>
+          <h2 className="cg-mono" style={{ fontSize: 14, fontWeight: 500, color: "var(--cg-text-primary)", margin: 0 }}>
             {symbol.name}
           </h2>
         </div>
         {symbol.qualified_name && (
-          <p className="text-sm text-gray-500 font-mono">
+          <p className="cg-mono" style={{ fontSize: 11, color: "var(--cg-text-secondary)", margin: 0 }}>
             {symbol.qualified_name}
           </p>
         )}
-        <div className="text-sm text-gray-600 space-y-1">
-          <div>
-            <span className="font-medium text-gray-700">File:</span>{" "}
-            <code className="text-xs">{symbol.file_path}</code>
-          </div>
-          {symbol.module && (
-            <div>
-              <span className="font-medium text-gray-700">Module:</span>{" "}
-              <code className="text-xs">{symbol.module}</code>
-            </div>
-          )}
-          {symbol.position && (
-            <div>
-              <span className="font-medium text-gray-700">Lines:</span>{" "}
-              {symbol.position.line_start}–{symbol.position.line_end}
-            </div>
-          )}
-          {symbol.visibility && (
-            <div>
-              <span className="font-medium text-gray-700">Visibility:</span>{" "}
-              {symbol.visibility}
-            </div>
-          )}
-          <div>
-            <span className="font-medium text-gray-700">ID:</span>{" "}
-            <code className="text-[10px] bg-gray-50 px-1 rounded">{symbol.id}</code>
-          </div>
+        <div style={{ fontSize: 11, color: "var(--cg-text-secondary)", display: "flex", flexDirection: "column", gap: 4 }}>
+          <div><span style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>File:</span> <span className="cg-mono" style={{ fontSize: 10 }}>{symbol.file_path}</span></div>
+          {symbol.module && <div><span style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>Module:</span> <span className="cg-mono" style={{ fontSize: 10 }}>{symbol.module}</span></div>}
+          {symbol.position && <div><span style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>Lines:</span> {symbol.position.line_start}–{symbol.position.line_end}</div>}
+          {symbol.visibility && <div><span style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>Visibility:</span> {symbol.visibility}</div>}
+          <div><span style={{ fontWeight: 500, color: "var(--cg-text-primary)" }}>ID:</span> <span className="cg-mono" style={{ fontSize: 9, color: "var(--cg-text-muted)" }}>{symbol.id}</span></div>
         </div>
         {symbol.tags.length > 0 && (
-          <div className="flex gap-1.5 flex-wrap">
+          <div className="flex items-center" style={{ gap: 4, flexWrap: "wrap" }}>
             {symbol.tags.map((tag) => (
-              <span
-                key={tag}
-                className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs"
-              >
+              <span key={tag} className="cg-mono" style={{ fontSize: 9, padding: "1px 5px", background: "var(--cg-bg-subtle)", color: "var(--cg-text-muted)", borderRadius: 2 }}>
                 {tag}
               </span>
             ))}
@@ -320,75 +217,159 @@ function DetailContent({
 
       {/* Signature */}
       {symbol.signature && (
-        <div className="bg-white border rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Signature</h3>
-          <pre className="text-sm bg-gray-50 p-3 rounded-lg overflow-x-auto font-mono">
-            {symbol.signature}
-          </pre>
+        <div style={{ padding: 14, background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)", borderRadius: 6 }}>
+          <InspectorSection title="Signature" first>
+            <CodeBlock lines={symbol.signature.split("\n")} />
+          </InspectorSection>
         </div>
       )}
 
       {/* Docstring */}
       {symbol.docstring && (
-        <div className="bg-white border rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Docstring</h3>
-          <pre className="text-sm text-gray-600 whitespace-pre-wrap font-sans">
-            {symbol.docstring}
-          </pre>
+        <div style={{ padding: 14, background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)", borderRadius: 6 }}>
+          <InspectorSection title="Docstring" first>
+            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "var(--cg-text-secondary)", whiteSpace: "pre-wrap" }}>
+              {symbol.docstring}
+            </p>
+          </InspectorSection>
         </div>
       )}
 
       {/* Code preview */}
       {symbol.code_preview && (
-        <div className="bg-white border rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Code Preview</h3>
-          <pre className="text-sm bg-gray-50 p-3 rounded-lg overflow-x-auto font-mono">
-            {symbol.code_preview}
-          </pre>
+        <div style={{ padding: 14, background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)", borderRadius: 6 }}>
+          <InspectorSection title="Code Preview" first>
+            <CodeBlock lines={symbol.code_preview.split("\n")} />
+          </InspectorSection>
         </div>
       )}
 
       {/* Action links */}
-      <div className="flex gap-3">
-        <Link
-          to={`/graph?symbol=${encodeURIComponent(symbol.id)}`}
-          className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-blue-50 hover:text-blue-700 transition-colors"
-        >
+      <div className="flex items-center" style={{ gap: 8 }}>
+        <ActionBtn onClick={() => onNavigate(`/graph?symbol=${encodeURIComponent(symbol.id)}`)}>
           View in Graph
-        </Link>
-        <Link
-          to={`/impact?symbol=${encodeURIComponent(symbol.id)}`}
-          className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-blue-50 hover:text-blue-700 transition-colors"
-        >
+        </ActionBtn>
+        <ActionBtn onClick={() => onNavigate(`/impact?symbol=${encodeURIComponent(symbol.id)}`)}>
           Analyze Impact
-        </Link>
+        </ActionBtn>
       </div>
 
-      {/* Neighbors / Callers / Callees tabs */}
-      <div className="bg-white border rounded-xl">
-        <div className="flex border-b">
-          {(["neighbors", "callers", "callees"] as Tab[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => onTabChange(tab)}
-              className={`px-4 py-2.5 text-sm font-medium capitalize transition-colors ${
-                activeTab === tab
-                  ? "text-blue-600 border-b-2 border-blue-600"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              {tab}
-              <span className="ml-1.5 text-xs text-gray-400">
-                ({tab === "neighbors" ? neighbors.length : tab === "callers" ? callers.length : callees.length})
-              </span>
-            </button>
-          ))}
+      {/* Tabs: neighbors / callers / callees */}
+      <div style={{
+        background: "var(--cg-bg-panel)",
+        border: "1px solid var(--cg-border)",
+        borderRadius: 6,
+        overflow: "hidden",
+      }}>
+        <div className="flex items-center" style={{ borderBottom: "1px solid var(--cg-border)", height: 30 }}>
+          {(["neighbors", "callers", "callees"] as Tab[]).map((tab) => {
+            const count = tab === "neighbors" ? neighbors.length : tab === "callers" ? callers.length : callees.length;
+            const isActive = activeTab === tab;
+            return (
+              <button
+                key={tab}
+                onClick={() => onTabChange(tab)}
+                style={{
+                  height: "100%", padding: "0 12px",
+                  border: "none", borderBottom: isActive ? "2px solid var(--cg-accent)" : "2px solid transparent",
+                  background: "transparent",
+                  color: isActive ? "var(--cg-text-primary)" : "var(--cg-text-secondary)",
+                  fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                  transition: "color 120ms ease",
+                }}
+              >
+                {tab} <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>({count})</span>
+              </button>
+            );
+          })}
         </div>
-        <div className="p-4">
-          {renderTabContent()}
+        <div style={{ padding: 12 }}>
+          <TabContent
+            tab={activeTab}
+            neighbors={neighbors} neighborsLoading={neighborsLoading}
+            callers={callers} callersLoading={callersLoading}
+            callees={callees} calleesLoading={calleesLoading}
+            onSelect={(id) => onNavigate(`/symbol/${encodeURIComponent(id)}`)}
+          />
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
+function ActionBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        height: 26, padding: "0 10px",
+        background: "transparent", border: "1px solid var(--cg-border)",
+        borderRadius: 4, color: "var(--cg-text-primary)", fontSize: 11,
+        cursor: "pointer", fontFamily: "inherit",
+        transition: "background 120ms ease, border-color 120ms ease",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cg-bg-subtle)"; e.currentTarget.style.borderColor = "var(--cg-border-hover)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "var(--cg-border)"; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function TabContent({
+  tab, neighbors, neighborsLoading, callers, callersLoading, callees, calleesLoading, onSelect,
+}: {
+  tab: Tab;
+  neighbors: NeighborItem[]; neighborsLoading: boolean;
+  callers: CallerCalleeItem[]; callersLoading: boolean;
+  callees: CallerCalleeItem[]; calleesLoading: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const isLoading =
+    (tab === "neighbors" && neighborsLoading) ||
+    (tab === "callers" && callersLoading) ||
+    (tab === "callees" && calleesLoading);
+
+  if (isLoading) return <div style={{ fontSize: 11, color: "var(--cg-text-muted)" }}>Loading...</div>;
+
+  const items: (NeighborItem | CallerCalleeItem)[] =
+    tab === "neighbors" ? neighbors : tab === "callers" ? callers : callees;
+
+  if (items.length === 0) return <p style={{ fontSize: 11, color: "var(--cg-text-muted)", margin: 0 }}>No {tab} found.</p>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {items.map((item) => {
+        const edgeType = "edge_type" in item ? item.edge_type : "";
+        const confidence = "confidence" in item ? item.confidence : undefined;
+        return (
+          <div
+            key={`${item.node_id}-${edgeType}`}
+            onClick={() => onSelect(item.node_id)}
+            style={{
+              padding: "6px 8px", borderRadius: 4, cursor: "pointer",
+              fontSize: 11, transition: "background 120ms ease",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cg-bg-subtle)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <div className="flex items-center" style={{ gap: 6 }}>
+              <span style={{ fontSize: 9, padding: "1px 4px", background: "var(--cg-bg-subtle)", color: "var(--cg-text-muted)", borderRadius: 2 }}>
+                {edgeType || "rel"}
+              </span>
+              <span className="cg-mono" style={{ color: "var(--cg-text-primary)", fontWeight: 500 }}>
+                {item.name}
+              </span>
+              <span style={{ flex: 1 }} />
+              {confidence !== undefined && confidence !== "unknown" && (
+                <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>
+                  conf={confidence}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
