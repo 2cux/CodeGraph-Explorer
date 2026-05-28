@@ -1,19 +1,5 @@
 // ── Response types ─────────────────────────────────────────────────────
 
-export interface RepoSummary {
-  name: string;
-  root_path: string;
-  file_count: number;
-  symbol_count: number;
-  function_count: number;
-  class_count: number;
-  edge_count: number;
-  indexed_at: string | null;
-  commit_hash: string | null;
-  failed_files: number;
-  low_confidence_ratio: number;
-}
-
 export interface CallerCalleeItem {
   node_id: string;
   name: string;
@@ -261,7 +247,6 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   repo: {
-    summary: () => fetchJSON<RepoSummary>(`${BASE}/repo/summary`),
     index: () => fetchJSON<{ status: string; message: string }>(`${BASE}/repo/index`, {}),
   },
 
