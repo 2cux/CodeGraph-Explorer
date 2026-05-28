@@ -116,16 +116,17 @@ def get_subgraph(
 
     Returns ``{"center_node_id", "depth", "nodes", "edges"}``.
     """
-    visited: set[str] = set()
+    visited_nodes: set[str] = set()
+    visited_edges: set[tuple[str, str, str]] = set()
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
 
     def walk(current_id: str, current_depth: int) -> None:
-        if current_depth > depth or current_id in visited:
+        if current_depth > depth or current_id in visited_nodes:
             return
         if len(nodes) >= max_nodes:
             return
-        visited.add(current_id)
+        visited_nodes.add(current_id)
 
         current_node = store.get_node(current_id)
         if current_node:
@@ -135,7 +136,10 @@ def get_subgraph(
         for neighbor, edge in neighbors:
             if len(nodes) >= max_nodes:
                 break
-            edges.append(edge)
+            edge_key = (edge.source, edge.target, edge.type.value if hasattr(edge.type, 'value') else str(edge.type))
+            if edge_key not in visited_edges:
+                visited_edges.add(edge_key)
+                edges.append(edge)
             walk(neighbor.id, current_depth + 1)
 
     walk(center_node_id, 0)

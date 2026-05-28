@@ -29,6 +29,18 @@ def build_index(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
     return build_index_from_paths(root, files)
 
 
+def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
+    """Remove duplicate edges sharing the same (source, target, type)."""
+    seen: set[tuple[str, str, str]] = set()
+    result: list[GraphEdge] = []
+    for e in edges:
+        key = (e.source, e.target, e.type.value if hasattr(e.type, 'value') else str(e.type))
+        if key not in seen:
+            seen.add(key)
+            result.append(e)
+    return result
+
+
 def build_index_from_paths(root: Path, paths: list[Path]) -> tuple[list[GraphNode], list[GraphEdge]]:
     """Build index from a pre-discovered list of file paths."""
     all_nodes: list[GraphNode] = []
@@ -48,6 +60,7 @@ def build_index_from_paths(root: Path, paths: list[Path]) -> tuple[list[GraphNod
         struct_edges = _build_structural_edges(nodes, rel, edge_counter)
         all_edges.extend(struct_edges)
 
+    all_edges = _deduplicate_edges(all_edges)
     return all_nodes, all_edges
 
 
