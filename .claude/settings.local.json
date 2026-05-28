@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "D:/project/CodeGraph-Explorer/.venv/Scripts/python.exe",
+      "args": ["-m", "codegraph.mcp_server"],
+      "env": {
+        "CODEGRAPH_PROJECT_ROOT": "D:/project/CodeGraph-Explorer/examples/demo_python_project"
+      }
+    }
+  }
+}

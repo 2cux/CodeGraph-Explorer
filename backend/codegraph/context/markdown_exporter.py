@@ -53,6 +53,22 @@ def export_to_markdown(pack: ContextPack) -> str:
         _w("_No entry points found._")
         _w("")
 
+    # ── Related Tests ─────────────────────────────────────────────────────
+    if pack.related_tests:
+        _w("## Related Tests")
+        _w("")
+        for rt in pack.related_tests:
+            if rt.type == "existing":
+                _w(f"- `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
+            else:
+                _w(f"- [suggested] `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
+        _w("")
+    else:
+        _w("## Related Tests")
+        _w("")
+        _w("None found.")
+        _w("")
+
     # ── Recommendations / Reading Order ────────────────────────────────────
     if pack.reading_plan:
         _w("## Recommended Reading Order")

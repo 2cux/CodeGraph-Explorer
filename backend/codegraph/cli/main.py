@@ -577,5 +577,40 @@ def dashboard(
         server_process.wait()
 
 
+# ── mcp command ──────────────────────────────────────────────────────────
+
+
+@app.command()
+def mcp(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted, "
+             "or set CODEGRAPH_PROJECT_ROOT env var)",
+    ),
+) -> None:
+    """Start the MCP server for AI agent integration.
+
+    Runs a Model Context Protocol server over stdio, exposing tools
+    for AI coding agents (Claude Code, Cursor) to query the code graph.
+
+    Requires the 'mcp' extra: pip install codegraph[mcp]
+
+    Configure in Claude Code:
+      .claude/settings.local.json:
+        {"mcpServers": {"codegraph": {
+          "command": "python",
+          "args": ["-m", "codegraph.mcp_server"],
+          "env": {"CODEGRAPH_PROJECT_ROOT": "/path/to/project"}
+        }}}
+    """
+    from codegraph.mcp_server import main as mcp_main
+
+    # Forward --project-root via env var so argparse doesn't conflict
+    if root:
+        os.environ["CODEGRAPH_PROJECT_ROOT"] = root
+
+    mcp_main()
+
+
 if __name__ == "__main__":
     app()

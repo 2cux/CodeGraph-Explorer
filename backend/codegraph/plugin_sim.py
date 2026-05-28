@@ -3,7 +3,11 @@
 Simulates how an AI coding agent plugin (e.g. Cursor, Claude Code, Copilot)
 would invoke ``/codegraph`` commands programmatically.
 
-Usage::
+For real MCP integration (Claude Code / Cursor), use the MCP server::
+
+    python -m codegraph.mcp_server --project-root /path/to/project
+
+Usage (programmatic)::
 
     from codegraph.plugin_sim import CodeGraphPlugin
 

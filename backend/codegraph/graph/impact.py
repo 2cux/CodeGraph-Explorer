@@ -104,126 +104,70 @@ def _assess_risk(
     has_tests: bool,
     low_conf_count: int,
 ) -> tuple[str, list[str]]:
-    """Comprehensive risk assessment — PRD §19.3.
+    """Rule-based risk assessment.
 
-    Factors considered:
-      1. Number of callers (breadth of upstream impact)
-      2. Number of callees (depth of downstream dependency)
-      3. Sensitive path (auth / payment / permission / delete …)
-      4. Public API exposure
-      5. Test coverage (or lack thereof)
-      6. Cross-module reach
-      7. Low-confidence edges (analysis uncertainty)
-      8. Import count (how many places import this symbol)
-      9. Call-chain depth (how far effects propagate)
+    Criteria per priority order:
+
+    **low:**    Isolated utility / local function with no callers or callees.
+    **medium:** Normal business function with limited callers.
+    **high:**   Security-sensitive path (auth, payment, permission, data
+                persistence), public API surface, or very broad callers (>5).
+    **critical:** High-risk criteria PLUS no tests AND multiple callers,
+                  or security-sensitive state mutation.
     """
     reasons: list[str] = []
-    score = 0.0
 
-    caller_count = len(callers)
-    callee_count = len(callees)
-
-    # Factor 1: Caller count
-    if caller_count >= 10:
-        score += 3.0
-        reasons.append(f"Widespread impact — {caller_count} upstream callers.")
-    elif caller_count >= 5:
-        score += 2.0
-        reasons.append(f"Significant impact — {caller_count} upstream callers.")
-    elif caller_count >= 2:
-        score += 1.0
-        reasons.append(f"Affects {caller_count} upstream callers.")
-    elif caller_count > 0:
-        score += 0.5
-        reasons.append(f"Affects {caller_count} upstream caller(s).")
-
-    # Factor 2: Callee count
-    if callee_count >= 10:
-        score += 2.0
-        reasons.append(f"Deep dependency chain — {callee_count} downstream callees.")
-    elif callee_count >= 5:
-        score += 1.5
-        reasons.append(f"Moderate dependency chain — {callee_count} downstream callees.")
-    elif callee_count >= 2:
-        score += 1.0
-        reasons.append(f"Depends on {callee_count} downstream callees.")
-    elif callee_count > 0:
-        score += 0.5
-
-    # Factor 3: Sensitive path
+    # Only count callable nodes (function, method, class, test) — skip
+    # module/file/repository nodes that inflate the count.
+    _callable_types = {NodeType.function, NodeType.method, NodeType.class_, NodeType.test}
+    caller_count = sum(1 for cid, _ in callers
+                       if (n := store.get_node(cid)) and n.type in _callable_types)
+    callee_count = sum(1 for cid, _ in callees
+                       if (n := store.get_node(cid)) and n.type in _callable_types)
     file_path = center_node.file_path if center_node else ""
-    if _is_sensitive_path(file_path):
-        score += 2.0
-        reasons.append("Sensitive code path — changes may affect security-related logic.")
-    if _is_public_api(file_path):
-        score += 1.5
-        reasons.append("Public API surface — changes affect external interfaces.")
+    is_sensitive = _is_sensitive_path(file_path)
+    is_api = _is_public_api(file_path)
 
-    # Factor 4: Test coverage (no tests = higher risk)
-    if has_tests:
-        reasons.append("Related tests found — update them alongside changes.")
-        score -= 0.5
-    else:
-        score += 1.0
+    # Build evidence
+    if is_sensitive:
+        reasons.append("Security-sensitive path — involves auth, credentials, or security logic.")
+    if is_api:
+        reasons.append("Public API route — changes affect external interfaces.")
+    if caller_count > 0:
+        reasons.append(f"{caller_count} upstream caller(s) may be affected.")
+    if not has_tests:
         reasons.append("No related tests detected — changes may lack regression coverage.")
+    if low_conf_count > 0:
+        reasons.append(f"{low_conf_count} edge(s) have low confidence — relationships may be incomplete.")
 
-    # Factor 5: Cross-module impact
-    if caller_count > 0 or callee_count > 0:
-        all_related = [cid for cid, _ in callers] + [cid for cid, _ in callees]
-        cross_module = sum(1 for cid in all_related if not _is_same_module(node_id, cid))
-        if cross_module >= 3:
-            score += 1.5
-            reasons.append(f"Cross-module impact — affects {cross_module} symbols in different modules.")
-        elif cross_module >= 1:
-            score += 0.5
-
-    # Factor 6: Low-confidence edges
-    if low_conf_count >= 3:
-        score += 1.5
-        reasons.append(
-            f"Analysis uncertainty — {low_conf_count} low-confidence "
-            f"edges may hide additional impact."
-        )
-    elif low_conf_count >= 1:
-        score += 0.5
-        reasons.append(
-            f"{low_conf_count} low-confidence edge(s) detected — "
-            f"some relationships may be incomplete."
-        )
-
-    # Factor 7: Import count
-    incoming_imports = 0
-    for edge in store.get_incoming_edges(node_id):
-        if edge.type == EdgeType.imports:
-            incoming_imports += 1
-    if incoming_imports >= 3:
-        score += 1.0
-        reasons.append(f"Imported by {incoming_imports} locations — widely referenced.")
-    elif incoming_imports >= 1:
-        score += 0.3
-
-    # Factor 8: Depth / reach
-    if max_distance >= 4:
-        score += 1.0
-        reasons.append(
-            f"Deep call chain (depth {max_distance}) — "
-            f"transitive effects may reach far."
-        )
-    elif max_distance >= 3:
-        score += 0.5
-
-    if caller_count == 0 and callee_count == 0 and not file_path:
-        return "low", ["No callers or callees detected — isolated symbol."]
-
-    # Determine level from score
-    if score >= 5.0:
+    # Rule-based level (first match wins)
+    # ── critical ──────────────────────────────────────────────────────
+    if is_sensitive and not has_tests and caller_count >= 3:
+        reasons.append("SECURITY-SENSITIVE, UNTESTED, MULTIPLE CALLERS — high regression risk.")
         return "critical", reasons
-    elif score >= 3.0:
+
+    if is_sensitive and not has_tests and is_api:
+        reasons.append("Sensitive public API without test coverage.")
         return "high", reasons
-    elif score >= 1.5:
+
+    # ── high ─────────────────────────────────────────────────────────
+    if is_sensitive:
+        return "high", reasons
+    if is_api:
+        return "high", reasons
+    if caller_count >= 5:
+        reasons.append(f"Broad upstream impact — {caller_count} callers.")
+        return "high", reasons
+
+    # ── medium ───────────────────────────────────────────────────────
+    if caller_count > 0 or callee_count > 0:
         return "medium", reasons
-    else:
-        return "low", reasons
+
+    # ── low ──────────────────────────────────────────────────────────
+    if caller_count == 0 and callee_count == 0:
+        return "low", ["Isolated symbol — no callers or callees detected."]
+
+    return "low", reasons
 
 
 def _build_recommendations(

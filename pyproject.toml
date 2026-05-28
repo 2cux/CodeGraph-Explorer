@@ -15,6 +15,13 @@ dependencies = [
     "networkx>=3.2.0",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.0.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
 [project.scripts]
 codegraph = "codegraph.cli.main:app"
 
@@ -23,12 +30,6 @@ where = ["backend"]
 
 [tool.setuptools.package-data]
 codegraph = ["py.typed"]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

@@ -195,6 +195,21 @@ class RecommendedContext(BaseModel):
 # ── Reading Plan ─────────────────────────────────────────────────────
 
 
+class RelatedTest(BaseModel):
+    """A test file related to the task — existing or suggested.
+
+    ``type`` is ``"existing"`` when a test was found in the index,
+    or ``"suggested"`` when no matching tests exist and the system
+    recommends creating one based on naming conventions.
+    """
+
+    type: str = "existing"
+    test_file: str
+    test_name: str = ""
+    reason: str = ""
+    confidence: float = 0.0
+
+
 class ReadingStep(BaseModel):
     """A single step in the reading plan — PRD §13.8."""
 
@@ -240,6 +255,7 @@ class ContextPack(BaseModel):
     call_graph: CallGraph = Field(default_factory=CallGraph)
     impact: Impact = Field(default_factory=Impact)
     recommended_context: list[RecommendedContext] = Field(default_factory=list)
+    related_tests: list[RelatedTest] = Field(default_factory=list)
     reading_plan: list[ReadingStep] = Field(default_factory=list)
     agent_instructions: AgentInstructions = Field(default_factory=AgentInstructions)
     exports: ExportsInfo = Field(default_factory=ExportsInfo)

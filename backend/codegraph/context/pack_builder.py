@@ -27,6 +27,7 @@ from codegraph.context.models import (
     Importance,
     RecommendedContext,
     RelatedSymbol,
+    RelatedTest,
     Risk,
     Task,
     TaskConstraints,
@@ -259,6 +260,88 @@ def _build_agent_instructions(
     )
 
 
+# ── Related tests ─────────────────────────────────────────────────────────────
+
+
+def _discover_related_tests(
+    store: GraphStore,
+    entry_points: list[EntryPoint],
+    related_ids: set[str],
+) -> tuple[list[RelatedTest], list[str]]:
+    """Discover existing tests and generate suggestions.
+
+    Phase 1: Find tests in the index matching by name or call-graph relation.
+    Phase 2: When no tests exist, suggest test files based on naming
+    conventions (``tests/test_<module>.py``, ``test_<symbol>_*``, …).
+
+    Returns ``(related_tests, test_ids)``.
+    """
+    related_tests: list[RelatedTest] = []
+    test_ids: list[str] = []
+    ep_names_lower = {ep.name.lower() for ep in entry_points}
+
+    # Phase 1: Existing tests in the index
+    for node in store.all_nodes():
+        if node.type != NodeType.test:
+            continue
+        # Match by name
+        if any(ep_name in node.name.lower() for ep_name in ep_names_lower):
+            if node.id not in related_ids:
+                related_ids.add(node.id)
+            related_tests.append(RelatedTest(
+                type="existing",
+                test_file=node.file_path or "",
+                test_name=node.name,
+                reason=f"Test name references task symbol: {node.name}",
+                confidence=0.7,
+            ))
+            test_ids.append(node.id)
+            continue
+        # Match by calling task-related symbols
+        for edge in store.get_outgoing_edges(node.id):
+            if edge.type == EdgeType.calls and edge.target in related_ids:
+                target_node = store.get_node(edge.target)
+                target_name = target_node.name if target_node else edge.target
+                if node.id not in related_ids:
+                    related_ids.add(node.id)
+                related_tests.append(RelatedTest(
+                    type="existing",
+                    test_file=node.file_path or "",
+                    test_name=node.name,
+                    reason=f"Test calls task-related symbol `{target_name}`",
+                    confidence=edge.confidence or 0.7,
+                ))
+                test_ids.append(node.id)
+                break
+
+    # Phase 2: Suggestions when no tests found
+    if not related_tests:
+        for ep in entry_points:
+            file_path = ep.file_path or ""
+            module_name = file_path.split("/")[-1].replace(".py", "") if file_path else ""
+            test_path = f"tests/test_{module_name}.py"
+
+            # tests/test_<module>.py
+            related_tests.append(RelatedTest(
+                type="suggested",
+                test_file=test_path,
+                test_name=f"test_{module_name}",
+                reason=f"Recommended: create test module for {file_path}",
+                confidence=0.5,
+            ))
+            # test_<entry_point_name>_*
+            for ep_name in ep_names_lower:
+                related_tests.append(RelatedTest(
+                    type="suggested",
+                    test_file=test_path,
+                    test_name=f"test_{ep_name}_",
+                    reason=f"Recommended: test for `{ep_name}` covering success, error, and edge cases",
+                    confidence=0.5,
+                ))
+
+    return related_tests, test_ids
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -444,44 +527,25 @@ def build_context_pack(
             related_ids.add(s.symbol_id)
 
     # ── Step 7: Discover related tests ────────────────────────────────────
+    related_tests: list[RelatedTest] = []
     test_ids: list[str] = []
     if include_tests:
-        ep_names_lower = {ep.name.lower() for ep in entry_points}
-        for node in store.all_nodes():
-            if node.type != NodeType.test:
-                continue
-            # Match test name against entry point names
-            if any(ep_name in node.name.lower() for ep_name in ep_names_lower):
-                if node.id not in related_ids:
-                    related_ids.add(node.id)
-                    related_symbols.append(RelatedSymbol(
-                        symbol_id=node.id,
-                        relation="test",
-                        distance=2,
-                        direction="incoming",
-                        reason=f"Related test — name references task symbol",
-                        importance=Importance.high,
-                        confidence=0.7,
-                    ))
-                    test_ids.append(node.id)
-                continue
+        related_tests, test_ids = _discover_related_tests(store, entry_points, related_ids)
 
-            # Match tests that call entry points or related symbols
-            for edge in store.get_outgoing_edges(node.id):
-                if edge.type == EdgeType.calls and edge.target in related_ids:
-                    if node.id not in related_ids:
-                        related_ids.add(node.id)
-                        related_symbols.append(RelatedSymbol(
-                            symbol_id=node.id,
-                            relation="test",
-                            distance=2,
-                            direction="outgoing",
-                            reason=f"Calls task-related symbol {edge.target}",
-                            importance=Importance.high,
-                            confidence=edge.confidence or 0.7,
-                        ))
-                        test_ids.append(node.id)
-                    break
+        # Sync existing tests into related_symbols for context selection
+        for rt in related_tests:
+            if rt.type != "existing":
+                continue
+            if rt.test_file not in {rs.symbol_id for rs in related_symbols}:
+                related_symbols.append(RelatedSymbol(
+                    symbol_id=rt.test_file,
+                    relation="test",
+                    distance=2,
+                    direction="incoming",
+                    reason=rt.reason,
+                    importance=Importance.high,
+                    confidence=rt.confidence,
+                ))
 
     # ── Step 8: Select recommended context (with token budget) ────────────
     recommended_context = _build_recommended_context(
@@ -547,6 +611,7 @@ def build_context_pack(
         call_graph=call_graph,
         impact=impact,
         recommended_context=recommended_context,
+        related_tests=related_tests,
         reading_plan=reading_plan,
         agent_instructions=agent_instructions,
         exports=ExportsInfo(),

@@ -7,6 +7,15 @@ PRD §14.2 step 8 — Reading plan generation in the pipeline.
 from codegraph.context.models import ReadingStep
 
 
+def _is_config_file(file_path: str) -> bool:
+    """Heuristic: config / settings / constants / schema modules."""
+    lower = file_path.lower()
+    keywords = ("config", "settings", "constants", "schema", "models", "types",
+                "defaults", "presets", "env", "vars")
+    stem = lower.split("/")[-1].replace(".py", "")
+    return any(kw in stem for kw in keywords)
+
+
 def build_reading_plan(
     entry_point_ids: list[str],
     callee_ids: list[str],
@@ -18,9 +27,10 @@ def build_reading_plan(
 
     The reading order follows the principle:
       1. Entry points first (the main symbols to understand)
-      2. Direct callees (downstream dependencies)
-      3. Direct callers (upstream dependents, if critical)
-      4. Related tests
+      2. Upstream callers (who invokes this code — understand the entry context)
+      3. Downstream callees (what this code depends on)
+      4. Related tests (verify behavior)
+      5. Config / model files (supporting definitions)
 
     Each step includes a ``reason`` explaining why this step matters.
     """
@@ -28,7 +38,7 @@ def build_reading_plan(
     step_num = 0
     seen: set[str] = set()
 
-    def _add(target: str, reason: str) -> None:
+    def _add(target: str, reason: str, action: str = "read_symbol") -> None:
         nonlocal step_num
         if target in seen or step_num >= max_steps:
             return
@@ -36,7 +46,7 @@ def build_reading_plan(
         step_num += 1
         steps.append(ReadingStep(
             step=step_num,
-            action="read_symbol",
+            action=action,
             target=target,
             reason=reason,
         ))
@@ -45,15 +55,15 @@ def build_reading_plan(
     for sym_id in entry_point_ids:
         _add(sym_id, "Start from entry point — this is the most relevant symbol for the task.")
 
-    # ── Next: Direct callees (downstream dependencies) ─────────────────────
+    # ── Next: Upstream callers (who invokes this code) ─────────────────────
+    for sym_id in caller_ids:
+        _add(sym_id, "Review upstream caller — understand who invokes this code and why.")
+
+    # ── Next: Downstream callees (dependencies) ────────────────────────────
     for sym_id in callee_ids:
         _add(sym_id, "Follow downstream call — understand what this entry point depends on.")
 
-    # ── Next: Direct callers (upstream) ────────────────────────────────────
-    for sym_id in caller_ids:
-        _add(sym_id, "Review upstream caller — understand who invokes this code.")
-
-    # ── Last: Related tests ────────────────────────────────────────────────
+    # ── Next: Related tests ────────────────────────────────────────────────
     for test_id in test_ids:
         _add(test_id, "Check related tests — verify behavior and catch regressions.")
 
