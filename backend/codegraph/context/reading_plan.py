@@ -26,53 +26,35 @@ def build_reading_plan(
     """
     steps: list[ReadingStep] = []
     step_num = 0
+    seen: set[str] = set()
+
+    def _add(target: str, reason: str) -> None:
+        nonlocal step_num
+        if target in seen or step_num >= max_steps:
+            return
+        seen.add(target)
+        step_num += 1
+        steps.append(ReadingStep(
+            step=step_num,
+            action="read_symbol",
+            target=target,
+            reason=reason,
+        ))
 
     # ── Step 1-N: Entry points ────────────────────────────────────────────
     for sym_id in entry_point_ids:
-        if step_num >= max_steps:
-            break
-        step_num += 1
-        steps.append(ReadingStep(
-            step=step_num,
-            action="read_symbol",
-            target=sym_id,
-            reason=f"Start from entry point — this is the most relevant symbol for the task.",
-        ))
+        _add(sym_id, "Start from entry point — this is the most relevant symbol for the task.")
 
     # ── Next: Direct callees (downstream dependencies) ─────────────────────
     for sym_id in callee_ids:
-        if step_num >= max_steps:
-            break
-        step_num += 1
-        steps.append(ReadingStep(
-            step=step_num,
-            action="read_symbol",
-            target=sym_id,
-            reason="Follow downstream call — understand what this entry point depends on.",
-        ))
+        _add(sym_id, "Follow downstream call — understand what this entry point depends on.")
 
     # ── Next: Direct callers (upstream) ────────────────────────────────────
     for sym_id in caller_ids:
-        if step_num >= max_steps:
-            break
-        step_num += 1
-        steps.append(ReadingStep(
-            step=step_num,
-            action="read_symbol",
-            target=sym_id,
-            reason="Review upstream caller — understand who invokes this code.",
-        ))
+        _add(sym_id, "Review upstream caller — understand who invokes this code.")
 
     # ── Last: Related tests ────────────────────────────────────────────────
     for test_id in test_ids:
-        if step_num >= max_steps:
-            break
-        step_num += 1
-        steps.append(ReadingStep(
-            step=step_num,
-            action="read_symbol",
-            target=test_id,
-            reason="Check related tests — verify behavior and catch regressions.",
-        ))
+        _add(test_id, "Check related tests — verify behavior and catch regressions.")
 
     return steps

@@ -57,6 +57,9 @@ def _parse_intent(task_description: str) -> TaskIntent:
     """
     text = task_description.lower()
 
+    # "test" must be checked before "add" so "add tests for X" doesn't match add_feature
+    if any(w in text for w in ("write test", "add test", "test", "spec", "unit test")):
+        return TaskIntent.write_tests
     if any(w in text for w in ("fix", "bug", "error", "broken", "issue", "incorrect")):
         return TaskIntent.fix_bug
     if any(w in text for w in ("add", "new", "implement", "feature", "introduce", "create")):
@@ -104,7 +107,7 @@ def _search_candidates(
             candidates.append(node)
 
     # 2. Keyword-based search
-    _skip_types = {NodeType.repository, NodeType.file, NodeType.import_, NodeType.external_symbol}
+    _skip_types = {NodeType.repository, NodeType.file, NodeType.module, NodeType.import_, NodeType.external_symbol}
     for kw in keywords:
         results = store.search_nodes(kw)
         for node in results:
@@ -114,7 +117,7 @@ def _search_candidates(
 
     # 3. Fallback: all non-trivial symbols when nothing matched
     if not candidates:
-        skip = {NodeType.repository, NodeType.file, NodeType.import_, NodeType.external_symbol}
+        skip = {NodeType.repository, NodeType.file, NodeType.module, NodeType.import_, NodeType.external_symbol}
         for node in store.all_nodes():
             if node.type not in skip:
                 candidates.append(node)
@@ -306,6 +309,11 @@ def build_context_pack(
     # ── Step 3-4: Search + rank entry points ──────────────────────────────
     candidates = _search_candidates(store, keywords or ["_"], all_targets)
     ranked = ranking.rank_entry_points(task_description, candidates)
+    if not ranked and candidates:
+        # Fallback: no keyword matched any symbol (e.g. "explain how authentication works"
+        # where "authentication" doesn't appear in any node name). Return the top N
+        # candidates with a default score so the pack isn't completely empty.
+        ranked = [(c, 0.5) for c in candidates[:max_files]]
 
     top_n = min(max_files, len(ranked))
     top_ranked = ranked[:top_n]

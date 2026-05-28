@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata, Resolution
+from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata, NodeType, Resolution
 from codegraph.indexer.scanner import scan_python_files, read_file
 from codegraph.indexer.parser_python import parse_file
 from codegraph.indexer.symbol_extractor import extract_symbols
@@ -61,6 +61,7 @@ def build_index_from_paths(root: Path, paths: list[Path]) -> tuple[list[GraphNod
         all_edges.extend(struct_edges)
 
     all_edges = _deduplicate_edges(all_edges)
+    all_edges = _resolve_external_edges(all_edges, all_nodes)
     return all_nodes, all_edges
 
 
@@ -160,6 +161,57 @@ def _defined_in_edge(node_id: str, module_id: str, file_id: str, counter: list[i
         confidence=1.0,
         metadata=EdgeMetadata(resolution=Resolution.exact_ast_match),
     )
+
+
+def _resolve_external_edges(edges: list[GraphEdge], nodes: list[GraphNode]) -> list[GraphEdge]:
+    """Post-process edges to map ``external:module.qualname`` targets to real node IDs.
+
+    The call extractor can only resolve cross-file calls to ``external:module.symbol``
+    because it doesn't know the file path for imported symbols at parse time.
+    After all nodes are collected, this step builds a qualified_name → node.id
+    lookup table and rewrites matching external targets.
+
+    Genuinely external symbols (stdlib, third-party) that don't appear in the
+    project's node set keep their ``external:`` prefix.
+    """
+    # Build qualified_name → node.id lookup (only for project-internal nodes)
+    # Prefer function/class/method nodes over import/proxy nodes. Import nodes
+    # share the same qualified_name as the symbol they import but must not
+    # shadow the real definition.
+    _TYPE_PRIORITY = {
+        NodeType.import_: 0,
+        NodeType.external_symbol: 0,
+        NodeType.module: 1,
+        NodeType.file: 1,
+        NodeType.method: 3,
+        NodeType.function: 3,
+        NodeType.class_: 3,
+        NodeType.test: 3,
+        NodeType.repository: 0,
+    }
+    qual_to_id: dict[str, str] = {}
+    qual_type: dict[str, NodeType] = {}
+    for node in nodes:
+        if node.qualified_name and not node.id.startswith("external:"):
+            prev = qual_type.get(node.qualified_name)
+            new_prio = _TYPE_PRIORITY.get(node.type, 0)
+            prev_prio = _TYPE_PRIORITY.get(prev, -1) if prev else -1
+            if prev is None or new_prio > prev_prio:
+                qual_to_id[node.qualified_name] = node.id
+                qual_type[node.qualified_name] = node.type
+
+    for edge in edges:
+        key = (edge.type.value if hasattr(edge.type, 'value') else str(edge.type))
+        if key != "calls":
+            continue
+        if not edge.target.startswith("external:"):
+            continue
+
+        qual_name = edge.target[len("external:"):]
+        if qual_name in qual_to_id:
+            edge.target = qual_to_id[qual_name]
+
+    return edges
 
 
 def _next_eid(counter: list[int]) -> str:
