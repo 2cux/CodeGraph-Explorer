@@ -31,7 +31,7 @@ class ContextPackRequest(BaseModel):
 
 
 class TaskSchema(BaseModel):
-    raw_request: str
+    raw_request: str = ""
     intent: str = "understand_code"
     keywords: list[str] = []
     target_symbols: list[str] = []

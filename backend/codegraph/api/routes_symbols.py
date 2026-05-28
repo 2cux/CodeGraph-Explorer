@@ -68,7 +68,7 @@ class NeighborItem(BaseModel):
     type: str
     file_path: str
     edge_type: str
-    confidence: str = "unknown"
+    confidence: float = 0.0
 
 
 class NeighborsResponse(BaseModel):

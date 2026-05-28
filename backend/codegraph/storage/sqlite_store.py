@@ -96,10 +96,10 @@ class SqliteStore:
     def initialize(self) -> None:
         """Create tables and indexes if they don't exist."""
         c = self.conn
-        c.execute(CREATE_NODES)
-        c.execute(CREATE_EDGES)
-        c.execute(CREATE_NODE_INDEXES)
-        c.execute(CREATE_EDGE_INDEXES)
+        c.executescript(CREATE_NODES)
+        c.executescript(CREATE_EDGES)
+        c.executescript(CREATE_NODE_INDEXES)
+        c.executescript(CREATE_EDGE_INDEXES)
         c.commit()
 
     # ── Nodes ──────────────────────────────────────────────────────────
