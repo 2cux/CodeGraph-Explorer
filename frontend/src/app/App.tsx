@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { SearchResult } from "../api";
+import type { SearchResult, OverviewResponse } from "../api";
 import { Topbar, type IndexStatus } from "./components/Topbar";
 import { GraphCanvas, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "./components/GraphCanvas";
 import { RightInspector, type InspectorTarget, type InspectorMode } from "./components/RightInspector";
@@ -29,10 +29,9 @@ export default function App() {
   const [toast, setToast] = useState<ToastData | null>(null);
 
   // Real data state
-  const [dashStats, setDashStats] = useState<{} | null>(null);
-  const [graphStats, setGraphStats] = useState<{} | null>(null);
   const [graphNodes, setGraphNodes] = useState<GraphNodeData[]>([]);
   const [graphEdges, setGraphEdges] = useState<GraphEdgeData[]>([]);
+  const [overviewData, setOverviewData] = useState<OverviewResponse | null>(null);
 
   const dismissToast = useCallback(() => setToast(null), []);
   const showToast = useCallback((type: ToastData["type"], message: string, detail?: string) => {
@@ -56,12 +55,8 @@ export default function App() {
     async function load() {
       try {
         setIndexStatus("indexing");
-        const [ds, gs] = await Promise.all([
-          api.dashboard.stats(),
-          api.graph.stats(),
-        ]);
-        setDashStats(ds);
-        setGraphStats(gs);
+        const ov = await api.graph.overview();
+        setOverviewData(ov);
         setCanvasState("overview");
         setIndexStatus("indexed");
       } catch {
@@ -135,6 +130,31 @@ export default function App() {
     }
   }, [showToast]);
 
+  // Handle file-level node click in overview → find top symbol → focus
+  const handleSelectFile = useCallback(async (filePath: string) => {
+    setInspectorOpen(true);
+    setInspectorTarget("node");
+    setInspectorMode("loading");
+    setCanvasState("loading");
+
+    try {
+      // Search for symbols in this file, get the top result
+      const searchRes = await api.symbols.search("", undefined, filePath, 5, 0);
+      const top = searchRes.results[0];
+      if (top) {
+        await handleSelectNode(top.symbol_id);
+      } else {
+        setCanvasState("overview");
+        setInspectorMode("error");
+        showToast("warning", `No symbols found in ${filePath}`);
+      }
+    } catch {
+      setCanvasState("overview");
+      setInspectorMode("error");
+      showToast("error", "Failed to load symbols for this file.");
+    }
+  }, [handleSelectNode, showToast]);
+
   // Generate context pack
   const handleGeneratePack = useCallback(async (task: string) => {
     if (!task.trim()) return;
@@ -169,6 +189,7 @@ export default function App() {
           onOpenLibrary={() => setLibraryOpen(true)}
           indexStatus={indexStatus}
           onSearch={handleSearch}
+          onSelectResult={handleSelectNode}
         />
         <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
           <div style={{ flex: 1, position: "relative", minWidth: 0 }}>
@@ -176,9 +197,9 @@ export default function App() {
               state={canvasState}
               nodes={canvasState === "focused" ? graphNodes : undefined}
               edges={canvasState === "focused" ? graphEdges : undefined}
-              dashStats={dashStats as {}}
-              graphStats={graphStats as {}}
+              overviewData={overviewData}
               onSelectNode={handleSelectNode}
+              onSelectFile={handleSelectFile}
               onSelectEdge={() => {
                 setInspectorOpen(true);
                 setInspectorTarget("edge");

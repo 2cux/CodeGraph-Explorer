@@ -1,7 +1,10 @@
 """Graph exploration API routes.
 
-PRD §16.1 — GET /api/graph/subgraph, GET /api/graph/stats
+PRD §16.1 — GET /api/graph/subgraph, GET /api/graph/stats, GET /api/graph/overview
 """
+import os
+from collections import Counter
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -52,6 +55,32 @@ class GraphStatsResponse(BaseModel):
     import_count: int = 0
     low_confidence_edges: int = 0
     low_confidence_ratio: float = 0.0
+
+
+# ── Overview file-level graph models ───────────────────────────────────
+
+
+class OverviewNodeItem(BaseModel):
+    id: str
+    path: str
+    label: str
+    module: str
+    symbol_count: int
+    function_count: int
+    class_count: int
+    test_count: int
+
+
+class OverviewEdgeItem(BaseModel):
+    source: str
+    target: str
+    edge_count: int
+    types: list[str]
+
+
+class OverviewResponse(BaseModel):
+    nodes: list[OverviewNodeItem] = []
+    edges: list[OverviewEdgeItem] = []
 
 
 def _node_to_item(node) -> GraphNodeItem:
@@ -105,3 +134,83 @@ async def get_graph_stats(
     """Return aggregate statistics for the entire code graph."""
     stats = graph_query.get_graph_stats(store)
     return GraphStatsResponse(**stats)
+
+
+@router.get("/overview", response_model=OverviewResponse)
+async def get_graph_overview(
+    store: GraphStore = Depends(get_store),
+):
+    """Return a file-level overview of the entire code graph.
+
+    Groups symbols by file, computes cross-file dependency edges,
+    and returns a graph suitable for the project overview visualization.
+    """
+    nodes = store.all_nodes()
+    edges = store.all_edges()
+
+    # ── Group nodes by file_path ────────────────────────────────────────
+    file_map: dict[str, dict] = {}
+    # Infer project root: the common prefix of all file paths
+    all_paths = [n.file_path for n in nodes if n.file_path]
+    common_parts = None
+    for fp in all_paths:
+        parts = fp.replace("\\", "/").split("/")
+        if common_parts is None:
+            common_parts = parts[:-1]  # exclude filename
+        else:
+            i = 0
+            while i < len(common_parts) and i < len(parts) and common_parts[i] == parts[i]:
+                i += 1
+            common_parts = common_parts[:i]
+    skip_count = len(common_parts) if common_parts else 0
+
+    for node in nodes:
+        fp = node.file_path or "unknown"
+        if fp not in file_map:
+            parts = fp.replace("\\", "/").split("/")
+            # Module = first meaningful directory after common prefix
+            module_dir = parts[skip_count] if skip_count < len(parts) else "other"
+            file_map[fp] = {
+                "id": fp,
+                "path": fp,
+                "label": os.path.basename(fp),
+                "module": module_dir,
+                "symbol_count": 0,
+                "function_count": 0,
+                "class_count": 0,
+                "test_count": 0,
+            }
+        file_map[fp]["symbol_count"] += 1
+        if node.type.value in ("function", "method"):
+            file_map[fp]["function_count"] += 1
+        elif node.type.value == "class":
+            file_map[fp]["class_count"] += 1
+        elif node.type.value == "test":
+            file_map[fp]["test_count"] += 1
+
+    # ── Compute cross-file edge aggregates ──────────────────────────────
+    cross_edges: dict[tuple[str, str], Counter] = Counter()
+    for edge in edges:
+        src_node = store.get_node(edge.source)
+        tgt_node = store.get_node(edge.target)
+        if not src_node or not tgt_node:
+            continue
+        src_file = src_node.file_path or "unknown"
+        tgt_file = tgt_node.file_path or "unknown"
+        if src_file == tgt_file:
+            continue
+        key = (src_file, tgt_file)
+        cross_edges[key] += 1
+
+    return OverviewResponse(
+        nodes=[OverviewNodeItem(**v) for v in file_map.values()],
+        edges=[
+            OverviewEdgeItem(
+                source=src,
+                target=tgt,
+                edge_count=count,
+                types=["depends_on"],
+            )
+            for (src, tgt), count in cross_edges.items()
+        ],
+    )

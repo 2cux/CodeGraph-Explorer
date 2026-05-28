@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import dagre from "@dagrejs/dagre";
 import { Spinner } from "./Spinner";
+import type { OverviewResponse } from "../../api";
 
 export type NodeKind = "function" | "method" | "class" | "file" | "test" | "external_symbol";
 export type NodeState = "normal" | "active" | "related" | "dimmed";
@@ -48,6 +50,36 @@ export const NODE_H = 46;
 const CANVAS_W = 1300;
 const CANVAS_H = 780;
 
+// ── Overview graph constants ─────────────────────────────────────────
+
+const OV_NODE_W = 184;
+const OV_NODE_H = 48;
+
+const MODULE_COLORS = [
+  "#6366f1", "#a78bfa", "#34d399", "#f59e0b",
+  "#f87171", "#06b6d4", "#f472b6", "#fb923c",
+];
+
+function getModuleColor(module: string, map: Record<string, string>): string {
+  if (map[module]) return map[module];
+  const idx = Object.keys(map).length % MODULE_COLORS.length;
+  map[module] = MODULE_COLORS[idx];
+  return map[module];
+}
+
+function shortLabel(path: string, label: string): string {
+  if (label === "__init__.py") {
+    const parts = path.replace(/\\/g, "/").split("/");
+    return parts[parts.length - 2] || label;
+  }
+  return label.replace(/\.py$/, "");
+}
+
+function parentDir(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  return parts.slice(0, -1).join("/");
+}
+
 const focusedNodes: Omit<GraphNodeData, "state">[] = [
   { id: "auth",      x: 360, y: 360, kind: "function",        name: "authenticate",    path: "src/auth.py:42",        confidence: 0.95 },
   { id: "login",     x: 180, y: 170, kind: "method",          name: "login",           path: "src/api/login.py:24",   confidence: 0.92 },
@@ -70,44 +102,17 @@ const focusedEdges: GraphEdgeData[] = [
   { from: "login",  to: "session", label: "calls",      state: "default" },
 ];
 
-interface DashboardStatsData {
-  project_name?: string;
-  symbol_count?: number;
-  file_count?: number;
-  function_count?: number;
-  class_count?: number;
-  edge_count?: number;
-  test_count?: number;
-  module_count?: number;
-  low_confidence_ratio?: number;
-  last_indexed_at?: string | null;
-}
-
-interface GraphStatsData {
-  symbol_count?: number;
-  file_count?: number;
-  edge_count?: number;
-  function_count?: number;
-  method_count?: number;
-  class_count?: number;
-  test_count?: number;
-  module_count?: number;
-  import_count?: number;
-  low_confidence_edges?: number;
-  low_confidence_ratio?: number;
-}
-
 interface Props {
   state: CanvasState;
   onSelectNode?: (nodeId: string) => void;
+  onSelectFile?: (filePath: string) => void;
   onSelectEdge?: () => void;
   nodes?: GraphNodeData[];
   edges?: GraphEdgeData[];
-  dashStats?: DashboardStatsData;
-  graphStats?: GraphStatsData;
+  overviewData?: OverviewResponse | null;
 }
 
-export function GraphCanvas({ state, onSelectNode, onSelectEdge, nodes: propNodes, edges: propEdges, dashStats, graphStats }: Props) {
+export function GraphCanvas({ state, onSelectNode, onSelectFile, onSelectEdge, nodes: propNodes, edges: propEdges, overviewData }: Props) {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
 
@@ -118,7 +123,7 @@ export function GraphCanvas({ state, onSelectNode, onSelectEdge, nodes: propNode
   if (state === "overview") {
     return (
       <CanvasWrapper>
-        <OverviewContent dashStats={dashStats} graphStats={graphStats} />
+        {overviewData ? <OverviewGraph data={overviewData} onSelectFile={onSelectFile} /> : <LoadingState />}
       </CanvasWrapper>
     );
   }
@@ -403,85 +408,165 @@ function EmptyState() {
   );
 }
 
-function OverviewContent({ dashStats, graphStats }: { dashStats?: DashboardStatsData; graphStats?: GraphStatsData }) {
-  const s = graphStats || dashStats || {} as Record<string, unknown>;
+function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelectFile?: (fp: string) => void }) {
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
 
-  function stat(label: string, value: unknown, fallback: number | string) {
-    return { label, value: String(value ?? fallback) };
-  }
+  const { layout, moduleColorMap } = useMemo(() => {
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: "LR", nodesep: 20, ranksep: 64, marginx: 40, marginy: 40 });
+    g.setDefaultEdgeLabel(() => ({}));
 
-  const stats = [
-    stat("symbols", s.symbol_count, 1284),
-    stat("files", s.file_count, 147),
-    stat("edges", s.edge_count, 4392),
-    stat("functions", s.function_count, 612),
-    stat("classes", s.class_count, 89),
-    stat("tests", s.test_count, 203),
-    stat("modules", s.module_count, 24),
-    stat("confidence", s.low_confidence_ratio != null ? (1 - Number(s.low_confidence_ratio)).toFixed(2) : null, "0.87"),
-  ];
+    const colorMap: Record<string, string> = {};
+    for (const n of data.nodes) {
+      getModuleColor(n.module, colorMap);
+      g.setNode(n.id, { width: OV_NODE_W, height: OV_NODE_H });
+    }
+
+    // Cap edges: keep top 200 most significant
+    const topEdges = [...data.edges]
+      .sort((a, b) => b.edge_count - a.edge_count)
+      .slice(0, 200);
+    for (const e of topEdges) {
+      g.setEdge(e.source, e.target, { weight: e.edge_count });
+    }
+
+    dagre.layout(g);
+    return { layout: g, moduleColorMap: colorMap };
+  }, [data]);
+
+  const gw = layout.graph().width ?? 800;
+  const gh = layout.graph().height ?? 600;
+  const pad = 60;
+  const vw = gw + pad * 2;
+  const vh = gh + pad * 2;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 24,
-        padding: 40,
-      }}
-    >
+    <>
+      {/* Stats bar */}
       <div
         style={{
-          fontSize: 11,
-          color: "var(--cg-text-muted)",
-          letterSpacing: 0.5,
-          textTransform: "uppercase",
+          position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
+          display: "flex", gap: 16, zIndex: 5,
+          padding: "5px 14px", borderRadius: 6,
+          background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)",
+          fontSize: 10, color: "var(--cg-text-muted)",
         }}
       >
-        Project Overview
+        <span style={{ color: "var(--cg-text-primary)", fontWeight: 600, fontSize: 11 }}>Overview</span>
+        <span>{data.nodes.length} files</span>
+        <span>{data.edges.length} dependencies</span>
+        <span>{data.nodes.reduce((s, n) => s + n.symbol_count, 0)} symbols</span>
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gap: 12,
-          width: "100%",
-          maxWidth: 640,
-        }}
-      >
-        {stats.map((s) => (
-          <div
-            key={s.label}
-            style={{
-              padding: "14px 16px",
-              background: "var(--cg-bg-panel)",
-              border: "1px solid var(--cg-border)",
-              borderRadius: 6,
-              textAlign: "center",
-            }}
-          >
-            <div
-              className="cg-mono"
-              style={{ fontSize: 18, fontWeight: 600, color: "var(--cg-text-primary)" }}
+
+      <svg width="100%" height="100%" viewBox={`0 0 ${vw} ${vh}`} style={{ display: "block", overflow: "visible" }}>
+        <defs>
+          <pattern id="grid-ov" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="var(--cg-grid)" strokeWidth="0.5" />
+          </pattern>
+        </defs>
+        <rect width={vw} height={vh} fill="url(#grid-ov)" />
+
+        {/* Edges */}
+        {layout.edges().map((e: { v: string; w: string }) => {
+          const edgeData = layout.edge(e.v, e.w);
+          const pts = edgeData?.points || [];
+          if (pts.length < 2) return null;
+          const sx = pts[0].x + pad;
+          const sy = pts[0].y + pad;
+          const tx = pts[pts.length - 1].x + pad;
+          const ty = pts[pts.length - 1].y + pad;
+          return (
+            <g key={`${e.v}→${e.w}`}>
+              <line
+                x1={sx} y1={sy} x2={tx} y2={ty}
+                stroke="var(--cg-border-hover)" strokeWidth={Math.min(edgeData.weight || 1, 5)}
+                opacity={0.4}
+                markerEnd="url(#arrow-ov)"
+              />
+            </g>
+          );
+        })}
+
+        {/* Arrow marker */}
+        <defs>
+          <marker id="arrow-ov" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="4" markerHeight="4" orient="auto">
+            <path d="M0,0 L6,3 L0,6 z" fill="var(--cg-border-hover)" />
+          </marker>
+        </defs>
+
+        {/* Nodes */}
+        {data.nodes.map((n) => {
+          const pt = layout.node(n.id);
+          if (!pt) return null;
+          const x = pt.x - OV_NODE_W / 2 + pad;
+          const y = pt.y - OV_NODE_H / 2 + pad;
+          const modColor = moduleColorMap[n.module] || "var(--cg-text-muted)";
+          const label = shortLabel(n.path, n.label);
+          const dir = parentDir(n.path);
+          const isHovered = hoveredNode === n.id;
+          return (
+            <foreignObject
+              key={n.id}
+              x={x} y={y} width={OV_NODE_W} height={OV_NODE_H}
+              onMouseEnter={() => setHoveredNode(n.id)}
+              onMouseLeave={() => setHoveredNode(null)}
+              onClick={() => onSelectFile?.(n.id)}
+              style={{ cursor: "pointer" }}
             >
-              {s.value}
-            </div>
-            <div style={{ fontSize: 10, color: "var(--cg-text-muted)", marginTop: 2 }}>
-              {s.label}
-            </div>
-          </div>
-        ))}
-      </div>
-      <div
-        className="flex items-center"
-        style={{ gap: 12, fontSize: 10, color: "var(--cg-text-muted)" }}
-      >
-        <span style={{ color: "var(--cg-success)" }}>●</span>
-        <span>Last indexed 2 minutes ago</span>
-        <span>·</span>
-        <span style={{ color: "var(--cg-warning)" }}>47 low-confidence edges</span>
-      </div>
-    </div>
+              <div
+                style={{
+                  width: "100%", height: "100%",
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "0 8px",
+                  background: isHovered ? "var(--cg-bg-subtle)" : "var(--cg-bg-panel)",
+                  border: `1px solid ${isHovered ? modColor : "var(--cg-border)"}`,
+                  borderLeft: `3px solid ${modColor}`,
+                  borderRadius: 6, overflow: "hidden",
+                  transition: "border-color 120ms ease, background 120ms ease",
+                }}
+              >
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%",
+                  background: modColor, flexShrink: 0,
+                }} />
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 0 }}>
+                  <span
+                    className="cg-mono"
+                    style={{
+                      fontSize: 11, fontWeight: 600,
+                      color: "var(--cg-text-primary)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}
+                  >
+                    {label}
+                  </span>
+                  <span
+                    className="cg-mono"
+                    style={{
+                      fontSize: 9,
+                      color: "var(--cg-text-muted)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}
+                  >
+                    {dir}
+                  </span>
+                </div>
+                <span
+                  className="cg-mono"
+                  style={{
+                    fontSize: 9, fontWeight: 500,
+                    color: "var(--cg-text-muted)", flexShrink: 0,
+                    padding: "1px 4px", borderRadius: 2,
+                    background: "var(--cg-bg-subtle)",
+                  }}
+                >
+                  {n.symbol_count}
+                </span>
+              </div>
+            </foreignObject>
+          );
+        })}
+      </svg>
+    </>
   );
 }

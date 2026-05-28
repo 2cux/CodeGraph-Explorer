@@ -2,5 +2,10 @@
   "name": "codegraph-explorer",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["frontend"]
+  "workspaces": [
+    "frontend"
+  ],
+  "dependencies": {
+    "puppeteer": "^25.1.0"
+  }
 }

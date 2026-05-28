@@ -130,6 +130,29 @@ export interface GraphStats {
   low_confidence_ratio: number;
 }
 
+export interface OverviewNodeItem {
+  id: string;
+  path: string;
+  label: string;
+  module: string;
+  symbol_count: number;
+  function_count: number;
+  class_count: number;
+  test_count: number;
+}
+
+export interface OverviewEdgeItem {
+  source: string;
+  target: string;
+  edge_count: number;
+  types: string[];
+}
+
+export interface OverviewResponse {
+  nodes: OverviewNodeItem[];
+  edges: OverviewEdgeItem[];
+}
+
 export interface TypesResponse {
   types: string[];
   total: number;
@@ -286,6 +309,7 @@ export const api = {
     subgraph: (symbolId: string, depth = 1) =>
       fetchJSON<SubgraphResponse>(`${BASE}/graph/subgraph`, { symbol_id: symbolId, depth }),
     stats: () => fetchJSON<GraphStats>(`${BASE}/graph/stats`),
+    overview: () => fetchJSON<OverviewResponse>(`${BASE}/graph/overview`),
   },
 
   dashboard: {

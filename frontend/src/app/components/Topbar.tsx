@@ -39,18 +39,22 @@ function useClickOutside(
   }, [ref, cb, enabled]);
 }
 
+interface ResultItem { name: string; kind: string; path: string; id?: string; }
+
 export function Topbar({
   theme,
   setTheme,
   onOpenLibrary,
   indexStatus = "indexed",
   onSearch,
+  onSelectResult,
 }: {
   theme: Theme;
   setTheme: (t: Theme) => void;
   onOpenLibrary?: () => void;
   indexStatus?: IndexStatus;
   onSearch?: (query: string) => Promise<{ name: string; symbol_id: string; type: string; file_path: string }[]>;
+  onSelectResult?: (symbolId: string) => void;
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -65,7 +69,7 @@ export function Topbar({
 
   const SEARCH_QUERY = "";
   const [query, setQuery] = useState(SEARCH_QUERY);
-  const [results, setResults] = useState<typeof MOCK_SYMBOLS>([]);
+  const [results, setResults] = useState<ResultItem[]>([]);
   const searchTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -78,6 +82,7 @@ export function Topbar({
       searchTimer.current = setTimeout(async () => {
         const res = await onSearch(query);
         setResults(res.map((r) => ({
+          id: r.symbol_id,
           name: r.name || r.symbol_id.split("::").pop() || r.symbol_id,
           kind: r.type?.toLowerCase().slice(0, 4) || "fn",
           path: r.file_path || r.symbol_id,
@@ -90,10 +95,13 @@ export function Topbar({
     setResults(MOCK_SYMBOLS.filter((s) => s.name.includes(q) || s.path.includes(q)).slice(0, 6));
   }, [query, searchOpen, onSearch]);
 
-  const handleSearchSelect = useCallback((name: string) => {
-    setQuery(name);
+  const handleSearchSelect = useCallback((item: ResultItem) => {
+    setQuery(item.name);
     setSearchOpen(false);
-  }, []);
+    if (item.id && onSelectResult) {
+      onSelectResult(item.id);
+    }
+  }, [onSelectResult]);
 
   const themeIcon = theme === "dark" ? IconMoon : theme === "light" ? IconSun : IconMonitor;
   const nextTheme: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
@@ -227,7 +235,7 @@ export function Topbar({
                     cursor: "pointer",
                     fontSize: 11,
                   }}
-                  onClick={() => handleSearchSelect(r.name)}
+                  onClick={() => handleSearchSelect(r)}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "var(--cg-bg-subtle)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
