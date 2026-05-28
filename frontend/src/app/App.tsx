@@ -1,0 +1,345 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "../api";
+import type { SearchResult } from "../api";
+import { Topbar, type IndexStatus } from "./components/Topbar";
+import { GraphCanvas, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "./components/GraphCanvas";
+import { RightInspector, type InspectorTarget, type InspectorMode } from "./components/RightInspector";
+import { ContextPackOverlay, type ContextPackStatus } from "./components/ContextPackOverlay";
+import { ReadingPlan, type ReadingPlanStatus } from "./components/ReadingPlan";
+import { Library } from "./components/Library";
+import { Toast, type ToastData } from "./components/Toast";
+
+type Theme = "system" | "light" | "dark";
+
+export default function App() {
+  const [theme, setTheme] = useState<Theme>("dark");
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorTarget, setInspectorTarget] = useState<InspectorTarget>("node");
+  const [inspectorMode, setInspectorMode] = useState<InspectorMode | "auto">("auto");
+  const [packOpen, setPackOpen] = useState(false);
+  const [packStatus, setPackStatus] = useState<ContextPackStatus>("empty");
+  const [packData, setPackData] = useState<{} | null>(null);
+  const [packTask, setPackTask] = useState("");
+  const [planOpen, setPlanOpen] = useState(false);
+  const [planStatus, setPlanStatus] = useState<ReadingPlanStatus>("ready");
+  const [activeStep, setActiveStep] = useState(0);
+  const [canvasState, setCanvasState] = useState<CanvasState>("loading");
+  const [indexStatus, setIndexStatus] = useState<IndexStatus>("not-indexed");
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [toast, setToast] = useState<ToastData | null>(null);
+
+  // Real data state
+  const [dashStats, setDashStats] = useState<{} | null>(null);
+  const [graphStats, setGraphStats] = useState<{} | null>(null);
+  const [graphNodes, setGraphNodes] = useState<GraphNodeData[]>([]);
+  const [graphEdges, setGraphEdges] = useState<GraphEdgeData[]>([]);
+
+  const dismissToast = useCallback(() => setToast(null), []);
+  const showToast = useCallback((type: ToastData["type"], message: string, detail?: string) => {
+    setToast({ type, message, detail });
+  }, []);
+
+  const themeClass = useMemo(() => {
+    if (theme === "dark") return "cg-dark";
+    if (theme === "light") return "cg-light";
+    return typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-color-scheme: dark)").matches
+      ? "cg-dark"
+      : "cg-light";
+  }, [theme]);
+
+  const showSidePanels = canvasState === "focused" || canvasState === "overview";
+  const planVisible = packStatus === "generated";
+
+  // Load dashboard stats on mount
+  useEffect(() => {
+    async function load() {
+      try {
+        setIndexStatus("indexing");
+        const [ds, gs] = await Promise.all([
+          api.dashboard.stats(),
+          api.graph.stats(),
+        ]);
+        setDashStats(ds);
+        setGraphStats(gs);
+        setCanvasState("overview");
+        setIndexStatus("indexed");
+      } catch {
+        setCanvasState("empty");
+        setIndexStatus("not-indexed");
+      }
+    }
+    load();
+  }, []);
+
+  // Handle symbol search in Topbar
+  const handleSearch = useCallback(async (query: string): Promise<SearchResult[]> => {
+    if (!query.trim()) return [];
+    try {
+      const res = await api.symbols.search(query);
+      return res.results;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Handle node selection → focus graph + open inspector
+  const handleSelectNode = useCallback(async (nodeId: string) => {
+    setInspectorOpen(true);
+    setInspectorTarget("node");
+    setInspectorMode("loading");
+
+    try {
+      const [detail, neighbors] = await Promise.all([
+        api.symbols.detail(nodeId),
+        api.symbols.neighbors(nodeId, 1),
+      ]);
+
+      // Transform to graph nodes
+      const nodes: GraphNodeData[] = [
+        {
+          id: nodeId,
+          x: 360, y: 360,
+          kind: (detail.type?.toLowerCase() || "function") as NodeKind,
+          name: detail.name || nodeId,
+          path: detail.file_path || "",
+          confidence: 1,
+          state: "active",
+        },
+        ...neighbors.neighbors.map((n, i) => ({
+          id: n.node_id,
+          x: 180 + (i % 3) * 180,
+          y: 170 + Math.floor(i / 3) * 170,
+          kind: (n.type?.toLowerCase() || "function") as NodeKind,
+          name: n.name,
+          path: n.file_path,
+          confidence: parseFloat(n.confidence) || 0.5,
+          state: "normal" as const,
+        })),
+      ];
+
+      const edges: GraphEdgeData[] = neighbors.neighbors.map((n) => ({
+        from: n.edge_type === "caller" ? n.node_id : nodeId,
+        to: n.edge_type === "caller" ? nodeId : n.node_id,
+        label: "calls" as const,
+        state: (parseFloat(n.confidence) < 0.6 ? "low_confidence" : "default") as GraphEdgeData["state"],
+      }));
+
+      setGraphNodes(nodes);
+      setGraphEdges(edges);
+      setCanvasState("focused");
+      setInspectorMode("node");
+    } catch {
+      setInspectorMode("error");
+      showToast("error", "Failed to load symbol details.");
+    }
+  }, [showToast]);
+
+  // Generate context pack
+  const handleGeneratePack = useCallback(async (task: string) => {
+    if (!task.trim()) return;
+    setPackTask(task);
+    setPackStatus("generating");
+    setPackOpen(true);
+
+    try {
+      const result = await api.context.generate(task);
+      setPackData(result);
+      setPackStatus("generated");
+      setPlanStatus((result as { reading_plan?: unknown[] }).reading_plan?.length ? "ready" : "empty");
+      showToast("info", `Context pack generated: ${result.pack_id}`);
+    } catch {
+      setPackStatus("error");
+      showToast("error", "Failed to generate context pack.");
+    }
+  }, [showToast]);
+
+  return (
+    <>
+      <div
+        className={`cg-root ${themeClass}`}
+        style={{
+          width: "100%", height: "100vh",
+          display: "flex", flexDirection: "column", overflow: "hidden",
+        }}
+      >
+        <Topbar
+          theme={theme}
+          setTheme={setTheme}
+          onOpenLibrary={() => setLibraryOpen(true)}
+          indexStatus={indexStatus}
+          onSearch={handleSearch}
+        />
+        <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
+          <div style={{ flex: 1, position: "relative", minWidth: 0 }}>
+            <GraphCanvas
+              state={canvasState}
+              nodes={canvasState === "focused" ? graphNodes : undefined}
+              edges={canvasState === "focused" ? graphEdges : undefined}
+              dashStats={dashStats as {}}
+              graphStats={graphStats as {}}
+              onSelectNode={handleSelectNode}
+              onSelectEdge={() => {
+                setInspectorOpen(true);
+                setInspectorTarget("edge");
+                setInspectorMode("auto");
+              }}
+            />
+            {showSidePanels && (
+              <>
+                <ContextPackOverlay
+                  open={packOpen}
+                  onToggle={() => setPackOpen((v) => !v)}
+                  onClose={() => setPackOpen(false)}
+                  status={packStatus}
+                  packData={packData ?? undefined}
+                  task={packTask}
+                  onRetry={() => handleGeneratePack(packTask)}
+                />
+                <ReadingPlan
+                  visible={planVisible}
+                  open={planOpen}
+                  onToggle={() => setPlanOpen((v) => !v)}
+                  status={planStatus}
+                  activeStep={activeStep}
+                  steps={(packData as { reading_plan?: { step?: number; action?: string; target?: string; reason?: string }[] })?.reading_plan}
+                  onStepClick={setActiveStep}
+                />
+              </>
+            )}
+            <StateSwitcher
+              canvas={canvasState}
+              setCanvas={setCanvasState}
+              inspector={inspectorMode}
+              setInspector={(m) => {
+                setInspectorMode(m);
+                setInspectorOpen(true);
+              }}
+              packStatus={packStatus}
+              setPackStatus={setPackStatus}
+              planStatus={planStatus}
+              setPlanStatus={setPlanStatus}
+              indexStatus={indexStatus}
+              setIndexStatus={setIndexStatus}
+              onToast={showToast}
+            />
+          </div>
+          {inspectorOpen && showSidePanels && (
+            <RightInspector
+              target={inspectorTarget}
+              mode={inspectorMode === "auto" ? inspectorTarget : inspectorMode}
+              onSwitch={(t) => { setInspectorTarget(t); setInspectorMode("auto"); }}
+              onClose={() => setInspectorOpen(false)}
+              onRetry={() => setInspectorMode("auto")}
+            />
+          )}
+        </div>
+        {libraryOpen && <Library onClose={() => setLibraryOpen(false)} />}
+        <Toast toast={toast} onDismiss={dismissToast} />
+      </div>
+    </>
+  );
+}
+
+function StateSwitcher({
+  canvas, setCanvas, inspector, setInspector,
+  packStatus, setPackStatus, planStatus, setPlanStatus,
+  indexStatus, setIndexStatus, onToast,
+}: {
+  canvas: CanvasState; setCanvas: (s: CanvasState) => void;
+  inspector: InspectorMode | "auto"; setInspector: (m: InspectorMode | "auto") => void;
+  packStatus: ContextPackStatus; setPackStatus: (s: ContextPackStatus) => void;
+  planStatus: ReadingPlanStatus; setPlanStatus: (s: ReadingPlanStatus) => void;
+  indexStatus: IndexStatus; setIndexStatus: (s: IndexStatus) => void;
+  onToast: (type: ToastData["type"], message: string, detail?: string) => void;
+}) {
+  const canvasOpts: CanvasState[] = ["overview", "focused", "empty", "loading", "error"];
+  const inspectorOpts: (InspectorMode | "auto")[] = ["auto", "loading", "error"];
+  const packOpts: ContextPackStatus[] = ["empty", "generating", "generated", "error"];
+  const planOpts: ReadingPlanStatus[] = ["ready", "loading", "empty"];
+  const indexOpts: IndexStatus[] = ["indexed", "indexing", "failed", "not-indexed"];
+
+  return (
+    <div
+      style={{
+        position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
+        display: "flex", gap: 5, zIndex: 9, flexWrap: "wrap", justifyContent: "center",
+      }}
+    >
+      <Group label="canvas">
+        {canvasOpts.map((o) => (
+          <SegBtn key={o} active={canvas === o} onClick={() => setCanvas(o)}>{o}</SegBtn>
+        ))}
+      </Group>
+      <Group label="inspector">
+        {inspectorOpts.map((o) => (
+          <SegBtn key={o} active={inspector === o} onClick={() => setInspector(o)}>{o}</SegBtn>
+        ))}
+      </Group>
+      <Group label="index">
+        {indexOpts.map((o) => (
+          <SegBtn key={o} active={indexStatus === o} onClick={() => setIndexStatus(o)}>{o}</SegBtn>
+        ))}
+      </Group>
+      <Group label="pack">
+        {packOpts.map((o) => (
+          <SegBtn key={o} active={packStatus === o} onClick={() => setPackStatus(o)}>{o}</SegBtn>
+        ))}
+      </Group>
+      <Group label="plan">
+        {planOpts.map((o) => (
+          <SegBtn key={o} active={planStatus === o} onClick={() => setPlanStatus(o)}>{o}</SegBtn>
+        ))}
+      </Group>
+      <Group label="toast">
+        <SegBtn active={false} onClick={() => onToast("error", "Export failed.", "EXPORT_ERROR · permission denied")}>err</SegBtn>
+        <SegBtn active={false} onClick={() => onToast("warning", "Low-confidence edges detected.", "47 edges below 0.7 threshold")}>warn</SegBtn>
+        <SegBtn active={false} onClick={() => onToast("info", "Context pack copied to clipboard.")}>info</SegBtn>
+      </Group>
+    </div>
+  );
+}
+
+function Group({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div
+      className="flex items-center"
+      style={{
+        background: "var(--cg-bg-panel)",
+        border: "1px solid var(--cg-border)",
+        borderRadius: 6, padding: 2, gap: 2,
+      }}
+    >
+      <span
+        className="cg-mono"
+        style={{
+          fontSize: 9, color: "var(--cg-text-muted)",
+          letterSpacing: 0.5, padding: "0 6px",
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function SegBtn({
+  active, onClick, children,
+}: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="cg-mono"
+      style={{
+        height: 22, padding: "0 10px",
+        border: "none", borderRadius: 4, cursor: "pointer",
+        background: active ? "var(--cg-bg-subtle)" : "transparent",
+        color: active ? "var(--cg-text-primary)" : "var(--cg-text-muted)",
+        fontSize: 10, letterSpacing: 0.4,
+      }}
+    >
+      {children}
+    </button>
+  );
+}

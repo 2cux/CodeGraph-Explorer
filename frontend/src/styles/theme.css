@@ -1,4 +1,4 @@
-/* ── Design Tokens (cg-* system) ───────────────────────────────── */
+@custom-variant dark (&:is(.cg-dark *));
 
 :root, .cg-light {
   --cg-bg-canvas: #FAFBFC;
@@ -42,8 +42,6 @@
   --cg-grid: rgba(255,255,255,0.035);
 }
 
-/* ── Root / base ──────────────────────────────────────────────── */
-
 .cg-root {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   color: var(--cg-text-primary);
@@ -65,8 +63,6 @@
   font-family: inherit;
 }
 
-/* ── Scrollbar ────────────────────────────────────────────────── */
-
 .cg-scroll::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -78,8 +74,6 @@
 .cg-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-
-/* ── Graph edge animations ────────────────────────────────────── */
 
 @keyframes cg-dash {
   to { stroke-dashoffset: -16; }
@@ -99,8 +93,6 @@
   animation: cg-pulse 2.4s ease-in-out infinite;
 }
 
-/* ── Node transitions ─────────────────────────────────────────── */
-
 .cg-node {
   transition: background 120ms ease, border-color 120ms ease;
 }
@@ -108,8 +100,6 @@
   border-color: var(--cg-border-hover) !important;
   background: var(--cg-bg-elevated) !important;
 }
-
-/* ── Edge interactions ────────────────────────────────────────── */
 
 .cg-edge-hit {
   fill: transparent;
@@ -129,8 +119,6 @@
 .cg-edge-group:hover .cg-edge-label {
   opacity: 1 !important;
 }
-
-/* ── Skeleton loading ─────────────────────────────────────────── */
 
 @keyframes cg-shimmer {
   0%, 100% { opacity: 0.3; }

@@ -70,6 +70,7 @@ export function Toast({ toast, onDismiss }: Props) {
       <span
         style={{
           width: 2,
+          height: "100%",
           minHeight: 16,
           borderRadius: 2,
           background: TYPE_COLOR[toast.type],
@@ -77,8 +78,15 @@ export function Toast({ toast, onDismiss }: Props) {
           alignSelf: "stretch",
         }}
       />
-
-      <span style={{ color: TYPE_COLOR[toast.type], display: "flex", alignItems: "center", flexShrink: 0, marginTop: 1 }}>
+      <span
+        style={{
+          color: TYPE_COLOR[toast.type],
+          display: "flex",
+          alignItems: "center",
+          flexShrink: 0,
+          marginTop: 1,
+        }}
+      >
         {toast.type === "error" ? (
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
             <circle cx="8" cy="8" r="5.5" />
@@ -93,25 +101,46 @@ export function Toast({ toast, onDismiss }: Props) {
           </svg>
         )}
       </span>
-
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 11, fontWeight: 500, color: "var(--cg-text-primary)", lineHeight: 1.4 }}>
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            color: "var(--cg-text-primary)",
+            lineHeight: 1.4,
+          }}
+        >
           {toast.message}
         </div>
         {toast.detail && (
-          <div className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-muted)", marginTop: 3, lineHeight: 1.4 }}>
+          <div
+            className="cg-mono"
+            style={{
+              fontSize: 10,
+              color: "var(--cg-text-muted)",
+              marginTop: 3,
+              lineHeight: 1.4,
+            }}
+          >
             {toast.detail}
           </div>
         )}
       </div>
-
       <button
         onClick={onDismiss}
         style={{
-          display: "flex", alignItems: "center", justifyContent: "center",
-          width: 18, height: 18, background: "transparent", border: "none",
-          cursor: "pointer", color: "var(--cg-text-muted)", borderRadius: 3,
-          flexShrink: 0, padding: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 18,
+          height: 18,
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          color: "var(--cg-text-muted)",
+          borderRadius: 3,
+          flexShrink: 0,
+          padding: 0,
         }}
       >
         <IconClose size={10} />
