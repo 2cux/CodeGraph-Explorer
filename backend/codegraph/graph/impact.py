@@ -15,6 +15,13 @@ _SENSITIVE_KEYWORDS = [
     "security", "cert", "encrypt", "session", "rbac",
 ]
 
+# State mutation keywords — writing, persisting, or modifying data
+_STATE_MUTATION_KEYWORDS = [
+    "save", "write", "store", "persist", "create", "insert",
+    "update", "set", "remove", "delete", "modify", "put",
+    "patch", "commit", "flush", "sync", "upload",
+]
+
 
 def transitive_callers(
     store: GraphStore, node_id: str, depth: int
@@ -94,6 +101,12 @@ def _is_test_file(file_path: str) -> bool:
     return "test" in lower
 
 
+def _has_state_mutation(file_path: str) -> bool:
+    """Check if a file path involves state mutation (data writes, persistence)."""
+    lower = file_path.lower()
+    return any(kw in lower for kw in _STATE_MUTATION_KEYWORDS)
+
+
 def _assess_risk(
     store: GraphStore,
     node_id: str,
@@ -112,8 +125,8 @@ def _assess_risk(
     **medium:** Normal business function with limited callers.
     **high:**   Security-sensitive path (auth, payment, permission, data
                 persistence), public API surface, or very broad callers (>5).
-    **critical:** High-risk criteria PLUS no tests AND multiple callers,
-                  or security-sensitive state mutation.
+    **critical:** High-risk criteria PLUS no tests AND multiple callers
+                  AND security-sensitive state mutation.
     """
     reasons: list[str] = []
 
@@ -127,12 +140,15 @@ def _assess_risk(
     file_path = center_node.file_path if center_node else ""
     is_sensitive = _is_sensitive_path(file_path)
     is_api = _is_public_api(file_path)
+    has_state_mutation = _has_state_mutation(file_path)
 
     # Build evidence
     if is_sensitive:
         reasons.append("Security-sensitive path — involves auth, credentials, or security logic.")
     if is_api:
         reasons.append("Public API route — changes affect external interfaces.")
+    if has_state_mutation:
+        reasons.append("State mutation — this code writes or persists data.")
     if caller_count > 0:
         reasons.append(f"{caller_count} upstream caller(s) may be affected.")
     if not has_tests:
@@ -142,32 +158,25 @@ def _assess_risk(
 
     # Rule-based level (first match wins)
     # ── critical ──────────────────────────────────────────────────────
-    if is_sensitive and not has_tests and caller_count >= 3:
-        reasons.append("SECURITY-SENSITIVE, UNTESTED, MULTIPLE CALLERS — high regression risk.")
+    if is_sensitive and not has_tests and caller_count >= 3 and has_state_mutation:
+        reasons.append("SECURITY-SENSITIVE, UNTESTED, STATE-MUTATING, MULTIPLE CALLERS — high regression risk.")
         return "critical", reasons
-
-    if is_sensitive and not has_tests and is_api:
-        reasons.append("Sensitive public API without test coverage.")
-        return "high", reasons
 
     # ── high ─────────────────────────────────────────────────────────
     if is_sensitive:
-        return "high", reasons
+        return "high", reasons or ["Security-sensitive code path."]
     if is_api:
-        return "high", reasons
+        return "high", reasons or ["Public API surface."]
     if caller_count >= 5:
         reasons.append(f"Broad upstream impact — {caller_count} callers.")
         return "high", reasons
 
     # ── medium ───────────────────────────────────────────────────────
     if caller_count > 0 or callee_count > 0:
-        return "medium", reasons
+        return "medium", reasons or ["Business function with callers or callees."]
 
     # ── low ──────────────────────────────────────────────────────────
-    if caller_count == 0 and callee_count == 0:
-        return "low", ["Isolated symbol — no callers or callees detected."]
-
-    return "low", reasons
+    return "low", ["Isolated symbol — no callers or callees detected."]
 
 
 def _build_recommendations(

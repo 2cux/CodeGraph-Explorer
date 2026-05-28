@@ -267,18 +267,20 @@ def _discover_related_tests(
     store: GraphStore,
     entry_points: list[EntryPoint],
     related_ids: set[str],
-) -> tuple[list[RelatedTest], list[str]]:
+) -> tuple[list[RelatedTest], list[RelatedTest], list[str]]:
     """Discover existing tests and generate suggestions.
 
     Phase 1: Find tests in the index matching by name or call-graph relation.
     Phase 2: When no tests exist, suggest test files based on naming
     conventions (``tests/test_<module>.py``, ``test_<symbol>_*``, …).
 
-    Returns ``(related_tests, test_ids)``.
+    Returns ``(existing_tests, suggested_tests, test_ids)``.
     """
-    related_tests: list[RelatedTest] = []
+    existing_tests: list[RelatedTest] = []
+    suggested_tests: list[RelatedTest] = []
     test_ids: list[str] = []
     ep_names_lower = {ep.name.lower() for ep in entry_points}
+    seen_test_ids: set[str] = set()
 
     # Phase 1: Existing tests in the index
     for node in store.all_nodes():
@@ -288,14 +290,16 @@ def _discover_related_tests(
         if any(ep_name in node.name.lower() for ep_name in ep_names_lower):
             if node.id not in related_ids:
                 related_ids.add(node.id)
-            related_tests.append(RelatedTest(
-                type="existing",
-                test_file=node.file_path or "",
-                test_name=node.name,
-                reason=f"Test name references task symbol: {node.name}",
-                confidence=0.7,
-            ))
-            test_ids.append(node.id)
+            if node.id not in seen_test_ids:
+                seen_test_ids.add(node.id)
+                existing_tests.append(RelatedTest(
+                    type="existing",
+                    test_file=node.file_path or "",
+                    test_name=node.name,
+                    reason=f"Test name references task symbol: {node.name}",
+                    confidence=0.7,
+                ))
+                test_ids.append(node.id)
             continue
         # Match by calling task-related symbols
         for edge in store.get_outgoing_edges(node.id):
@@ -304,25 +308,27 @@ def _discover_related_tests(
                 target_name = target_node.name if target_node else edge.target
                 if node.id not in related_ids:
                     related_ids.add(node.id)
-                related_tests.append(RelatedTest(
-                    type="existing",
-                    test_file=node.file_path or "",
-                    test_name=node.name,
-                    reason=f"Test calls task-related symbol `{target_name}`",
-                    confidence=edge.confidence or 0.7,
-                ))
-                test_ids.append(node.id)
+                if node.id not in seen_test_ids:
+                    seen_test_ids.add(node.id)
+                    existing_tests.append(RelatedTest(
+                        type="existing",
+                        test_file=node.file_path or "",
+                        test_name=node.name,
+                        reason=f"Test calls task-related symbol `{target_name}`",
+                        confidence=edge.confidence or 0.7,
+                    ))
+                    test_ids.append(node.id)
                 break
 
     # Phase 2: Suggestions when no tests found
-    if not related_tests:
+    if not existing_tests:
         for ep in entry_points:
             file_path = ep.file_path or ""
             module_name = file_path.split("/")[-1].replace(".py", "") if file_path else ""
             test_path = f"tests/test_{module_name}.py"
 
             # tests/test_<module>.py
-            related_tests.append(RelatedTest(
+            suggested_tests.append(RelatedTest(
                 type="suggested",
                 test_file=test_path,
                 test_name=f"test_{module_name}",
@@ -331,7 +337,7 @@ def _discover_related_tests(
             ))
             # test_<entry_point_name>_*
             for ep_name in ep_names_lower:
-                related_tests.append(RelatedTest(
+                suggested_tests.append(RelatedTest(
                     type="suggested",
                     test_file=test_path,
                     test_name=f"test_{ep_name}_",
@@ -339,7 +345,7 @@ def _discover_related_tests(
                     confidence=0.5,
                 ))
 
-    return related_tests, test_ids
+    return existing_tests, suggested_tests, test_ids
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -448,7 +454,9 @@ def build_context_pack(
                         id=target_node.id, label=target_node.name, type=target_node.type.value,
                     ))
                 call_edges.append(CallGraphEdge(
-                    source=node.id, target=edge.target, type="calls", confidence=edge.confidence,
+                    source=node.id, target=edge.target, type="calls",
+                    confidence=edge.confidence,
+                    resolution=edge.metadata.resolution.value if edge.metadata and edge.metadata.resolution else "",
                 ))
 
         # Incoming edges (callers)
@@ -471,7 +479,9 @@ def build_context_pack(
                         id=source_node.id, label=source_node.name, type=source_node.type.value,
                     ))
                 call_edges.append(CallGraphEdge(
-                    source=edge.source, target=node.id, type="calls", confidence=edge.confidence,
+                    source=edge.source, target=node.id, type="calls",
+                    confidence=edge.confidence,
+                    resolution=edge.metadata.resolution.value if edge.metadata and edge.metadata.resolution else "",
                 ))
 
         # Entry point itself in call graph
@@ -527,13 +537,14 @@ def build_context_pack(
             related_ids.add(s.symbol_id)
 
     # ── Step 7: Discover related tests ────────────────────────────────────
-    related_tests: list[RelatedTest] = []
+    existing_tests: list[RelatedTest] = []
+    suggested_tests: list[RelatedTest] = []
     test_ids: list[str] = []
     if include_tests:
-        related_tests, test_ids = _discover_related_tests(store, entry_points, related_ids)
+        existing_tests, suggested_tests, test_ids = _discover_related_tests(store, entry_points, related_ids)
 
         # Sync existing tests into related_symbols for context selection
-        for rt in related_tests:
+        for rt in existing_tests:
             if rt.type != "existing":
                 continue
             if rt.test_file not in {rs.symbol_id for rs in related_symbols}:
@@ -557,11 +568,19 @@ def build_context_pack(
     caller_ids = [rs.symbol_id for rs in related_symbols if rs.relation == "caller"]
     entry_ids = [ep.symbol_id for ep in entry_points]
 
+    # Identify config / model / schema files among related symbols
+    config_ids = [
+        sid for sid in related_ids
+        if sid not in set(entry_ids) and rplan.is_config_file(sid.split("::")[0])
+    ]
+
     reading_plan = rplan.build_reading_plan(
         entry_point_ids=entry_ids,
         callee_ids=callee_ids,
         caller_ids=caller_ids,
         test_ids=test_ids,
+        config_ids=config_ids,
+        has_suggested_tests=bool(suggested_tests),
         max_steps=max_files + 4,
     )
 
@@ -611,7 +630,8 @@ def build_context_pack(
         call_graph=call_graph,
         impact=impact,
         recommended_context=recommended_context,
-        related_tests=related_tests,
+        related_tests=existing_tests,
+        suggested_tests=suggested_tests,
         reading_plan=reading_plan,
         agent_instructions=agent_instructions,
         exports=ExportsInfo(),

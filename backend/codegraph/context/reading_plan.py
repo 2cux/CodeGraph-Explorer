@@ -7,7 +7,7 @@ PRD §14.2 step 8 — Reading plan generation in the pipeline.
 from codegraph.context.models import ReadingStep
 
 
-def _is_config_file(file_path: str) -> bool:
+def is_config_file(file_path: str) -> bool:
     """Heuristic: config / settings / constants / schema modules."""
     lower = file_path.lower()
     keywords = ("config", "settings", "constants", "schema", "models", "types",
@@ -21,6 +21,8 @@ def build_reading_plan(
     callee_ids: list[str],
     caller_ids: list[str],
     test_ids: list[str],
+    config_ids: list[str] | None = None,
+    has_suggested_tests: bool = False,
     max_steps: int = 10,
 ) -> list[ReadingStep]:
     """Build an ordered reading plan from entry points outward.
@@ -29,7 +31,7 @@ def build_reading_plan(
       1. Entry points first (the main symbols to understand)
       2. Upstream callers (who invokes this code — understand the entry context)
       3. Downstream callees (what this code depends on)
-      4. Related tests (verify behavior)
+      4. Related tests (verify behavior), or suggest writing tests
       5. Config / model files (supporting definitions)
 
     Each step includes a ``reason`` explaining why this step matters.
@@ -64,7 +66,20 @@ def build_reading_plan(
         _add(sym_id, "Follow downstream call — understand what this entry point depends on.")
 
     # ── Next: Related tests ────────────────────────────────────────────────
-    for test_id in test_ids:
-        _add(test_id, "Check related tests — verify behavior and catch regressions.")
+    if test_ids:
+        for test_id in test_ids:
+            _add(test_id, "Check related tests — verify behavior and catch regressions.")
+    elif has_suggested_tests:
+        ep_list = ", ".join(entry_point_ids[:3]) if entry_point_ids else "task symbols"
+        _add(
+            ep_list,
+            "Add tests covering the entry points — no existing tests detected.",
+            action="write_tests",
+        )
+
+    # ── Next: Config / model / supporting files ────────────────────────────
+    if config_ids:
+        for cid in config_ids:
+            _add(cid, "Review supporting definition — config, model, or schema file.")
 
     return steps

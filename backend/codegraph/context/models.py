@@ -126,6 +126,7 @@ class CallGraphEdge(BaseModel):
     target: str
     type: str = "calls"
     confidence: float = 0.0
+    resolution: str = ""
 
 
 class CallGraph(BaseModel):
@@ -256,6 +257,7 @@ class ContextPack(BaseModel):
     impact: Impact = Field(default_factory=Impact)
     recommended_context: list[RecommendedContext] = Field(default_factory=list)
     related_tests: list[RelatedTest] = Field(default_factory=list)
+    suggested_tests: list[RelatedTest] = Field(default_factory=list)
     reading_plan: list[ReadingStep] = Field(default_factory=list)
     agent_instructions: AgentInstructions = Field(default_factory=AgentInstructions)
     exports: ExportsInfo = Field(default_factory=ExportsInfo)

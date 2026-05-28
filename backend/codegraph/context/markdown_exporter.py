@@ -53,20 +53,22 @@ def export_to_markdown(pack: ContextPack) -> str:
         _w("_No entry points found._")
         _w("")
 
-    # ── Related Tests ─────────────────────────────────────────────────────
+    # ── Related Tests (existing) ───────────────────────────────────────────
+    _w("## Related Tests")
+    _w("")
     if pack.related_tests:
-        _w("## Related Tests")
-        _w("")
         for rt in pack.related_tests:
-            if rt.type == "existing":
-                _w(f"- `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
-            else:
-                _w(f"- [suggested] `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
-        _w("")
+            _w(f"- `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
     else:
-        _w("## Related Tests")
+        _w("_No existing tests found related to this task._")
+    _w("")
+
+    # ── Suggested Tests ────────────────────────────────────────────────────
+    if pack.suggested_tests:
+        _w("### Suggested Tests")
         _w("")
-        _w("None found.")
+        for st in pack.suggested_tests:
+            _w(f"- `{st.test_name}` in `{st.test_file}` — {st.reason}")
         _w("")
 
     # ── Recommendations / Reading Order ────────────────────────────────────
@@ -90,9 +92,12 @@ def export_to_markdown(pack: ContextPack) -> str:
             _w("### Key Call Relationships")
             _w("")
             for edge in pack.call_graph.edges:
-                conf = f" (confidence: {edge.confidence:.2f})"
+                parts = [f"confidence={edge.confidence:.2f}"]
+                if edge.resolution:
+                    parts.append(f"resolution={edge.resolution}")
+                meta = ", ".join(parts)
                 marker = " [low confidence]" if edge.confidence < 0.6 else ""
-                _w(f"- `{edge.source}` → `{edge.target}`{conf}{marker}")
+                _w(f"- `{edge.source}` → `{edge.target}` [{edge.type}, {meta}]{marker}")
             _w("")
 
     # ── Impact Summary ─────────────────────────────────────────────────────
