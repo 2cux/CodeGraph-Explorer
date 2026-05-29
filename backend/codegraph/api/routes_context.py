@@ -117,6 +117,8 @@ class RecommendedContextItem(BaseModel):
     reason: str = ""
     content: str = ""
     estimated_tokens: int = 0
+    content_mode: str = "full_source"
+    context_score: float = 0.0
 
 
 class ReadingStepItem(BaseModel):
@@ -147,9 +149,11 @@ class ContextPackResponse(BaseModel):
     call_graph: CallGraphSchema = CallGraphSchema()
     impact: ImpactSchema = ImpactSchema()
     recommended_context: list[RecommendedContextItem] = []
+    optional_context: list[RecommendedContextItem] = []
     reading_plan: list[ReadingStepItem] = []
     agent_instructions: AgentInstructionsSchema = AgentInstructionsSchema()
     exports: ExportsInfo = ExportsInfo()
+    token_budget: dict = {}
 
 
 # ── Routes ───────────────────────────────────────────────────────
@@ -256,8 +260,27 @@ async def generate_context_pack(
                 reason=rc.reason,
                 content=rc.content,
                 estimated_tokens=rc.estimated_tokens,
+                content_mode=rc.content_mode,
+                context_score=rc.context_score,
             )
             for rc in pack.recommended_context
+        ],
+        optional_context=[
+            RecommendedContextItem(
+                context_id=rc.context_id,
+                type=rc.type.value if hasattr(rc.type, "value") else rc.type,
+                symbol_id=rc.symbol_id,
+                file_path=rc.file_path,
+                line_start=rc.line_start,
+                line_end=rc.line_end,
+                priority=rc.priority,
+                reason=rc.reason,
+                content=rc.content,
+                estimated_tokens=rc.estimated_tokens,
+                content_mode=rc.content_mode,
+                context_score=rc.context_score,
+            )
+            for rc in pack.optional_context
         ],
         reading_plan=[
             ReadingStepItem(
@@ -277,6 +300,7 @@ async def generate_context_pack(
             markdown_path=pack.exports.markdown_path,
             json_path=pack.exports.json_path,
         ),
+        token_budget=pack.token_budget,
     )
 
     return response

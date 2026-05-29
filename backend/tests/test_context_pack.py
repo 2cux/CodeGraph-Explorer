@@ -443,3 +443,70 @@ class TestBuildContextPack:
         pack = build_context_pack(store, "something_completely_unrelated")
         # Should not crash, may have warnings
         assert isinstance(pack, ContextPack)
+
+
+# ── Round 8: Token Budget & Selection tests ──────────────────────────────────
+
+
+class TestContextPackTokenBudget:
+    """Verify the new token_budget and optional_context fields on ContextPack."""
+
+    def test_token_budget_in_pack(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=6000)
+        tb = pack.token_budget
+        assert "max_tokens" in tb
+        assert "used_tokens" in tb
+        assert "remaining" in tb
+        assert tb["max_tokens"] == 6000
+
+    def test_optional_context_field_exists(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow")
+        assert isinstance(pack.optional_context, list)
+
+    def test_recommended_context_has_new_fields(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=6000)
+        for rc in pack.recommended_context:
+            assert hasattr(rc, "content_mode"), f"Missing content_mode on {rc.context_id}"
+            assert hasattr(rc, "context_score"), f"Missing context_score on {rc.context_id}"
+            assert rc.content_mode in ("full_source", "summary", "reference"), \
+                f"Unexpected content_mode: {rc.content_mode}"
+
+    def test_tiny_budget_produces_degraded_items(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=200)
+        assert isinstance(pack, ContextPack)
+        # Should have at least entry points as critical
+        assert len(pack.recommended_context) > 0
+
+    def test_large_budget_all_full_source(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=50000)
+        # With a huge budget, most items should be full_source
+        full_source_count = sum(1 for rc in pack.recommended_context if rc.content_mode == "full_source")
+        assert full_source_count > 0
+
+
+class TestContextPackMarkdownNewFields:
+    """Verify markdown export includes new sections."""
+
+    def test_token_budget_in_markdown(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=6000)
+        md = export_to_markdown(pack)
+        assert "Token Budget" in md
+        assert "Max Tokens" in md
+
+    def test_content_mode_in_markdown(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=6000)
+        md = export_to_markdown(pack)
+        assert "Content Mode" in md
+
+    def test_context_score_in_markdown(self):
+        store = _make_store_for_context()
+        pack = build_context_pack(store, "add MFA to login flow", max_tokens=6000)
+        md = export_to_markdown(pack)
+        assert "Context Score" in md

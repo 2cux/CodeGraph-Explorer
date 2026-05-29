@@ -153,6 +153,8 @@ def export_to_markdown(pack: ContextPack) -> str:
                 _w(f"- **Location:** {loc}")
             _w(f"- **Priority:** {ctx.priority}")
             _w(f"- **Estimated Tokens:** {ctx.estimated_tokens}")
+            _w(f"- **Content Mode:** {ctx.content_mode}")
+            _w(f"- **Context Score:** {ctx.context_score:.2f}")
             if ctx.reason:
                 _w(f"- **Reason:** {ctx.reason}")
             _w("")
@@ -167,6 +169,39 @@ def export_to_markdown(pack: ContextPack) -> str:
             elif ctx.type == "call_chain":
                 _w(f"_Call chain reference — see call graph above._")
                 _w("")
+
+    # ── Optional Context (low confidence) ────────────────────────────────────
+    if pack.optional_context:
+        _w("## Optional Context (Low Confidence)")
+        _w("")
+        _w("_These items have low confidence scores. Verify manually before relying on them._")
+        _w("")
+        for ctx in pack.optional_context:
+            _w(f"### {ctx.symbol_id or ctx.context_id}")
+            _w("")
+            if ctx.file_path:
+                _w(f"- **File:** {ctx.file_path}")
+            _w(f"- **Priority:** {ctx.priority}")
+            _w(f"- **Content Mode:** {ctx.content_mode}")
+            _w(f"- **Context Score:** {ctx.context_score:.2f}")
+            if ctx.reason:
+                _w(f"- **Reason:** {ctx.reason}")
+            _w("")
+            if ctx.content:
+                _w("```")
+                _w(ctx.content)
+                _w("```")
+                _w("")
+
+    # ── Token Budget ─────────────────────────────────────────────────────────
+    if pack.token_budget:
+        _w("## Token Budget")
+        _w("")
+        tb = pack.token_budget
+        _w(f"- **Max Tokens:** {tb.get('max_tokens', 'N/A')}")
+        _w(f"- **Used Tokens:** {tb.get('used_tokens', 'N/A')}")
+        _w(f"- **Remaining:** {tb.get('remaining', 'N/A')}")
+        _w("")
 
     # ── Agent Instructions ─────────────────────────────────────────────────
     _w("## Agent Instructions")
