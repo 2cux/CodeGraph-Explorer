@@ -1,5 +1,6 @@
 """File system scanner for discovering Python source files."""
 
+import hashlib
 from pathlib import Path
 
 EXCLUDE_DIRS = {
@@ -21,3 +22,8 @@ def scan_python_files(root: Path) -> list[Path]:
 def read_file(path: Path) -> str:
     """Read and return the text content of a source file."""
     return path.read_text(encoding="utf-8")
+
+
+def compute_fingerprint(path: Path) -> str:
+    """Compute a SHA256 fingerprint of a file's content."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()

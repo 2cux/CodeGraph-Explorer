@@ -55,6 +55,9 @@ class ContextType(str, Enum):
     call_chain = "call_chain"
     impact_summary = "impact_summary"
     test_reference = "test_reference"
+    config_summary = "config_summary"
+    model_summary = "model_summary"
+    warning = "warning"
 
 
 # ── Task ─────────────────────────────────────────────────────────────
@@ -106,6 +109,7 @@ class RelatedSymbol(BaseModel):
     reason: str = ""
     importance: Importance = Importance.medium
     confidence: float = 0.0
+    confidence_level: str = "unknown"
 
 
 # ── Call Graph ──────────────────────────────────────────────────────
@@ -127,6 +131,7 @@ class CallGraphEdge(BaseModel):
     type: str = "calls"
     confidence: float = 0.0
     resolution: str = ""
+    confidence_level: str = "unknown"
 
 
 class CallGraph(BaseModel):
@@ -149,6 +154,7 @@ class AffectedSymbol(BaseModel):
     impact_type: ImpactType = ImpactType.unknown
     distance: int = 1
     confidence: float = 0.0
+    confidence_level: str = "unknown"
 
 
 class AffectedFile(BaseModel):
@@ -191,6 +197,8 @@ class RecommendedContext(BaseModel):
     reason: str = ""
     content: str = ""
     estimated_tokens: int = 0
+    content_mode: str = "full_source"
+    context_score: float = 0.0
 
 
 # ── Reading Plan ─────────────────────────────────────────────────────
@@ -256,8 +264,10 @@ class ContextPack(BaseModel):
     call_graph: CallGraph = Field(default_factory=CallGraph)
     impact: Impact = Field(default_factory=Impact)
     recommended_context: list[RecommendedContext] = Field(default_factory=list)
+    optional_context: list[RecommendedContext] = Field(default_factory=list)
     related_tests: list[RelatedTest] = Field(default_factory=list)
     suggested_tests: list[RelatedTest] = Field(default_factory=list)
     reading_plan: list[ReadingStep] = Field(default_factory=list)
     agent_instructions: AgentInstructions = Field(default_factory=AgentInstructions)
     exports: ExportsInfo = Field(default_factory=ExportsInfo)
+    token_budget: dict[str, int] = Field(default_factory=dict)

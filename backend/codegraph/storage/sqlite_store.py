@@ -280,6 +280,39 @@ class SqliteStore:
         rows = c.execute("SELECT * FROM edges ORDER BY id").fetchall()
         return [_row_to_edge(r) for r in rows]
 
+    def delete_nodes_by_file(self, file_path: str) -> int:
+        """Delete all nodes for a specific file. Returns count removed."""
+        c = self.conn
+        # Collect node IDs for this file before deleting
+        rows = c.execute(
+            "SELECT id FROM nodes WHERE file_path = ?", [file_path]
+        ).fetchall()
+        node_ids = [r["id"] for r in rows]
+        if not node_ids:
+            return 0
+        c.execute("DELETE FROM nodes WHERE file_path = ?", [file_path])
+        # Delete edges touching any of those nodes
+        for nid in node_ids:
+            c.execute("DELETE FROM edges WHERE source = ? OR target = ?", [nid, nid])
+        c.commit()
+        return len(node_ids)
+
+    def delete_edges_by_file(self, file_path: str) -> int:
+        """Delete all edges touching nodes in *file_path*. Returns count removed."""
+        c = self.conn
+        rows = c.execute(
+            "SELECT id FROM nodes WHERE file_path = ?", [file_path]
+        ).fetchall()
+        node_ids = [r["id"] for r in rows]
+        if not node_ids:
+            return 0
+        removed = 0
+        for nid in node_ids:
+            cur = c.execute("DELETE FROM edges WHERE source = ? OR target = ?", [nid, nid])
+            removed += cur.rowcount
+        c.commit()
+        return removed
+
     def clear(self) -> None:
         """Delete all data from tables."""
         c = self.conn

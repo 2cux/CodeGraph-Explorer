@@ -34,14 +34,65 @@ class EdgeType(str, Enum):
 
 
 class Resolution(str, Enum):
-    """Confidence resolution strategy — PRD §12.8."""
+    """Confidence resolution strategy — PRD §12.8.
 
+    All confidence values are centralized in ``codegraph.graph.confidence``.
+    """
+
+    # ── Structural / exact ──────────────────────────────────────────
     exact_ast_match = "exact_ast_match"
+
+    # ── Call resolution ─────────────────────────────────────────────
     same_file_exact = "same_file_exact"
+    self_method_resolved = "self_method_resolved"
+    imported_function_exact = "imported_function_exact"
+    imported_function_alias = "imported_function_alias"
+    imported_module_attribute = "imported_module_attribute"
+    relative_import_resolved = "relative_import_resolved"
     import_resolved = "import_resolved"
     class_method_resolved = "class_method_resolved"
+    parameter_type_hint_resolved = "parameter_type_hint_resolved"
+    local_instance_resolved = "local_instance_resolved"
+    module_instance_resolved = "module_instance_resolved"
+    constructor_call_resolved = "constructor_call_resolved"
+    self_attribute_instance_resolved = "self_attribute_instance_resolved"
+    same_module_fallback = "same_module_fallback"
     type_hint_resolved = "type_hint_resolved"
+
+    # ── Route / entry-point detection ───────────────────────────────
+    fastapi_route_decorator = "fastapi_route_decorator"
+    flask_route_decorator = "flask_route_decorator"
+    django_view_heuristic = "django_view_heuristic"
+
+    # ── Test discovery ──────────────────────────────────────────────
+    direct_test_call = "direct_test_call"
+    test_import_match = "test_import_match"
     test_name_heuristic = "test_name_heuristic"
+    test_file_heuristic = "test_file_heuristic"
+    suggested_test = "suggested_test"
+
+    # ── Model / config / persistence detection ──────────────────────
+    pydantic_model_detected = "pydantic_model_detected"
+    dataclass_model_detected = "dataclass_model_detected"
+    sqlalchemy_model_detected = "sqlalchemy_model_detected"
+    config_class_detected = "config_class_detected"
+    config_constant_detected = "config_constant_detected"
+    repository_name_match = "repository_name_match"
+    store_name_match = "store_name_match"
+    model_field_match = "model_field_match"
+    config_field_match = "config_field_match"
+    persistence_name_match = "persistence_name_match"
+
+    # ── Ranking / context scoring ───────────────────────────────────
+    symbol_name_match = "symbol_name_match"
+    file_path_match = "file_path_match"
+    route_path_match = "route_path_match"
+    tag_match = "tag_match"
+    field_name_match = "field_name_match"
+    call_graph_neighbor = "call_graph_neighbor"
+    impact_neighbor = "impact_neighbor"
+
+    # ── Fallbacks ───────────────────────────────────────────────────
     attribute_guess = "attribute_guess"
     external_symbol = "external_symbol"
     unresolved = "unresolved"
@@ -73,6 +124,8 @@ class EdgeMetadata(BaseModel):
     call_expr: str | None = None
     resolution: Resolution
     is_dynamic: bool = False
+    reason: str | None = None
+    evidence: dict[str, Any] | None = None
 
 
 # ── Repo model ──────────────────────────────────────────────────────
@@ -125,6 +178,30 @@ class GraphEdge(BaseModel):
     confidence: float = 1.0
     source_location: EdgeLocation | None = None
     metadata: EdgeMetadata | None = None
+
+
+# ── Index metadata (incremental indexing) ────────────────────────────
+
+
+class FileEntry(BaseModel):
+    """Per-file metadata stored in .codegraph/metadata.json."""
+
+    path: str
+    fingerprint: str
+    indexed_at: str = ""
+
+
+class IndexMetadata(BaseModel):
+    """Index metadata for incremental update and stale detection."""
+
+    schema_version: str = "1.0.0"
+    indexer_version: str = "1.0.0"
+    root_path: str = ""
+    indexed_at: str = ""
+    file_count: int = 0
+    symbol_count: int = 0
+    edge_count: int = 0
+    files: list[FileEntry] = Field(default_factory=list)
 
 
 # ── Top-level graph ─────────────────────────────────────────────────

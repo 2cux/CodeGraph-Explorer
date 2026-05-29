@@ -268,9 +268,22 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+export interface StatusResponse {
+  status: string;  // "fresh" | "stale" | "missing"
+  indexed_at: string | null;
+  changed_files: string[];
+  added_files: string[];
+  deleted_files: string[];
+  recommendation: string;
+}
+
 export const api = {
   repo: {
-    index: () => fetchJSON<{ status: string; message: string }>(`${BASE}/repo/index`, {}),
+    status: () => fetchJSON<StatusResponse>(`${BASE}/repo/status`),
+    index: (mode: "force" | "incremental" = "force") =>
+      postJSON<{ status: string; message: string; file_count?: number; symbol_count?: number; edge_count?: number }>(
+        `${BASE}/repo/index`, { mode }
+      ),
   },
 
   symbols: {

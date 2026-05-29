@@ -152,8 +152,11 @@ function GeneratedBody({ copied, onCopy, packData, task }: {
   copied: boolean; onCopy: () => void; packData?: PackData; task?: string;
 }) {
   const entryCount = packData?.entry_points?.length ?? 3;
-  const symbolCount = packData?.related_symbols?.length ?? 8;
+  const symbols = (packData?.related_symbols ?? []) as Array<{ confidence?: number; confidence_level?: string }>;
+  const symbolCount = symbols.length || 8;
   const fileEstimate = Math.ceil((symbolCount * 3) / 5);
+  const highCount = symbols.filter((s: any) => (s.confidence ?? 0) >= 0.80).length;
+  const lowCount = symbols.filter((s: any) => (s.confidence ?? 0) < 0.60 && (s.confidence ?? 0) > 0).length;
   const warnings = packData?.agent_instructions?.warnings ?? [];
   return (
     <>
@@ -179,7 +182,7 @@ function GeneratedBody({ copied, onCopy, packData, task }: {
         >
           {[
             { label: "entry points", value: String(entryCount) },
-            { label: "symbols", value: String(symbolCount) },
+            { label: "symbols", value: `${symbolCount} (${highCount} hi-conf)` },
             { label: "files", value: String(fileEstimate) },
           ].map((s) => (
           <div key={s.label} style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
@@ -189,6 +192,14 @@ function GeneratedBody({ copied, onCopy, packData, task }: {
             <span style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>{s.label}</span>
           </div>
         ))}
+        {lowCount > 0 && (
+          <div key="low-conf" style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+            <span className="cg-mono" style={{ fontSize: 10, fontWeight: 500, color: "var(--cg-warning)" }}>
+              {lowCount} low
+            </span>
+            <span style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>confidence</span>
+          </div>
+        )}
       </div>
       )}
 
@@ -201,7 +212,9 @@ function GeneratedBody({ copied, onCopy, packData, task }: {
           </span>
         </div>
 
+        {warnings.slice(0, 2).map((w, i) => (
         <div
+          key={i}
           style={{
             display: "flex", alignItems: "flex-start", gap: 6,
             padding: "5px 7px",
@@ -214,12 +227,10 @@ function GeneratedBody({ copied, onCopy, packData, task }: {
             <IconWarning size={10} />
           </span>
           <span style={{ color: "var(--cg-text-secondary)", lineHeight: 1.4 }}>
-            <span style={{ color: "var(--cg-warning)", fontWeight: 500 }}>
-              {warnings.length} warning{warnings.length > 1 ? "s" : ""}
-            </span>
-            {" · "}{warnings[0]}
+            {w}
           </span>
         </div>
+        ))}
       </div>
       )}
 

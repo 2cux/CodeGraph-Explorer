@@ -49,6 +49,8 @@ from codegraph.graph import impact as graph_impact
 from codegraph.graph import query as graph_query
 from codegraph.graph.models import CodeGraph, GraphNode, NodeType
 from codegraph.graph.store import GraphStore
+from codegraph.indexer.status import detect_status
+from codegraph.storage.file_store import FileStore
 
 # ── MCP Server ────────────────────────────────────────────────────────────
 
@@ -161,6 +163,39 @@ def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
     _cg_dir = cg_dir
     _project_root = str(cg_dir.parent.resolve())
     return store, cg_dir
+
+
+def _check_index_status() -> list[str]:
+    """Check index freshness and return stale warnings if any."""
+    cg_dir = _find_codegraph_dir(_project_root)
+    if cg_dir is None:
+        return []
+
+    file_store = FileStore(cg_dir)
+    metadata = file_store.load_metadata()
+    if metadata is None:
+        return []
+
+    from pathlib import Path
+    root_path = Path(metadata.root_path) if metadata.root_path else cg_dir.parent
+    result = detect_status(root_path, metadata)
+
+    if result.is_stale:
+        warnings = [{
+            "type": "stale_index",
+            "message": "Index is stale. Results may be outdated.",
+        }]
+        if result.changed_files:
+            warnings[0]["changed_files"] = result.changed_files[:10]
+        if result.added_files:
+            warnings[0]["added_files"] = result.added_files[:10]
+        if result.deleted_files:
+            warnings[0]["deleted_files"] = result.deleted_files[:10]
+        return [
+            f"Index is stale ({result.total_changes} file(s) changed). "
+            f"Run 'codegraph index --incremental' to update."
+        ]
+    return []
 
 
 # ── Resolve helpers ───────────────────────────────────────────────────────
@@ -548,6 +583,12 @@ def get_neighbors(
             "confidence": e.confidence,
         })
 
+    stale_warnings = _check_index_status()
+    fuzzy_warnings = (
+        [f"Fuzzy fallback used: {result['match_reason']}"]
+        if not result["exact_match"]
+        else []
+    )
     return _respond_ok(
         data={
             "center_node_id": node.id,
@@ -558,11 +599,7 @@ def get_neighbors(
             "edges": edges_out,
         },
         tool="get_neighbors",
-        warnings=(
-            [f"Fuzzy fallback used: {result['match_reason']}"]
-            if not result["exact_match"]
-            else []
-        ),
+        warnings=stale_warnings + fuzzy_warnings,
     )
 
 
@@ -605,6 +642,7 @@ def get_impact(
     impact_result = graph_impact.analyze_impact(store, node.id, depth=effective_depth)
     impact_result.pop("changed_symbol_type", None)
 
+    stale_warnings = _check_index_status()
     return _respond_ok(
         data={
             "symbol": node.id,
@@ -617,6 +655,7 @@ def get_impact(
             "warnings": impact_result.get("warnings", []),
         },
         tool="get_impact",
+        warnings=stale_warnings,
     )
 
 
@@ -627,7 +666,7 @@ def build_context_pack(
     depth: int = 2,
     include_tests: bool = True,
     include_code: bool = True,
-    mode: str = "full",
+    mode: str = "summary",
 ) -> str:
     """Build a Context Pack for a natural language task.
 
@@ -693,6 +732,8 @@ def build_context_pack(
             "reading_plan": pack_dict.get("reading_plan"),
             "related_tests": pack_dict.get("related_tests", []),
             "agent_instructions": pack_dict.get("agent_instructions"),
+            "token_budget": pack_dict.get("token_budget", {}),
+            "optional_context_count": len(pack_dict.get("optional_context", [])),
             "warnings": pack_dict.get("warnings", []),
         }
     elif mode == "markdown":
@@ -707,9 +748,56 @@ def build_context_pack(
             "format": "markdown",
         }
 
+    stale_warnings = _check_index_status()
     return _respond_ok(
         data=pack_dict,
         tool="build_context_pack",
+        warnings=stale_warnings,
+    )
+
+
+@mcp.tool(name="codegraph_repo_status")
+def repo_status() -> str:
+    """Check index freshness and report changed/added/deleted files.
+
+    Returns index status (fresh/stale/missing), file change details,
+    and a recommendation for what to do next.
+    """
+    cg_dir = _find_codegraph_dir(_project_root)
+    if cg_dir is None:
+        return _respond_ok(
+            data={
+                "status": "missing",
+                "changed_files": [],
+                "added_files": [],
+                "deleted_files": [],
+                "indexed_at": None,
+                "recommendation": "Run 'codegraph index <project>' to create the index.",
+            },
+            tool="repo_status",
+            warnings=["No .codegraph index found — results will be incomplete."],
+        )
+
+    file_store = FileStore(cg_dir)
+    metadata = file_store.load_metadata()
+    from pathlib import Path as _Path
+    root_path = _Path(metadata.root_path) if metadata and metadata.root_path else cg_dir.parent
+    result = detect_status(root_path, metadata)
+
+    return _respond_ok(
+        data={
+            "status": result.status,
+            "indexed_at": result.indexed_at,
+            "changed_files": result.changed_files,
+            "added_files": result.added_files,
+            "deleted_files": result.deleted_files,
+            "recommendation": result.recommendation,
+        },
+        tool="repo_status",
+        warnings=(
+            [f"Index is stale — {result.total_changes} file(s) changed."]
+            if result.is_stale else []
+        ),
     )
 
 
@@ -742,6 +830,7 @@ def repo_summary() -> str:
     low_conf = sum(1 for e in edges if e.confidence < 0.6)
     low_conf_ratio = round(low_conf / len(edges), 4) if edges else 0.0
 
+    stale_warnings = _check_index_status()
     return _respond_ok(
         data={
             "project": cg_dir.parent.name,
@@ -755,6 +844,7 @@ def repo_summary() -> str:
             "low_confidence_ratio": low_conf_ratio,
         },
         tool="repo_summary",
+        warnings=stale_warnings,
     )
 
 

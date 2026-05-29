@@ -7,11 +7,16 @@ from datetime import datetime, timezone
 import typer
 from pydantic import TypeAdapter
 
-from codegraph.graph.models import GraphNode, GraphEdge, CodeGraph, RepoInfo, NodeType
+from codegraph.graph.models import (
+    GraphNode, GraphEdge, CodeGraph, RepoInfo, NodeType,
+    FileEntry, IndexMetadata,
+)
 from codegraph.graph.store import GraphStore
 from codegraph.graph import query as graph_query
 from codegraph.graph import impact as graph_impact
-from codegraph.indexer.graph_builder import build_index
+from codegraph.indexer.graph_builder import build_index, build_index_from_paths
+from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
+from codegraph.indexer.status import detect_status, StatusResult
 from codegraph.storage.file_store import FileStore
 from codegraph.storage.sqlite_store import SqliteStore
 
@@ -105,6 +110,81 @@ def _type_label(node_type: NodeType) -> str:
 # ── index command ────────────────────────────────────────────────────
 
 
+def _save_index_artifacts(
+    output_dir: Path,
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    root_path: Path,
+    no_sqlite: bool = False,
+) -> None:
+    """Save graph.json, nodes.json, edges.json, metadata.json, and optionally SQLite."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    node_adapter = TypeAdapter(list[GraphNode])
+    edge_adapter = TypeAdapter(list[GraphEdge])
+
+    # Build metadata
+    metadata = IndexMetadata(
+        schema_version="1.0.0",
+        indexer_version="1.0.0",
+        root_path=str(root_path),
+        indexed_at=now_iso,
+        file_count=len({n.file_path for n in nodes}),
+        symbol_count=len(nodes),
+        edge_count=len(edges),
+        files=[],
+    )
+    # Compute fingerprints for all source files
+    all_files = scan_python_files(root_path)
+    for f in all_files:
+        rel = f.relative_to(root_path).as_posix()
+        metadata.files.append(FileEntry(
+            path=rel,
+            fingerprint=compute_fingerprint(f),
+            indexed_at=now_iso,
+        ))
+
+    # JSON file output
+    store = FileStore(output_dir)
+    store.save_nodes(node_adapter.dump_python(nodes))
+    store.save_edges(edge_adapter.dump_python(edges))
+    store.save_metadata(metadata)
+
+    # Full graph output
+    repo_name = root_path.name
+    graph = CodeGraph(
+        schema_version="1.0.0",
+        repo=RepoInfo(
+            repo_id=f"local:{repo_name}",
+            name=repo_name,
+            root_path=str(root_path),
+            languages=["python"],
+            indexed_at=now_iso,
+            file_count=metadata.file_count,
+            symbol_count=metadata.symbol_count,
+        ),
+        nodes=nodes,
+        edges=edges,
+    )
+    graph_path = output_dir / "graph.json"
+    graph_path.write_text(
+        graph.model_dump_json(indent=2, exclude_none=True),
+        encoding="utf-8",
+    )
+
+    # SQLite output
+    if not no_sqlite:
+        try:
+            sqlite_path = output_dir / "index.sqlite"
+            sql_store = SqliteStore(sqlite_path)
+            sql_store.initialize()
+            sql_store.clear()
+            sql_store.save_nodes(node_adapter.dump_python(nodes))
+            sql_store.save_edges(edge_adapter.dump_python(edges))
+            sql_store.close()
+        except Exception:
+            pass  # SQLite is best-effort
+
+
 @app.command()
 def index(
     root: str = typer.Argument(
@@ -113,6 +193,10 @@ def index(
     force: bool = typer.Option(
         False, "--force", "-f",
         help="Re-index even if index already exists",
+    ),
+    incremental: bool = typer.Option(
+        False, "--incremental", "-i",
+        help="Incrementally update only changed/new/deleted files",
     ),
     no_sqlite: bool = typer.Option(
         False, "--no-sqlite",
@@ -128,6 +212,12 @@ def index(
     output_dir = root_path / ".codegraph"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    store = FileStore(output_dir)
+
+    if incremental:
+        _run_incremental_index(root_path, output_dir, store, no_sqlite)
+        return
+
     if not force and (output_dir / "nodes.json").exists():
         typer.echo("Index already exists. Use --force to re-index.")
         return
@@ -137,54 +227,153 @@ def index(
 
     typer.echo(f"Found {len(nodes)} symbols and {len(edges)} relationships.")
 
-    # Build the top-level graph container
-    repo_name = root_path.name
-    graph = CodeGraph(
-        schema_version="1.0.0",
-        repo=RepoInfo(
-            repo_id=f"local:{repo_name}",
-            name=repo_name,
-            root_path=str(root_path),
-            languages=["python"],
-            indexed_at=datetime.now(timezone.utc).isoformat(),
-            file_count=len({n.file_path for n in nodes}),
-            symbol_count=len(nodes),
-        ),
-        nodes=nodes,
-        edges=edges,
-    )
-
-    # JSON file output
-    store = FileStore(output_dir)
-    node_adapter = TypeAdapter(list[GraphNode])
-    edge_adapter = TypeAdapter(list[GraphEdge])
-    store.save_nodes(node_adapter.dump_python(nodes))
-    store.save_edges(edge_adapter.dump_python(edges))
-
-    # Full graph output
-    graph_path = output_dir / "graph.json"
-    graph_path.write_text(
-        graph.model_dump_json(indent=2, exclude_none=True),
-        encoding="utf-8",
-    )
+    _save_index_artifacts(output_dir, nodes, edges, root_path, no_sqlite)
 
     typer.echo(f"Index written to {output_dir / 'graph.json'}")
-    typer.echo(f"  Files indexed: {graph.repo.file_count}")
-    typer.echo(f"  Symbols:       {graph.repo.symbol_count}")
+    typer.echo(f"  Files indexed: {len({n.file_path for n in nodes})}")
+    typer.echo(f"  Symbols:       {len(nodes)}")
     typer.echo(f"  Edges:         {len(edges)}")
 
-    # SQLite output
-    if not no_sqlite:
-        try:
-            sqlite_path = output_dir / "index.sqlite"
-            sql_store = SqliteStore(sqlite_path)
-            sql_store.initialize()
-            sql_store.save_nodes(node_adapter.dump_python(nodes))
-            sql_store.save_edges(edge_adapter.dump_python(edges))
-            sql_store.close()
-            typer.echo(f"  SQLite:        {sqlite_path}")
-        except Exception as e:
-            typer.echo(f"  SQLite warning: {e}", err=True)
+
+def _run_incremental_index(
+    root_path: Path,
+    output_dir: Path,
+    store: FileStore,
+    no_sqlite: bool,
+) -> None:
+    """Incrementally update the index for changed / added / deleted files."""
+    metadata = store.load_metadata()
+    status_result = detect_status(root_path, metadata)
+
+    if status_result.status == "missing":
+        typer.echo("No existing index found. Run full index first:")
+        typer.echo(f"  codegraph index {root_path}")
+        return
+
+    if status_result.status == "fresh":
+        typer.echo("Index status: fresh")
+        typer.echo("No changes detected. Nothing to update.")
+        return
+
+    typer.echo(f"Index status: stale")
+    total_changes = status_result.total_changes
+
+    if status_result.changed_files:
+        typer.echo(f"  Changed files: {len(status_result.changed_files)}")
+        for f in status_result.changed_files[:10]:
+            typer.echo(f"    - {f}")
+        if len(status_result.changed_files) > 10:
+            typer.echo(f"    ... and {len(status_result.changed_files) - 10} more")
+    if status_result.added_files:
+        typer.echo(f"  Added files: {len(status_result.added_files)}")
+        for f in status_result.added_files[:10]:
+            typer.echo(f"    + {f}")
+        if len(status_result.added_files) > 10:
+            typer.echo(f"    ... and {len(status_result.added_files) - 10} more")
+    if status_result.deleted_files:
+        typer.echo(f"  Deleted files: {len(status_result.deleted_files)}")
+        for f in status_result.deleted_files[:10]:
+            typer.echo(f"    x {f}")
+        if len(status_result.deleted_files) > 10:
+            typer.echo(f"    ... and {len(status_result.deleted_files) - 10} more")
+
+    if total_changes == 0:
+        return
+
+    # Load existing graph data
+    existing_nodes = store.load_nodes()
+    existing_edges = store.load_edges()
+    node_adapter = TypeAdapter(list[GraphNode])
+    edge_adapter = TypeAdapter(list[GraphEdge])
+
+    current_nodes = node_adapter.validate_python(existing_nodes)
+    current_edges = edge_adapter.validate_python(existing_edges)
+
+    # 1. Remove nodes/edges for deleted and changed files
+    files_to_remove = set(status_result.deleted_files) | set(status_result.changed_files)
+    removed_node_ids: set[str] = set()
+    if files_to_remove:
+        for f in files_to_remove:
+            removed_node_ids.update(
+                n.id for n in current_nodes if n.file_path == f
+            )
+        current_nodes = [n for n in current_nodes if n.file_path not in files_to_remove]
+        current_edges = [
+            e for e in current_edges
+            if e.source not in removed_node_ids and e.target not in removed_node_ids
+        ]
+
+    # 2. Re-index changed and added files
+    files_to_reindex: list[Path] = []
+    for rel in status_result.changed_files + status_result.added_files:
+        p = root_path / rel
+        if p.exists():
+            files_to_reindex.append(p)
+
+    if files_to_reindex:
+        typer.echo(f"Re-indexing {len(files_to_reindex)} file(s)...")
+        new_nodes, new_edges = build_index_from_paths(root_path, files_to_reindex)
+        current_nodes.extend(new_nodes)
+        current_edges.extend(new_edges)
+        typer.echo(f"  Added {len(new_nodes)} symbols, {len(new_edges)} relationships.")
+
+    # 3. Save updated artifacts
+    _save_index_artifacts(output_dir, current_nodes, current_edges, root_path, no_sqlite)
+
+    typer.echo(f"Updated index written to {output_dir / 'graph.json'}")
+    typer.echo(f"  Total files:   {len({n.file_path for n in current_nodes})}")
+    typer.echo(f"  Total symbols:  {len(current_nodes)}")
+    typer.echo(f"  Total edges:    {len(current_edges)}")
+
+
+# ── status command ────────────────────────────────────────────────────
+
+
+@app.command()
+def status(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted)",
+    ),
+) -> None:
+    """Check the freshness of the code graph index."""
+    root_path = Path(root).resolve() if root else Path.cwd()
+    output_dir = root_path / ".codegraph"
+
+    if not (output_dir / "metadata.json").exists():
+        typer.echo("Index status: missing")
+        typer.echo("")
+        typer.echo("No .codegraph index found. Run:")
+        typer.echo(f"  codegraph index {root_path}")
+        return
+
+    store = FileStore(output_dir)
+    metadata = store.load_metadata()
+    result = detect_status(root_path, metadata)
+
+    typer.echo(f"Index status: {result.status}")
+    if result.indexed_at:
+        typer.echo(f"  Indexed at: {result.indexed_at}")
+
+    if result.status == "fresh":
+        typer.echo("  No changes detected.")
+        return
+
+    if result.status == "stale":
+        if result.changed_files:
+            typer.echo(f"Changed files:")
+            for f in result.changed_files:
+                typer.echo(f"  - {f}")
+        if result.added_files:
+            typer.echo(f"Added files:")
+            for f in result.added_files:
+                typer.echo(f"  + {f}")
+        if result.deleted_files:
+            typer.echo(f"Deleted files:")
+            for f in result.deleted_files:
+                typer.echo(f"  x {f}")
+        typer.echo("")
+        typer.echo(result.recommendation)
 
 
 # ── search command ────────────────────────────────────────────────────
@@ -460,6 +649,10 @@ def context(
     typer.echo(f"  Related:      {len(pack.related_symbols)}")
     typer.echo(f"  Call Graph:   {len(pack.call_graph.nodes)} nodes, {len(pack.call_graph.edges)} edges")
     typer.echo(f"  Reading Plan: {len(pack.reading_plan)} steps")
+    tb = pack.token_budget
+    typer.echo(f"  Token Budget: {tb.get('used_tokens', 0)}/{tb.get('max_tokens', 0)} used")
+    if pack.optional_context:
+        typer.echo(f"  Optional:     {len(pack.optional_context)} low-confidence items")
     if pack.impact.changed_symbol:
         risk_level = pack.impact.risk.level.value if hasattr(pack.impact.risk.level, 'value') else pack.impact.risk.level
         typer.echo(f"  Risk Level:   {risk_level}")

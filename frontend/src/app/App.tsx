@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { SearchResult, OverviewResponse } from "../api";
+import type { SearchResult, OverviewResponse, StatusResponse } from "../api";
 import { Topbar, type IndexStatus } from "./components/Topbar";
 import { GraphCanvas, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "./components/GraphCanvas";
 import { RightInspector, type InspectorTarget, type InspectorMode } from "./components/RightInspector";
@@ -24,7 +24,8 @@ export default function App() {
   const [planStatus, setPlanStatus] = useState<ReadingPlanStatus>("ready");
   const [activeStep, setActiveStep] = useState(0);
   const [canvasState, setCanvasState] = useState<CanvasState>("loading");
-  const [indexStatus, setIndexStatus] = useState<IndexStatus>("not-indexed");
+  const [indexStatus, setIndexStatus] = useState<IndexStatus>("missing");
+  const [indexDetails, setIndexDetails] = useState<StatusResponse | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [toast, setToast] = useState<ToastData | null>(null);
 
@@ -53,19 +54,71 @@ export default function App() {
   // Load dashboard stats on mount
   useEffect(() => {
     async function load() {
+      // Check index status first
       try {
-        setIndexStatus("indexing");
+        const statusRes = await api.repo.status();
+        setIndexDetails(statusRes);
+        if (statusRes.status === "fresh") setIndexStatus("fresh");
+        else if (statusRes.status === "stale") setIndexStatus("stale");
+        else setIndexStatus("missing");
+      } catch {
+        setIndexStatus("missing");
+      }
+
+      // Load overview
+      try {
+        setIndexStatus((prev) => prev === "missing" ? "indexing" : prev);
         const ov = await api.graph.overview();
         setOverviewData(ov);
         setCanvasState("overview");
-        setIndexStatus("indexed");
+        // Re-check status after loading to set correct state
+        const statusRes = await api.repo.status();
+        if (statusRes.status === "fresh") setIndexStatus("fresh");
+        else if (statusRes.status === "stale") setIndexStatus("stale");
       } catch {
         setCanvasState("empty");
-        setIndexStatus("not-indexed");
+        setIndexStatus("missing");
       }
     }
     load();
   }, []);
+
+  // Re-index handlers
+  const handleReindex = useCallback(async () => {
+    try {
+      setIndexStatus("indexing");
+      await api.repo.index("force");
+      const statusRes = await api.repo.status();
+      setIndexDetails(statusRes);
+      setIndexStatus(statusRes.status === "stale" ? "stale" : "fresh");
+      // Reload overview
+      const ov = await api.graph.overview();
+      setOverviewData(ov);
+      setCanvasState("overview");
+      showToast("info", "Index rebuilt successfully.");
+    } catch (e) {
+      setIndexStatus("error");
+      showToast("error", "Re-index failed.");
+    }
+  }, [showToast]);
+
+  const handleIncrementalIndex = useCallback(async () => {
+    try {
+      setIndexStatus("indexing");
+      await api.repo.index("incremental");
+      const statusRes = await api.repo.status();
+      setIndexDetails(statusRes);
+      setIndexStatus(statusRes.status === "stale" ? "stale" : "fresh");
+      // Reload overview
+      const ov = await api.graph.overview();
+      setOverviewData(ov);
+      setCanvasState("overview");
+      showToast("info", "Incremental index complete.");
+    } catch (e) {
+      setIndexStatus("error");
+      showToast("error", "Incremental update failed.");
+    }
+  }, [showToast]);
 
   // Handle symbol search in Topbar
   const handleSearch = useCallback(async (query: string): Promise<SearchResult[]> => {
@@ -188,6 +241,9 @@ export default function App() {
           setTheme={setTheme}
           onOpenLibrary={() => setLibraryOpen(true)}
           indexStatus={indexStatus}
+          indexDetails={indexDetails ?? undefined}
+          onReindex={handleReindex}
+          onIncrementalIndex={handleIncrementalIndex}
           onSearch={handleSearch}
           onSelectResult={handleSelectNode}
         />
@@ -278,7 +334,7 @@ function StateSwitcher({
   const inspectorOpts: (InspectorMode | "auto")[] = ["auto", "loading", "error"];
   const packOpts: ContextPackStatus[] = ["empty", "generating", "generated", "error"];
   const planOpts: ReadingPlanStatus[] = ["ready", "loading", "empty"];
-  const indexOpts: IndexStatus[] = ["indexed", "indexing", "failed", "not-indexed"];
+  const indexOpts: IndexStatus[] = ["fresh", "stale", "missing", "indexing", "error"];
 
   return (
     <div

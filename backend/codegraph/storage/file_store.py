@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from codegraph.graph.models import IndexMetadata
+
 
 class FileStore:
     """Read/write graph nodes and edges to JSON files."""
@@ -30,3 +32,16 @@ class FileStore:
         if not path.exists():
             return []
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_metadata(self, metadata: IndexMetadata) -> None:
+        path = self.base_dir / "metadata.json"
+        path.write_text(
+            metadata.model_dump_json(indent=2, exclude_none=True),
+            encoding="utf-8",
+        )
+
+    def load_metadata(self) -> IndexMetadata | None:
+        path = self.base_dir / "metadata.json"
+        if not path.exists():
+            return None
+        return IndexMetadata.model_validate_json(path.read_text(encoding="utf-8"))

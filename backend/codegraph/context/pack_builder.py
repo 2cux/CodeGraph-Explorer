@@ -13,6 +13,8 @@ from pathlib import Path
 from codegraph.context import ranking
 from codegraph.context import reading_plan as rplan
 from codegraph.context import markdown_exporter
+from codegraph.context.selection import ContextSelector
+from codegraph.context.token_budget import estimate_tokens
 from codegraph.context.models import (
     AffectedFile,
     AffectedSymbol,
@@ -34,6 +36,7 @@ from codegraph.context.models import (
     TaskIntent,
 )
 from codegraph.graph import impact as graph_impact
+from codegraph.graph.confidence import get_confidence_level, is_low_confidence
 from codegraph.graph.models import GraphNode, NodeType, EdgeType
 from codegraph.graph.store import GraphStore
 
@@ -126,94 +129,80 @@ def _search_candidates(
     return candidates
 
 
-# ── Context selection with token budgeting ────────────────────────────────────
+# ── Agent instructions ────────────────────────────────────────────────────────
 
 
-def _build_recommended_context(
+def _find_model_config_store_deps(
     store: GraphStore,
     entry_points: list[EntryPoint],
-    top_entry_nodes: list[GraphNode],
     related_ids: set[str],
-    max_tokens: int,
-) -> list[RecommendedContext]:
-    """Build recommended context list with token budgeting.
+) -> list[tuple[str, str, str, float]]:
+    """Find model/config/store nodes imported by files in the call graph.
 
-    Priority per PRD §14.4:
-      1. Entry point source code (critical, full source)
-      2. Direct callees (high, full source)
-      3. Callers and lower-priority symbols degrade to summary when over budget
-      4. Low-confidence symbols omitted from content (go to warnings only)
+    Returns list of ``(symbol_id, relation, reason, confidence)`` tuples.
     """
-    ctx_list: list[RecommendedContext] = []
-    ctx_count = 0
-    used_tokens = 0
+    result: list[tuple[str, str, str, float]] = []
+    seen: set[str] = set()
 
-    def _make_ctx(
-        node: GraphNode,
-        priority: str,
-        reason: str,
-        ctx_type: str = "code_snippet",
-    ) -> RecommendedContext | None:
-        nonlocal ctx_count, used_tokens
-
-        content = node.code_preview or ""
-        estimated = len(content) // 4
-
-        # Degrade if over budget (except critical items)
-        if used_tokens + estimated > max_tokens and priority != "critical":
-            content = (
-                f"Symbol: {node.name}\n"
-                f"Type: {node.type.value}\n"
-                f"File: {node.file_path}\n"
-                f"Signature: {node.signature or 'N/A'}"
-            )
-            estimated = len(content) // 4
-            if used_tokens + estimated > max_tokens:
-                # Summary also over budget — skip entirely
-                # (callers / low-pri will appear in related_symbols list)
-                return None
-
-        ctx_count += 1
-        loc = node.location
-        used_tokens += max(estimated, 1)
-        return RecommendedContext(
-            context_id=f"ctx_item_{ctx_count:03d}",
-            type=ctx_type,
-            symbol_id=node.id,
-            file_path=node.file_path or "",
-            line_start=loc.line_start if loc else 0,
-            line_end=loc.line_end if loc else 0,
-            priority=priority,
-            reason=reason,
-            content=content,
-            estimated_tokens=estimated,
-        )
-
-    # Level 1: Entry points (critical, full source)
-    ep_map = {n.id: n for n in top_entry_nodes}
+    # Collect file_ids from entry points and related symbols
+    file_ids: set[str] = set()
     for ep in entry_points:
-        node = ep_map.get(ep.symbol_id) or store.get_node(ep.symbol_id)
-        if node:
-            ctx = _make_ctx(node, "critical", ep.reason or "Main entry point for task")
-            if ctx:
-                ctx_list.append(ctx)
+        if ep.file_path:
+            file_ids.add(ep.file_path)
+    for sym_id in related_ids:
+        parts = sym_id.split("::", 1)
+        if parts[0]:
+            file_ids.add(parts[0])
 
-    # Level 2: Related symbols (high priority, full source if budget allows)
-    for sym_id in sorted(related_ids):
-        if used_tokens >= max_tokens:
-            break
-        if sym_id in {ep.symbol_id for ep in entry_points}:
-            continue
-        node = store.get_node(sym_id)
-        if node:
-            ctx = _make_ctx(node, "high", "Related symbol — downstream dependency or caller")
-            if ctx:
-                ctx_list.append(ctx)
+    # Build qualified_name → class node lookup
+    qual_to_class: dict[str, GraphNode] = {}
+    for node in store.all_nodes():
+        if node.type == NodeType.class_ and node.qualified_name:
+            qual_to_class[node.qualified_name] = node
 
-    return ctx_list
+    # For each file, trace imports → find model/config/store classes
+    for file_id in file_ids:
+        import_edges = store.get_outgoing_edges(file_id)
+        for edge in import_edges:
+            if edge.type != EdgeType.imports:
+                continue
+            import_node = store.get_node(edge.target)
+            if not import_node or not import_node.qualified_name:
+                continue
+            class_node = qual_to_class.get(import_node.qualified_name)
+            if not class_node:
+                continue
+            if class_node.id in seen:
+                continue
 
+            tags = class_node.tags
+            class_name = class_node.name
+            if "model" in tags and "config" not in tags:
+                seen.add(class_node.id)
+                result.append((
+                    class_node.id, "model_dependency", 2,
+                    f"Data model `{class_name}` — modifying features may require field additions or schema changes.",
+                ))
+            elif "config" in tags or "settings" in tags:
+                seen.add(class_node.id)
+                result.append((
+                    class_node.id, "config_dependency", 2,
+                    f"Configuration `{class_name}` — feature changes may need new config fields or settings.",
+                ))
+            elif "store" in tags or "persistence" in tags:
+                seen.add(class_node.id)
+                result.append((
+                    class_node.id, "persistence_dependency", 2,
+                    f"Persistence `{class_name}` — new or changed behavior may need corresponding store/repository updates.",
+                ))
+            elif "schema" in tags:
+                seen.add(class_node.id)
+                result.append((
+                    class_node.id, "schema_dependency", 2,
+                    f"Schema `{class_name}` — data structure changes may require schema updates.",
+                ))
 
-# ── Agent instructions ────────────────────────────────────────────────────────
+    return result
 
 
 def _build_agent_instructions(
@@ -270,7 +259,11 @@ def _discover_related_tests(
 ) -> tuple[list[RelatedTest], list[RelatedTest], list[str]]:
     """Discover existing tests and generate suggestions.
 
-    Phase 1: Find tests in the index matching by name or call-graph relation.
+    Phase 1: Find tests in the index via three strategies:
+      1a. ``tested_by`` edges from entry point symbols (strongest signal).
+      1b. Direct name matching — test function name contains an entry point name.
+      1c. Call graph — test node has outgoing ``calls`` edges to related symbols.
+
     Phase 2: When no tests exist, suggest test files based on naming
     conventions (``tests/test_<module>.py``, ``test_<symbol>_*``, …).
 
@@ -280,44 +273,73 @@ def _discover_related_tests(
     suggested_tests: list[RelatedTest] = []
     test_ids: list[str] = []
     ep_names_lower = {ep.name.lower() for ep in entry_points}
+    entry_symbol_ids = {ep.symbol_id for ep in entry_points}
     seen_test_ids: set[str] = set()
 
-    # Phase 1: Existing tests in the index
+    def _add_existing(node: GraphNode, reason: str, confidence: float) -> None:
+        if node.id in seen_test_ids:
+            return
+        seen_test_ids.add(node.id)
+        if node.id not in related_ids:
+            related_ids.add(node.id)
+        existing_tests.append(RelatedTest(
+            type="existing",
+            test_file=node.file_path or "",
+            test_name=node.name,
+            reason=reason,
+            confidence=confidence,
+        ))
+        test_ids.append(node.id)
+
+    # Phase 1a: tested_by edges from entry points → tests
+    for ep_id in entry_symbol_ids:
+        for edge in store.get_outgoing_edges(ep_id):
+            if edge.type == EdgeType.tested_by:
+                test_node = store.get_node(edge.target)
+                if test_node and test_node.type == NodeType.test:
+                    _add_existing(
+                        test_node,
+                        reason=f"Tested_by edge — this test directly covers `{test_node.name}`.",
+                        confidence=edge.confidence,
+                    )
+
+    # Phase 1b–1c: Scan all test nodes for name / call matches
     for node in store.all_nodes():
         if node.type != NodeType.test:
             continue
-        # Match by name
-        if any(ep_name in node.name.lower() for ep_name in ep_names_lower):
-            if node.id not in related_ids:
-                related_ids.add(node.id)
-            if node.id not in seen_test_ids:
-                seen_test_ids.add(node.id)
-                existing_tests.append(RelatedTest(
-                    type="existing",
-                    test_file=node.file_path or "",
-                    test_name=node.name,
-                    reason=f"Test name references task symbol: {node.name}",
-                    confidence=0.7,
-                ))
-                test_ids.append(node.id)
+        if node.id in seen_test_ids:
             continue
-        # Match by calling task-related symbols
+
+        # 1b: Match by name — strip test_ prefix and check against entry names
+        test_base = node.name
+        if test_base.startswith("test_"):
+            test_base = test_base[len("test_"):]
+        # Split and try substrings: login_success → [login_success, login]
+        parts = test_base.split("_")
+        matched = False
+        for i in range(len(parts), 0, -1):
+            candidate = "_".join(parts[:i])
+            if candidate in ep_names_lower:
+                _add_existing(
+                    node,
+                    reason=f"Test name `{node.name}` matches task symbol `{candidate}`.",
+                    confidence=0.7,
+                )
+                matched = True
+                break
+        if matched:
+            continue
+
+        # 1c: Match by calling task-related symbols
         for edge in store.get_outgoing_edges(node.id):
             if edge.type == EdgeType.calls and edge.target in related_ids:
                 target_node = store.get_node(edge.target)
                 target_name = target_node.name if target_node else edge.target
-                if node.id not in related_ids:
-                    related_ids.add(node.id)
-                if node.id not in seen_test_ids:
-                    seen_test_ids.add(node.id)
-                    existing_tests.append(RelatedTest(
-                        type="existing",
-                        test_file=node.file_path or "",
-                        test_name=node.name,
-                        reason=f"Test calls task-related symbol `{target_name}`",
-                        confidence=edge.confidence or 0.7,
-                    ))
-                    test_ids.append(node.id)
+                _add_existing(
+                    node,
+                    reason=f"Test calls task-related symbol `{target_name}`.",
+                    confidence=edge.confidence or 0.7,
+                )
                 break
 
     # Phase 2: Suggestions when no tests found
@@ -332,16 +354,18 @@ def _discover_related_tests(
                 type="suggested",
                 test_file=test_path,
                 test_name=f"test_{module_name}",
-                reason=f"Recommended: create test module for {file_path}",
+                reason=f"Recommended: create test module for {file_path or ep.name}",
                 confidence=0.5,
             ))
-            # test_<entry_point_name>_*
-            for ep_name in ep_names_lower:
+            # Specific test function suggestions based on entry point name
+            ep_name = ep.name.lower()
+            for suffix in ("success", "valid", "basic", "happy_path", "error", "invalid",
+                           "missing", "edge_case"):
                 suggested_tests.append(RelatedTest(
                     type="suggested",
                     test_file=test_path,
-                    test_name=f"test_{ep_name}_",
-                    reason=f"Recommended: test for `{ep_name}` covering success, error, and edge cases",
+                    test_name=f"test_{ep_name}_{suffix}",
+                    reason=f"Recommended: test `{ep_name}` — {suffix.replace('_', ' ')} scenario.",
                     confidence=0.5,
                 ))
 
@@ -446,6 +470,7 @@ def build_context_pack(
                     reason=f"Called by {node.name}",
                     importance=Importance.high,
                     confidence=edge.confidence,
+                    confidence_level=get_confidence_level(edge.confidence),
                 ))
             if edge.type == EdgeType.calls:
                 target_node = store.get_node(edge.target)
@@ -457,6 +482,7 @@ def build_context_pack(
                     source=node.id, target=edge.target, type="calls",
                     confidence=edge.confidence,
                     resolution=edge.metadata.resolution.value if edge.metadata and edge.metadata.resolution else "",
+                    confidence_level=get_confidence_level(edge.confidence),
                 ))
 
         # Incoming edges (callers)
@@ -471,6 +497,7 @@ def build_context_pack(
                     reason=f"Calls {node.name}",
                     importance=Importance.medium,
                     confidence=edge.confidence,
+                    confidence_level=get_confidence_level(edge.confidence),
                 ))
             if edge.type == EdgeType.calls:
                 source_node = store.get_node(edge.source)
@@ -482,6 +509,7 @@ def build_context_pack(
                     source=edge.source, target=node.id, type="calls",
                     confidence=edge.confidence,
                     resolution=edge.metadata.resolution.value if edge.metadata and edge.metadata.resolution else "",
+                    confidence_level=get_confidence_level(edge.confidence),
                 ))
 
         # Entry point itself in call graph
@@ -515,6 +543,7 @@ def build_context_pack(
                     impact_type=s.get("impact_type", "unknown"),
                     distance=s.get("distance", 1),
                     confidence=s.get("confidence", 0.0),
+                    confidence_level=get_confidence_level(s.get("confidence", 0.0)),
                 )
                 for s in result.get("affected_symbols", [])
             ],
@@ -536,6 +565,40 @@ def build_context_pack(
         for s in impact.affected_symbols:
             related_ids.add(s.symbol_id)
 
+    # ── Step 6.5: Discover model / config / store dependencies ──────────
+    mcs_deps = _find_model_config_store_deps(store, entry_points, related_ids)
+    model_ids: list[str] = []
+    config_ids: list[str] = []
+    store_ids: list[str] = []
+    for sym_id, relation, dist, reason in mcs_deps:
+        if sym_id not in related_ids:
+            related_ids.add(sym_id)
+        confidence = 0.85
+        if relation == "model_dependency":
+            importance = Importance.high
+            model_ids.append(sym_id)
+        elif relation == "config_dependency":
+            importance = Importance.high
+            config_ids.append(sym_id)
+        elif relation == "persistence_dependency":
+            importance = Importance.high
+            store_ids.append(sym_id)
+        elif relation == "schema_dependency":
+            importance = Importance.medium
+            model_ids.append(sym_id)
+        else:
+            importance = Importance.medium
+        related_symbols.append(RelatedSymbol(
+            symbol_id=sym_id,
+            relation=relation,
+            distance=dist,
+            direction="outgoing",
+            reason=reason,
+            importance=importance,
+            confidence=confidence,
+            confidence_level=get_confidence_level(confidence),
+        ))
+
     # ── Step 7: Discover related tests ────────────────────────────────────
     existing_tests: list[RelatedTest] = []
     suggested_tests: list[RelatedTest] = []
@@ -556,42 +619,104 @@ def build_context_pack(
                     reason=rt.reason,
                     importance=Importance.high,
                     confidence=rt.confidence,
+                    confidence_level=get_confidence_level(rt.confidence),
                 ))
 
     # ── Step 8: Select recommended context (with token budget) ────────────
-    recommended_context = _build_recommended_context(
-        store, entry_points, top_entry_nodes, related_ids, max_tokens,
-    )
+    selector = ContextSelector(store, task_description, max_tokens)
+
+    # Entry points always get critical priority — add them first
+    ep_context: list[RecommendedContext] = []
+    for i, ep in enumerate(entry_points):
+        node = store.get_node(ep.symbol_id)
+        if node:
+            content = node.code_preview or ""
+            loc = node.location
+            ep_context.append(RecommendedContext(
+                context_id=f"ctx_item_{i + 1:03d}",
+                type="code_snippet",
+                symbol_id=ep.symbol_id,
+                file_path=ep.file_path,
+                line_start=loc.line_start if loc else 0,
+                line_end=loc.line_end if loc else 0,
+                priority="critical",
+                reason=ep.reason or "Main entry point for task",
+                content=content,
+                estimated_tokens=estimate_tokens(content),
+                content_mode="full_source",
+                context_score=ep.score,
+            ))
+            selector.budget.spend(estimate_tokens(content))
+
+    # Run the selector for all related symbols
+    sel_recommended, sel_optional = selector.select(entry_points, related_symbols)
+    recommended_context = ep_context + sel_recommended
+    optional_context = sel_optional
 
     # ── Step 9: Build reading plan ────────────────────────────────────────
     callee_ids = [rs.symbol_id for rs in related_symbols if rs.relation == "callee"]
     caller_ids = [rs.symbol_id for rs in related_symbols if rs.relation == "caller"]
     entry_ids = [ep.symbol_id for ep in entry_points]
 
-    # Identify config / model / schema files among related symbols
-    config_ids = [
+    # Merge file-path-based config_ids with tag-based detection
+    file_config_ids = [
         sid for sid in related_ids
         if sid not in set(entry_ids) and rplan.is_config_file(sid.split("::")[0])
     ]
+    all_config_ids = list(dict.fromkeys(config_ids + file_config_ids))
+
+    # Detect whether any entry point is a route handler
+    has_route_handler = any(
+        "route" in (store.get_node(ep.symbol_id).tags if store.get_node(ep.symbol_id) else [])
+        for ep in entry_points
+    )
+
+    # Collect low-confidence symbol IDs for deferred reading plan placement
+    low_conf_id_set: set[str] = {
+        rs.symbol_id for rs in related_symbols if is_low_confidence(rs.confidence)
+    }
 
     reading_plan = rplan.build_reading_plan(
         entry_point_ids=entry_ids,
         callee_ids=callee_ids,
         caller_ids=caller_ids,
         test_ids=test_ids,
-        config_ids=config_ids,
+        config_ids=all_config_ids,
+        model_ids=model_ids,
+        store_ids=store_ids,
         has_suggested_tests=bool(suggested_tests),
+        has_route_handler=has_route_handler,
         max_steps=max_files + 4,
+        low_confidence_ids=low_conf_id_set,
     )
 
     # ── Step 10: Build agent instructions ─────────────────────────────────
     warnings: list[str] = []
-    low_conf_edges = [e for e in call_edges if e.confidence < 0.6]
+
+    # Collect low-confidence edges (< 0.60) for warnings
+    low_conf_edges = [e for e in call_edges if is_low_confidence(e.confidence)]
     if low_conf_edges:
-        warnings.append(
-            f"{len(low_conf_edges)} edge(s) have confidence below 0.6 — "
-            "treat these relationships as weak signals."
+        edge_details = ", ".join(
+            f"{e.source.split('::')[-1]}→{e.target.split('::')[-1]} ({e.confidence:.2f})"
+            for e in low_conf_edges[:5]
         )
+        warnings.append(
+            f"{len(low_conf_edges)} edge(s) have confidence below 0.60 — "
+            f"treat these relationships as weak signals: {edge_details}"
+        )
+
+    # Collect low-confidence related symbols
+    low_conf_symbols = [rs for rs in related_symbols if is_low_confidence(rs.confidence)]
+    if low_conf_symbols:
+        sym_details = ", ".join(
+            f"{rs.symbol_id.split('::')[-1]} ({rs.relation}, {rs.confidence:.2f})"
+            for rs in low_conf_symbols[:5]
+        )
+        warnings.append(
+            f"{len(low_conf_symbols)} related symbol(s) have low confidence — "
+            f"verify manually before relying on them: {sym_details}"
+        )
+
     if not entry_points:
         warnings.append(
             "No entry points found — the task may not match the indexed codebase."
@@ -630,11 +755,13 @@ def build_context_pack(
         call_graph=call_graph,
         impact=impact,
         recommended_context=recommended_context,
+        optional_context=optional_context,
         related_tests=existing_tests,
         suggested_tests=suggested_tests,
         reading_plan=reading_plan,
         agent_instructions=agent_instructions,
         exports=ExportsInfo(),
+        token_budget=selector.budget.as_dict(),
     )
 
     # ── Step 12: Export JSON + Markdown ───────────────────────────────────

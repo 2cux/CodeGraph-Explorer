@@ -5,7 +5,7 @@ PRD §14.3 — Entry point ranking rules.
 
 import re
 
-from codegraph.graph.models import GraphNode
+from codegraph.graph.models import GraphNode, NodeType
 
 _STOPWORDS: frozenset[str] = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -89,6 +89,15 @@ def score_relevance(node: GraphNode, task_description: str) -> float:
             matched += 1
             score = max(score, 0.70)
 
+    # 6. Route handler boost — route handlers are strong entry points
+    if "route" in node.tags:
+        score = max(score, 0.70)
+        score = min(score + 0.05, 1.0)
+
+    # 7. Test function penalty — tests should not outrank real logic
+    if node.type == NodeType.test:
+        score = min(score, 0.60)
+
     if matched == 0:
         return 0.0
 
@@ -130,6 +139,14 @@ def build_reason(node: GraphNode, tokens: list[str]) -> str:
     parts: list[str] = []
     name_lower = node.name.lower()
     path_lower = node.file_path.lower()
+
+    # Route handler — primary signal, always first
+    route = node.metadata.get("route")
+    if route:
+        framework = route.get("framework", "")
+        method = route.get("method", "")
+        path = route.get("path", "")
+        parts.append(f"HTTP route handler ({framework} {method} {path}) — entry point for external requests")
 
     name_matches = [t for t in tokens if t in name_lower or name_lower.startswith(t)]
     path_matches = [t for t in tokens if t in path_lower]

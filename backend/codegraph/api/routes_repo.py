@@ -1,6 +1,6 @@
 """Repository API routes.
 
-PRD §16.1 — GET /api/repo/summary, POST /api/repo/index
+PRD §16.1 — GET /api/repo/summary, GET /api/repo/status, POST /api/repo/index
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,8 +8,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from codegraph.api.deps import get_store, get_commit_hash
+from codegraph.api.deps import get_store, get_commit_hash, get_codegraph_dir
 from codegraph.graph.store import GraphStore
+from codegraph.indexer.graph_builder import build_index, build_index_from_paths
+from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
+from codegraph.indexer.status import detect_status
+from codegraph.storage.file_store import FileStore
+from codegraph.graph.models import FileEntry, IndexMetadata, GraphNode, GraphEdge
+from pydantic import TypeAdapter
 
 router = APIRouter(prefix="/api/repo", tags=["repo"])
 
@@ -26,6 +32,19 @@ class RepoSummaryResponse(BaseModel):
     commit_hash: str | None = None
     failed_files: int = 0
     low_confidence_ratio: float = 0.0
+
+
+class StatusResponse(BaseModel):
+    status: str  # "fresh" | "stale" | "missing"
+    indexed_at: str | None = None
+    changed_files: list[str] = []
+    added_files: list[str] = []
+    deleted_files: list[str] = []
+    recommendation: str = ""
+
+
+class IndexRequest(BaseModel):
+    mode: str = "force"  # "force" | "incremental"
 
 
 class IndexResponse(BaseModel):
@@ -64,15 +83,109 @@ async def get_repo_summary(store: GraphStore = Depends(get_store)):
     )
 
 
-@router.post("/index", response_model=IndexResponse)
-async def trigger_indexing():
-    """Trigger a full codebase index.
+@router.get("/status", response_model=StatusResponse)
+async def get_repo_status():
+    """Check index freshness — fresh, stale, or missing."""
+    cg_dir = get_codegraph_dir()
+    metadata_path = cg_dir / "metadata.json"
+    if not metadata_path.exists():
+        return StatusResponse(
+            status="missing",
+            recommendation="Run codegraph index <project>",
+        )
 
-    The actual indexing logic lives in codegraph/indexer/.
-    This endpoint delegates to the CLI index command.
+    store = FileStore(cg_dir)
+    metadata = store.load_metadata()
+    root_path = Path(metadata.root_path) if metadata and metadata.root_path else cg_dir.parent
+    result = detect_status(root_path, metadata)
+
+    return StatusResponse(
+        status=result.status,
+        indexed_at=result.indexed_at,
+        changed_files=result.changed_files,
+        added_files=result.added_files,
+        deleted_files=result.deleted_files,
+        recommendation=result.recommendation,
+    )
+
+
+@router.post("/index", response_model=IndexResponse)
+async def trigger_indexing(body: IndexRequest | None = None):
+    """Trigger a full or incremental index build.
+
+    Body: {"mode": "force"} or {"mode": "incremental"}
     """
-    raise HTTPException(
-        status_code=501,
-        detail="Indexing is not available via API. "
-        "Run 'codegraph index' from the CLI.",
+    from codegraph.cli.main import _save_index_artifacts
+
+    mode = body.mode if body else "force"
+    cg_dir = get_codegraph_dir()
+    root_path = cg_dir.parent
+    store = FileStore(cg_dir)
+
+    if mode == "incremental":
+        metadata = store.load_metadata()
+        status_result = detect_status(root_path, metadata)
+
+        if status_result.status == "missing":
+            raise HTTPException(
+                status_code=400,
+                detail="No existing index found. Use mode=force for initial indexing.",
+            )
+        if status_result.status == "fresh":
+            return IndexResponse(
+                status="ok",
+                message="Index is fresh. No changes detected.",
+            )
+
+        # Load existing and apply incremental update
+        node_adapter = TypeAdapter(list[GraphNode])
+        edge_adapter = TypeAdapter(list[GraphEdge])
+
+        existing_nodes_data = store.load_nodes()
+        existing_edges_data = store.load_edges()
+        current_nodes = node_adapter.validate_python(existing_nodes_data)
+        current_edges = edge_adapter.validate_python(existing_edges_data)
+
+        files_to_remove = set(status_result.deleted_files) | set(status_result.changed_files)
+        removed_node_ids: set[str] = set()
+        if files_to_remove:
+            for f in files_to_remove:
+                removed_node_ids.update(n.id for n in current_nodes if n.file_path == f)
+            current_nodes = [n for n in current_nodes if n.file_path not in files_to_remove]
+            current_edges = [
+                e for e in current_edges
+                if e.source not in removed_node_ids and e.target not in removed_node_ids
+            ]
+
+        files_to_reindex = [
+            root_path / rel
+            for rel in status_result.changed_files + status_result.added_files
+        ]
+        files_to_reindex = [p for p in files_to_reindex if p.exists()]
+
+        if files_to_reindex:
+            new_nodes, new_edges = build_index_from_paths(root_path, files_to_reindex)
+            current_nodes.extend(new_nodes)
+            current_edges.extend(new_edges)
+
+        _save_index_artifacts(cg_dir, current_nodes, current_edges, root_path)
+
+        return IndexResponse(
+            status="ok",
+            message=f"Incrementally updated index — {status_result.total_changes} file(s) affected.",
+            file_count=len({n.file_path for n in current_nodes}),
+            symbol_count=len(current_nodes),
+            edge_count=len(current_edges),
+        )
+
+    # mode == "force" — full rebuild
+    nodes, edges = build_index(root_path)
+    _save_index_artifacts(cg_dir, nodes, edges, root_path)
+
+    return IndexResponse(
+        status="ok",
+        message="Full index rebuilt successfully.",
+        file_count=len({n.file_path for n in nodes}),
+        symbol_count=len(nodes),
+        edge_count=len(edges),
     )

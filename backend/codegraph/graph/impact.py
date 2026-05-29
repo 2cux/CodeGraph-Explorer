@@ -5,6 +5,7 @@ PRD §19 — Impact analysis logic.
 
 from collections import deque
 
+from codegraph.graph.confidence import get_confidence_level, is_low_confidence
 from codegraph.graph.store import GraphStore
 from codegraph.graph.models import EdgeType, NodeType
 
@@ -142,10 +143,24 @@ def _assess_risk(
     is_api = _is_public_api(file_path)
     has_state_mutation = _has_state_mutation(file_path)
 
+    # Route handler metadata — always a public API surface
+    route_info = center_node.metadata.get("route") if center_node and center_node.metadata else None
+    is_route = bool(route_info) or ("route" in (center_node.tags if center_node else []))
+    if is_route:
+        is_api = True
+        rfw = route_info.get("framework", "") if route_info else ""
+        rmethod = route_info.get("method", "") if route_info else ""
+        rpath = route_info.get("path", "") if route_info else ""
+        reasons.append(f"HTTP route handler ({rfw} {rmethod} {rpath}) — changes affect the external API contract.")
+        # Route path sensitivity: auth, payment, admin, delete endpoints
+        if rpath and _is_sensitive_path(rpath):
+            is_sensitive = True
+            reasons.append(f"Route path `{rpath}` touches a security-sensitive endpoint.")
+
     # Build evidence
-    if is_sensitive:
+    if is_sensitive and not is_route:
         reasons.append("Security-sensitive path — involves auth, credentials, or security logic.")
-    if is_api:
+    if is_api and not is_route:
         reasons.append("Public API route — changes affect external interfaces.")
     if has_state_mutation:
         reasons.append("State mutation — this code writes or persists data.")
@@ -243,6 +258,94 @@ def _build_recommendations(
     return order
 
 
+def _add_model_config_store_impact(
+    store: GraphStore,
+    node_id: str,
+    center_node,
+    affected_symbols: list[dict],
+    affected_files: dict[str, dict],
+) -> None:
+    """Find model/config/store classes imported by the center node's file.
+
+    Adds them as affected symbols with ``shared_model`` or ``config_dependency``
+    impact types.
+    """
+    if not center_node or not center_node.file_path:
+        return
+
+    file_id = center_node.file_path
+    seen: set[str] = set()
+
+    # Build qualified_name → class node lookup
+    qual_to_class: dict[str, GraphNode] = {}
+    for node in store.all_nodes():
+        if node.type == NodeType.class_ and node.qualified_name:
+            qual_to_class[node.qualified_name] = node
+
+    for edge in store.get_outgoing_edges(file_id):
+        if edge.type != EdgeType.imports:
+            continue
+        import_node = store.get_node(edge.target)
+        if not import_node or not import_node.qualified_name:
+            continue
+        class_node = qual_to_class.get(import_node.qualified_name)
+        if not class_node:
+            continue
+        if class_node.id in seen:
+            continue
+
+        tags = class_node.tags
+        class_name = class_node.name
+
+        def _entry(sid: str, reason: str, impact_type: str) -> dict:
+            n = store.get_node(sid)
+            conf = 0.85
+            return {
+                "symbol_id": sid,
+                "name": n.name if n else sid,
+                "type": n.type.value if n and hasattr(n.type, "value") else "unknown",
+                "file_path": n.file_path if n else "",
+                "reason": reason,
+                "impact_type": impact_type,
+                "distance": 1,
+                "confidence": conf,
+                "confidence_level": get_confidence_level(conf),
+            }
+
+        if "model" in tags and "config" not in tags:
+            seen.add(class_node.id)
+            affected_symbols.append(_entry(
+                class_node.id,
+                f"Data model `{class_name}` — modifying `{center_node.name}` may require field additions or schema changes.",
+                "shared_model",
+            ))
+            if class_node.file_path:
+                _add_file(affected_files, class_node.file_path,
+                          f"Data model file — changes may require field updates.", "high")
+
+        elif "config" in tags or "settings" in tags:
+            seen.add(class_node.id)
+            affected_symbols.append(_entry(
+                class_node.id,
+                f"Configuration `{class_name}` — changes to `{center_node.name}` may need new config fields or settings.",
+                "config_dependency",
+            ))
+            if class_node.file_path:
+                _add_file(affected_files, class_node.file_path,
+                          f"Configuration file — feature changes may need config updates.", "high")
+
+        elif "store" in tags or "persistence" in tags:
+            seen.add(class_node.id)
+            affected_symbols.append(_entry(
+                class_node.id,
+                f"Persistence `{class_name}` — behavior changes in `{center_node.name}` may require store or repository updates.",
+                "upstream_caller",
+            ))
+            if class_node.file_path:
+                _add_file(affected_files, class_node.file_path,
+                          f"Persistence layer file — data read/write changes may be needed.", "high")
+
+
 # ── Public API ─────────────────────────────────────────────────────────────
 
 
@@ -256,6 +359,7 @@ def analyze_impact(
       changed_symbol_type  — type of the changed symbol
       affected_symbols     — list of affected symbol dicts
       affected_files       — list of affected file dicts
+      related_tests        — list of dicts with test info (existing tests + gaps)
       risk                 — dict with ``level``, ``score``, and ``reasons``
       recommendations      — ordered check-step strings (read this, update that…)
       warnings             — list of warning strings (low-confidence edges, …)
@@ -266,6 +370,7 @@ def analyze_impact(
             "changed_symbol": node_id,
             "affected_symbols": [],
             "affected_files": [],
+            "related_tests": [],
             "risk": {"level": "unknown", "reasons": ["Symbol not found in index."]},
             "recommendations": [],
             "warnings": ["Symbol not found in index."],
@@ -282,10 +387,10 @@ def analyze_impact(
 
     # Count low-confidence edges connected to the center
     for edge in store.get_outgoing_edges(node_id):
-        if edge.confidence < 0.6:
+        if is_low_confidence(edge.confidence):
             low_conf_count += 1
     for edge in store.get_incoming_edges(node_id):
-        if edge.confidence < 0.6:
+        if is_low_confidence(edge.confidence):
             low_conf_count += 1
 
     # Helper to build symbol dicts with common fields
@@ -311,6 +416,7 @@ def analyze_impact(
             "impact_type": impact_type,
             "distance": distance,
             "confidence": confidence,
+            "confidence_level": get_confidence_level(confidence),
         }
 
     # Direct definition of the changed symbol
@@ -360,22 +466,67 @@ def analyze_impact(
             _add_file(affected_files, node.file_path,
                       f"Downstream callee at distance {dist}.", "medium")
 
-    # Tests and references touching the changed symbol
+    # ── Model / config / store dependencies via imports ─────────────────
+    _add_model_config_store_impact(store, node_id, center, affected_symbols, affected_files)
+
+    # ── Tests: collect related tests via tested_by and calls edges ──────
+    related_tests: list[dict] = []
+    has_tests = False
+    seen_test_ids: set[str] = set()
+
+    # Direct tested_by edges (target --tested_by--> test)
+    for edge in store.get_outgoing_edges(node_id):
+        if edge.type == EdgeType.tested_by:
+            test_node = store.get_node(edge.target)
+            if test_node and test_node.id not in seen_test_ids:
+                has_tests = True
+                seen_test_ids.add(test_node.id)
+                related_tests.append({
+                    "symbol_id": test_node.id,
+                    "name": test_node.name,
+                    "file_path": test_node.file_path or "",
+                    "reason": "Tested_by edge — this test directly covers the changed symbol.",
+                    "confidence": edge.confidence,
+                    "type": "existing",
+                })
+                affected_symbols.append(_symbol_entry(
+                    symbol_id=test_node.id,
+                    reason="Test coverage — this test exercises the changed symbol.",
+                    impact_type="test_coverage",
+                    distance=1,
+                    confidence=edge.confidence,
+                    node=test_node,
+                ))
+                if test_node.file_path:
+                    _add_file(affected_files, test_node.file_path,
+                              "Test file covering this symbol.", "high")
+
+    # Tests that directly call the changed symbol (calls edge from test → target)
     for edge in store.get_incoming_edges(node_id):
         src_node = store.get_node(edge.source)
-        if src_node and src_node.type == NodeType.test:
-            has_tests = True
-            affected_symbols.append(_symbol_entry(
-                symbol_id=edge.source,
-                reason="Test coverage — this test exercises the changed symbol.",
-                impact_type="test_coverage",
-                distance=1,
-                confidence=0.8,
-                node=src_node,
-            ))
-            if src_node.file_path:
-                _add_file(affected_files, src_node.file_path,
-                          "Test file covering this symbol.", "high")
+        if src_node and src_node.type == NodeType.test and edge.type == EdgeType.calls:
+            if src_node.id not in seen_test_ids:
+                has_tests = True
+                seen_test_ids.add(src_node.id)
+                related_tests.append({
+                    "symbol_id": src_node.id,
+                    "name": src_node.name,
+                    "file_path": src_node.file_path or "",
+                    "reason": "Test calls the changed symbol directly.",
+                    "confidence": edge.confidence,
+                    "type": "existing",
+                })
+                affected_symbols.append(_symbol_entry(
+                    symbol_id=edge.source,
+                    reason="Test coverage — this test exercises the changed symbol.",
+                    impact_type="test_coverage",
+                    distance=1,
+                    confidence=edge.confidence,
+                    node=src_node,
+                ))
+                if src_node.file_path:
+                    _add_file(affected_files, src_node.file_path,
+                              "Test file covering this symbol.", "high")
         elif edge.type == EdgeType.references:
             ref_node = store.get_node(edge.source)
             if ref_node and ref_node.file_path:
@@ -388,6 +539,15 @@ def analyze_impact(
             caller_node = store.get_node(caller_id)
             if caller_node and caller_node.type == NodeType.test:
                 has_tests = True
+                seen_test_ids.add(caller_id)
+                related_tests.append({
+                    "symbol_id": caller_id,
+                    "name": caller_node.name,
+                    "file_path": caller_node.file_path or "",
+                    "reason": "Test is an upstream caller of the changed symbol.",
+                    "confidence": 0.6,
+                    "type": "existing",
+                })
                 break
             if caller_node and caller_node.file_path and _is_test_file(caller_node.file_path):
                 has_tests = True
@@ -422,6 +582,7 @@ def analyze_impact(
         ),
         "affected_symbols": affected_symbols,
         "affected_files": list(affected_files.values()),
+        "related_tests": related_tests,
         "risk": {"level": level, "reasons": reasons},
         "recommendations": recommendations,
         "warnings": warnings,

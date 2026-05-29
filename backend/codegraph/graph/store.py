@@ -134,6 +134,57 @@ class GraphStore:
         self.add_nodes(nodes)
         self.add_edges(edges)
 
+    def remove_node(self, node_id: str) -> bool:
+        """Remove a single node by ID. Returns True if removed."""
+        if node_id not in self._nodes:
+            return False
+        del self._nodes[node_id]
+        return True
+
+    def remove_edges_by_file(self, file_path: str) -> int:
+        """Remove all edges where either endpoint belongs to *file_path*.
+
+        First collects node IDs that belong to the file, then removes
+        all edges touching those nodes. Returns the count removed.
+        """
+        file_node_ids = {
+            nid for nid, n in self._nodes.items()
+            if n.file_path == file_path
+        }
+        if not file_node_ids:
+            return 0
+
+        removed = 0
+        kept: list[GraphEdge] = []
+        for e in self._edges:
+            if e.source in file_node_ids or e.target in file_node_ids:
+                removed += 1
+            else:
+                kept.append(e)
+
+        self._edges = kept
+        self._edges_by_source.clear()
+        self._edges_by_target.clear()
+        for e in kept:
+            self._edges_by_source.setdefault(e.source, []).append(e)
+            self._edges_by_target.setdefault(e.target, []).append(e)
+
+        return removed
+
+    def remove_nodes_by_file(self, file_path: str) -> int:
+        """Remove all nodes belonging to *file_path*. Returns count removed.
+
+        Also removes all edges touching those nodes.
+        """
+        to_remove = [
+            nid for nid, n in self._nodes.items()
+            if n.file_path == file_path
+        ]
+        self.remove_edges_by_file(file_path)
+        for nid in to_remove:
+            del self._nodes[nid]
+        return len(to_remove)
+
     def clear(self) -> None:
         """Remove all data from the store."""
         self._nodes.clear()

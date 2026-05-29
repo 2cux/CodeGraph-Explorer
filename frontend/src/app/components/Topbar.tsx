@@ -9,7 +9,7 @@ import {
 } from "./icons";
 import { Spinner } from "./Spinner";
 
-export type IndexStatus = "indexed" | "indexing" | "failed" | "not-indexed";
+export type IndexStatus = "fresh" | "stale" | "missing" | "indexing" | "error";
 type Theme = "system" | "light" | "dark";
 
 const MOCK_SYMBOLS = [
@@ -45,7 +45,10 @@ export function Topbar({
   theme,
   setTheme,
   onOpenLibrary,
-  indexStatus = "indexed",
+  indexStatus = "missing",
+  indexDetails,
+  onReindex,
+  onIncrementalIndex,
   onSearch,
   onSelectResult,
 }: {
@@ -53,6 +56,14 @@ export function Topbar({
   setTheme: (t: Theme) => void;
   onOpenLibrary?: () => void;
   indexStatus?: IndexStatus;
+  indexDetails?: {
+    changed_files?: string[];
+    added_files?: string[];
+    deleted_files?: string[];
+    recommendation?: string;
+  };
+  onReindex?: () => void;
+  onIncrementalIndex?: () => void;
   onSearch?: (query: string) => Promise<{ name: string; symbol_id: string; type: string; file_path: string }[]>;
   onSelectResult?: (symbolId: string) => void;
 }) {
@@ -107,16 +118,18 @@ export function Topbar({
   const nextTheme: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
 
   const indexLabel: Record<IndexStatus, string> = {
-    indexed: "Indexed",
+    fresh: "Fresh",
+    stale: "Stale",
+    missing: "Missing",
     indexing: "Indexing",
-    failed: "Failed",
-    "not-indexed": "Not indexed",
+    error: "Error",
   };
   const indexColor: Record<IndexStatus, string> = {
-    indexed: "var(--cg-success)",
+    fresh: "var(--cg-success)",
+    stale: "var(--cg-warning)",
+    missing: "var(--cg-text-muted)",
     indexing: "var(--cg-accent)",
-    failed: "var(--cg-error)",
-    "not-indexed": "var(--cg-text-muted)",
+    error: "var(--cg-error)",
   };
 
   return (
@@ -320,21 +333,95 @@ export function Topbar({
               top: "100%",
               left: 0,
               marginTop: 4,
-              padding: "8px 10px",
+              padding: "10px 12px",
               background: "var(--cg-bg-elevated)",
               border: "1px solid var(--cg-border)",
               borderRadius: 4,
               boxShadow: "0 4px 12px -4px rgba(0,0,0,0.25)",
               zIndex: 50,
-              whiteSpace: "nowrap",
+              minWidth: 260,
               fontSize: 11,
               color: "var(--cg-text-secondary)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
             }}
           >
-            {indexStatus === "indexed" && "Repository indexed. All symbols available."}
-            {indexStatus === "indexing" && "Indexing in progress…"}
-            {indexStatus === "failed" && "Indexing failed. Check the log for details."}
-            {indexStatus === "not-indexed" && "Run codegraph index to index this repository."}
+            {indexStatus === "fresh" && (
+              <span>Index is up to date. No file changes detected.</span>
+            )}
+            {indexStatus === "missing" && (
+              <span>No index found. Run <code style={{fontSize:10}}>codegraph index</code> to create one.</span>
+            )}
+            {indexStatus === "indexing" && <span>Indexing in progress...</span>}
+            {indexStatus === "error" && <span>Indexing failed. Check the logs.</span>}
+            {indexStatus === "stale" && (
+              <>
+                <span style={{ color: "var(--cg-warning)", fontWeight: 500 }}>
+                  Index is stale — file changes detected.
+                </span>
+                {indexDetails?.changed_files && indexDetails.changed_files.length > 0 && (
+                  <div>
+                    <span style={{ fontSize: 10, fontWeight: 600 }}>Changed:</span>
+                    {indexDetails.changed_files.slice(0, 5).map((f) => (
+                      <div key={f} className="cg-mono" style={{ fontSize: 9, paddingLeft: 8 }}>- {f}</div>
+                    ))}
+                    {indexDetails.changed_files.length > 5 && (
+                      <div className="cg-mono" style={{ fontSize: 9, paddingLeft: 8 }}>
+                        ... and {indexDetails.changed_files.length - 5} more
+                      </div>
+                    )}
+                  </div>
+                )}
+                {indexDetails?.added_files && indexDetails.added_files.length > 0 && (
+                  <div>
+                    <span style={{ fontSize: 10, fontWeight: 600 }}>Added:</span>
+                    {indexDetails.added_files.slice(0, 5).map((f) => (
+                      <div key={f} className="cg-mono" style={{ fontSize: 9, paddingLeft: 8, color: "var(--cg-success)" }}>+ {f}</div>
+                    ))}
+                  </div>
+                )}
+                {indexDetails?.deleted_files && indexDetails.deleted_files.length > 0 && (
+                  <div>
+                    <span style={{ fontSize: 10, fontWeight: 600 }}>Deleted:</span>
+                    {indexDetails.deleted_files.slice(0, 5).map((f) => (
+                      <div key={f} className="cg-mono" style={{ fontSize: 9, paddingLeft: 8, color: "var(--cg-error)" }}>x {f}</div>
+                    ))}
+                  </div>
+                )}
+                {(onIncrementalIndex || onReindex) && (
+                  <div style={{ display: "flex", gap: 5, marginTop: 4 }}>
+                    {onIncrementalIndex && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onIncrementalIndex(); }}
+                        style={{
+                          height: 24, padding: "0 8px", fontSize: 10, fontFamily: "inherit",
+                          background: "var(--cg-accent)", color: "#fff", border: "none",
+                          borderRadius: 3, cursor: "pointer",
+                        }}
+                      >
+                        Incremental Update
+                      </button>
+                    )}
+                    {onReindex && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onReindex(); }}
+                        style={{
+                          height: 24, padding: "0 8px", fontSize: 10, fontFamily: "inherit",
+                          background: "transparent", color: "var(--cg-text-secondary)",
+                          border: "1px solid var(--cg-border)", borderRadius: 3, cursor: "pointer",
+                        }}
+                      >
+                        Re-index
+                      </button>
+                    )}
+                  </div>
+                )}
+                {!onIncrementalIndex && !onReindex && indexDetails?.recommendation && (
+                  <code className="cg-mono" style={{ fontSize: 10 }}>{indexDetails.recommendation}</code>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

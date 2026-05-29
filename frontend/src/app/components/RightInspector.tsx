@@ -184,7 +184,8 @@ function NodeInspector() {
       <InspectorSection title="Selection Reason">
         <ReasonLine>Entry point for login flow.</ReasonLine>
         <KV label="Match" value="name, docstring" />
-        <KV label="Confidence" value="0.95" tone="success" mono />
+        <KV label="Confidence" value="0.95 (High)" tone="success" mono />
+        <KV label="Resolution" value="FastAPI route decorator" />
       </InspectorSection>
 
       <InspectorSection title="Relations">
@@ -243,9 +244,53 @@ function NodeIdentity({ kind, name, location }: { kind: string; name: string; lo
   );
 }
 
+function confidenceLevelLabel(c: number): { label: string; tone: "success" | "warning" | "muted" } {
+  if (c >= 0.80) return { label: "High", tone: "success" };
+  if (c >= 0.60) return { label: "Medium", tone: "warning" };
+  if (c >= 0.40) return { label: "Low", tone: "warning" };
+  return { label: "Unknown", tone: "muted" };
+}
+
+function resolutionLabel(r: string): string {
+  const map: Record<string, string> = {
+    same_file_exact: "Same-file exact call",
+    imported_function_exact: "Imported function (exact name)",
+    imported_function_alias: "Imported function (aliased)",
+    imported_module_attribute: "Module attribute access",
+    relative_import_resolved: "Relative import resolved",
+    self_method_resolved: "Self method call",
+    parameter_type_hint_resolved: "Parameter type hint",
+    local_instance_resolved: "Local instance resolved",
+    module_instance_resolved: "Module-level instance resolved",
+    constructor_call_resolved: "Constructor chain call",
+    self_attribute_instance_resolved: "Self-attribute instance",
+    exact_ast_match: "Exact AST match (structural)",
+    direct_test_call: "Direct test call",
+    test_name_heuristic: "Test name heuristic",
+    test_file_heuristic: "Test file name match",
+    fastapi_route_decorator: "FastAPI route decorator",
+    flask_route_decorator: "Flask route decorator",
+    django_view_heuristic: "Django view heuristic",
+    pydantic_model_detected: "Pydantic BaseModel",
+    config_class_detected: "Config class detected",
+    store_name_match: "Store name match",
+    unresolved: "Unresolved",
+    external_symbol: "External symbol",
+  };
+  return map[r] || r;
+}
+
 function EdgeInspector() {
   const confidence = 0.72;
-  const isLow = confidence < 0.8;
+  const level = confidenceLevelLabel(confidence);
+  const resolution = "imported_function_exact";
+  const isLow = confidence < 0.80;
+  const evidence = {
+    import_statement: "from app.services.auth_service import verify_token",
+    local_name: "verify_token",
+    matched_symbol_id: "app/services/auth_service.py::verify_token",
+    source_location: { file_path: "app/api/auth.py", line_start: 45 },
+  };
 
   return (
     <div style={{ padding: "12px 14px 16px", display: "flex", flexDirection: "column" }}>
@@ -253,8 +298,8 @@ function EdgeInspector() {
 
       <InspectorSection title="Properties">
         <KV label="Type" value="calls" mono />
-        <KV label="Confidence" value={confidence.toFixed(2)} tone={isLow ? "warning" : "success"} mono />
-        <KV label="Resolution" value="static_parse" mono />
+        <KV label="Confidence" value={`${confidence.toFixed(2)} (${level.label})`} tone={level.tone} mono />
+        <KV label="Resolution" value={resolutionLabel(resolution)} mono />
       </InspectorSection>
 
       <InspectorSection title="Source Location">
@@ -266,8 +311,16 @@ function EdgeInspector() {
 
       <InspectorSection title="Reason">
         <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "var(--cg-text-secondary)" }}>
-          Direct function call detected in AST parse.
+          Resolved `verify_token` via from-import.
         </p>
+      </InspectorSection>
+
+      <InspectorSection title="Evidence">
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <KV label="Import" value={evidence.import_statement} />
+          <KV label="Matched" value={evidence.matched_symbol_id} />
+          <KV label="Location" value={`${evidence.source_location.file_path}:${evidence.source_location.line_start}`} />
+        </div>
       </InspectorSection>
 
       {isLow && <LowConfidenceNotice />}
