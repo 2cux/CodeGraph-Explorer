@@ -141,12 +141,8 @@ def build_reason(node: GraphNode, tokens: list[str]) -> str:
     path_lower = node.file_path.lower()
 
     # Route handler — primary signal, always first
-    route = node.metadata.get("route")
-    if route:
-        framework = route.get("framework", "")
-        method = route.get("method", "")
-        path = route.get("path", "")
-        parts.append(f"HTTP route handler ({framework} {method} {path}) — entry point for external requests")
+    if "route" in node.tags:
+        parts.append("Route handler — entry point for external HTTP requests")
 
     name_matches = [t for t in tokens if t in name_lower or name_lower.startswith(t)]
     path_matches = [t for t in tokens if t in path_lower]

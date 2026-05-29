@@ -1,7 +1,7 @@
-"""Context Pack API routes.
+"""Context Pack API routes — Evidence Pack output.
 
-PRD §16.1 — POST /api/context-pack
-PRD §16.2 — request / response schema
+POST /api/context-pack — returns structured code evidence only.
+No reading plans, agent instructions, or action directives.
 """
 from pathlib import Path
 
@@ -25,6 +25,7 @@ class ContextPackRequest(BaseModel):
     max_tokens: int = 6000
     include_tests: bool = True
     depth: int = 2
+    debug_plan: bool = False
 
 
 # ── Response models ──────────────────────────────────────────────
@@ -58,6 +59,7 @@ class RelatedSymbolItem(BaseModel):
     reason: str = ""
     importance: str = "medium"
     confidence: float = 0.0
+    confidence_level: str = "unknown"
 
 
 class CallGraphNode(BaseModel):
@@ -71,6 +73,8 @@ class CallGraphEdge(BaseModel):
     target: str
     type: str = "calls"
     confidence: float = 0.0
+    resolution: str = ""
+    confidence_level: str = "unknown"
 
 
 class CallGraphSchema(BaseModel):
@@ -86,6 +90,7 @@ class AffectedSymbolItem(BaseModel):
     impact_type: str = "unknown"
     distance: int = 1
     confidence: float = 0.0
+    confidence_level: str = "unknown"
 
 
 class AffectedFileItem(BaseModel):
@@ -106,7 +111,7 @@ class ImpactSchema(BaseModel):
     risk: RiskSchema = RiskSchema()
 
 
-class RecommendedContextItem(BaseModel):
+class SelectedContextItem(BaseModel):
     context_id: str = ""
     type: str = "code_snippet"
     symbol_id: str = ""
@@ -114,24 +119,42 @@ class RecommendedContextItem(BaseModel):
     line_start: int = 0
     line_end: int = 0
     priority: str = "medium"
-    reason: str = ""
+    relation: str = ""
+    selection_reason: str = ""
     content: str = ""
     estimated_tokens: int = 0
     content_mode: str = "full_source"
-    context_score: float = 0.0
+    confidence: float = 0.0
+    confidence_level: str = "unknown"
+    resolution: str = ""
+    evidence: str = ""
 
 
-class ReadingStepItem(BaseModel):
-    step: int
-    action: str = "read_symbol"
-    target: str
+class RelatedTestItem(BaseModel):
+    source: str = "existing"
+    test_file: str
+    test_name: str = ""
     reason: str = ""
+    confidence: float = 0.0
+    confidence_level: str = "unknown"
 
 
-class AgentInstructionsSchema(BaseModel):
-    summary: str = ""
-    recommended_strategy: list[str] = []
-    warnings: list[str] = []
+class TestsSectionSchema(BaseModel):
+    existing_tests: list[RelatedTestItem] = []
+    suggested_tests: list[RelatedTestItem] = []
+
+
+class IndexStatusSchema(BaseModel):
+    symbol_count: int = 0
+    edge_count: int = 0
+    index_format: str = "codegraph/v1"
+    language: str = "python"
+
+
+class PackNoteSchema(BaseModel):
+    type: str
+    message: str
+    details: dict = {}
 
 
 class ExportsInfo(BaseModel):
@@ -142,18 +165,20 @@ class ExportsInfo(BaseModel):
 class ContextPackResponse(BaseModel):
     schema_version: str = "1.0.0"
     pack_id: str = ""
+    created_at: str = ""
     task: TaskSchema = TaskSchema()
     repo: dict = {}
+    index_status: IndexStatusSchema = IndexStatusSchema()
     entry_points: list[EntryPointItem] = []
     related_symbols: list[RelatedSymbolItem] = []
     call_graph: CallGraphSchema = CallGraphSchema()
     impact: ImpactSchema = ImpactSchema()
-    recommended_context: list[RecommendedContextItem] = []
-    optional_context: list[RecommendedContextItem] = []
-    reading_plan: list[ReadingStepItem] = []
-    agent_instructions: AgentInstructionsSchema = AgentInstructionsSchema()
-    exports: ExportsInfo = ExportsInfo()
+    tests: TestsSectionSchema = TestsSectionSchema()
+    selected_context: list[SelectedContextItem] = []
+    warnings: list[str] = []
+    pack_notes: list[PackNoteSchema] = []
     token_budget: dict = {}
+    exports: ExportsInfo = ExportsInfo()
 
 
 # ── Routes ───────────────────────────────────────────────────────
@@ -164,7 +189,13 @@ async def generate_context_pack(
     req: ContextPackRequest,
     store: GraphStore = Depends(get_store),
 ):
-    """Generate a Context Pack for a natural language task description."""
+    """Generate an Evidence Pack for a natural language task description.
+
+    Returns structured code evidence: entry point candidates, related
+    symbols, call graph, impact signals, selected context, tests,
+    warnings, and pack notes. No reading plans, execution orders, or
+    agent instructions are included.
+    """
     output_dir = str(Path.cwd() / ".codegraph" / "context_packs")
     pack = build_context_pack(
         store=store,
@@ -175,11 +206,13 @@ async def generate_context_pack(
         include_tests=req.include_tests,
         depth=req.depth,
         output_dir=output_dir,
+        debug_plan=req.debug_plan,
     )
 
     response = ContextPackResponse(
         schema_version="1.0.0",
         pack_id=pack.pack_id or f"ctx_{id(pack):x}",
+        created_at=pack.created_at,
         task=TaskSchema(
             raw_request=pack.task.raw_request or req.task,
             intent=pack.task.intent.value if pack.task.intent else "understand_code",
@@ -190,6 +223,12 @@ async def generate_context_pack(
                 "depth": req.depth,
                 "include_tests": pack.task.constraints.include_tests if pack.task.constraints else req.include_tests,
             },
+        ),
+        index_status=IndexStatusSchema(
+            symbol_count=pack.index_status.symbol_count,
+            edge_count=pack.index_status.edge_count,
+            index_format=pack.index_status.index_format,
+            language=pack.index_status.language,
         ),
         entry_points=[
             EntryPointItem(
@@ -208,12 +247,13 @@ async def generate_context_pack(
         related_symbols=[
             RelatedSymbolItem(
                 symbol_id=rs.symbol_id,
-                relation=rs.relation,
+                relation=rs.relation.value if hasattr(rs.relation, "value") else rs.relation,
                 distance=rs.distance,
-                direction=rs.direction,
+                direction=rs.direction.value if hasattr(rs.direction, "value") else rs.direction,
                 reason=rs.reason,
                 importance=rs.importance.value if hasattr(rs.importance, "value") else rs.importance,
                 confidence=rs.confidence,
+                confidence_level=rs.confidence_level.value if hasattr(rs.confidence_level, "value") else rs.confidence_level,
             )
             for rs in pack.related_symbols
         ],
@@ -221,7 +261,12 @@ async def generate_context_pack(
             center=pack.call_graph.center,
             depth=pack.call_graph.depth,
             nodes=[CallGraphNode(id=n.id, label=n.label, type=n.type) for n in pack.call_graph.nodes],
-            edges=[CallGraphEdge(source=e.source, target=e.target, type=e.type, confidence=e.confidence) for e in pack.call_graph.edges],
+            edges=[CallGraphEdge(
+                source=e.source, target=e.target, type=e.type,
+                confidence=e.confidence,
+                resolution=e.resolution,
+                confidence_level=e.confidence_level.value if hasattr(e.confidence_level, "value") else e.confidence_level,
+            ) for e in pack.call_graph.edges],
         ),
         impact=ImpactSchema(
             changed_symbol=pack.impact.changed_symbol,
@@ -232,6 +277,7 @@ async def generate_context_pack(
                     impact_type=sym.impact_type.value if hasattr(sym.impact_type, "value") else sym.impact_type,
                     distance=sym.distance,
                     confidence=sym.confidence,
+                    confidence_level=sym.confidence_level.value if hasattr(sym.confidence_level, "value") else sym.confidence_level,
                 )
                 for sym in pack.impact.affected_symbols
             ],
@@ -248,54 +294,60 @@ async def generate_context_pack(
                 reasons=pack.impact.risk.reasons,
             ),
         ),
-        recommended_context=[
-            RecommendedContextItem(
-                context_id=rc.context_id,
-                type=rc.type.value if hasattr(rc.type, "value") else rc.type,
-                symbol_id=rc.symbol_id,
-                file_path=rc.file_path,
-                line_start=rc.line_start,
-                line_end=rc.line_end,
-                priority=rc.priority,
-                reason=rc.reason,
-                content=rc.content,
-                estimated_tokens=rc.estimated_tokens,
-                content_mode=rc.content_mode,
-                context_score=rc.context_score,
-            )
-            for rc in pack.recommended_context
-        ],
-        optional_context=[
-            RecommendedContextItem(
-                context_id=rc.context_id,
-                type=rc.type.value if hasattr(rc.type, "value") else rc.type,
-                symbol_id=rc.symbol_id,
-                file_path=rc.file_path,
-                line_start=rc.line_start,
-                line_end=rc.line_end,
-                priority=rc.priority,
-                reason=rc.reason,
-                content=rc.content,
-                estimated_tokens=rc.estimated_tokens,
-                content_mode=rc.content_mode,
-                context_score=rc.context_score,
-            )
-            for rc in pack.optional_context
-        ],
-        reading_plan=[
-            ReadingStepItem(
-                step=rp.step,
-                action=rp.action,
-                target=rp.target,
-                reason=rp.reason,
-            )
-            for rp in pack.reading_plan
-        ],
-        agent_instructions=AgentInstructionsSchema(
-            summary=pack.agent_instructions.summary,
-            recommended_strategy=pack.agent_instructions.recommended_strategy,
-            warnings=pack.agent_instructions.warnings,
+        tests=TestsSectionSchema(
+            existing_tests=[
+                RelatedTestItem(
+                    source=rt.source.value if hasattr(rt.source, "value") else rt.source,
+                    test_file=rt.test_file,
+                    test_name=rt.test_name,
+                    reason=rt.reason,
+                    confidence=rt.confidence,
+                    confidence_level=rt.confidence_level.value if hasattr(rt.confidence_level, "value") else rt.confidence_level,
+                )
+                for rt in pack.tests.existing_tests
+            ],
+            suggested_tests=[
+                RelatedTestItem(
+                    source=st.source.value if hasattr(st.source, "value") else st.source,
+                    test_file=st.test_file,
+                    test_name=st.test_name,
+                    reason=st.reason,
+                    confidence=st.confidence,
+                    confidence_level=st.confidence_level.value if hasattr(st.confidence_level, "value") else st.confidence_level,
+                )
+                for st in pack.tests.suggested_tests
+            ],
         ),
+        selected_context=[
+            SelectedContextItem(
+                context_id=sc.context_id,
+                type=sc.type.value if hasattr(sc.type, "value") else sc.type,
+                symbol_id=sc.symbol_id,
+                file_path=sc.file_path,
+                line_start=sc.line_start,
+                line_end=sc.line_end,
+                priority=sc.priority,
+                relation=sc.relation,
+                selection_reason=sc.selection_reason,
+                content=sc.content,
+                estimated_tokens=sc.estimated_tokens,
+                content_mode=sc.content_mode,
+                confidence=sc.confidence,
+                confidence_level=sc.confidence_level.value if hasattr(sc.confidence_level, "value") else sc.confidence_level,
+                resolution=sc.resolution,
+                evidence=sc.evidence,
+            )
+            for sc in pack.selected_context
+        ],
+        warnings=pack.warnings,
+        pack_notes=[
+            PackNoteSchema(
+                type=note.type.value if hasattr(note.type, "value") else note.type,
+                message=note.message,
+                details=note.details,
+            )
+            for note in pack.pack_notes
+        ],
         exports=ExportsInfo(
             markdown_path=pack.exports.markdown_path,
             json_path=pack.exports.json_path,

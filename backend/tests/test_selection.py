@@ -5,7 +5,7 @@ import pytest
 from codegraph.context.models import (
     ContextType,
     EntryPoint,
-    RecommendedContext,
+    SelectedContext,
     RelatedSymbol,
     Importance,
 )

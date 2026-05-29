@@ -710,7 +710,7 @@ def build_context_pack(
     pack_dict = json.loads(pack.model_dump_json(exclude_none=True))
 
     if mode == "summary":
-        # Return only essential fields to keep the response small
+        # Return key insights — entry points, reading plan, tests, budget
         pack_dict = {
             "pack_id": pack_dict.get("pack_id"),
             "task": pack_dict.get("task", {}),
@@ -720,21 +720,43 @@ def build_context_pack(
                     "name": ep.get("name"),
                     "reason": ep.get("reason"),
                     "file_path": ep.get("file_path"),
-                    "importance": ep.get("importance"),
+                    "score": ep.get("score"),
                 }
                 for ep in pack_dict.get("entry_points", [])
             ],
+            "related_symbols": [
+                {
+                    "symbol_id": rs.get("symbol_id"),
+                    "relation": rs.get("relation"),
+                    "reason": rs.get("reason"),
+                    "confidence": rs.get("confidence"),
+                    "confidence_level": rs.get("confidence_level"),
+                }
+                for rs in pack_dict.get("related_symbols", [])
+            ],
             "call_graph": {
+                "center": pack_dict.get("call_graph", {}).get("center"),
                 "total_nodes": len(pack_dict.get("call_graph", {}).get("nodes", [])),
                 "total_edges": len(pack_dict.get("call_graph", {}).get("edges", [])),
             },
             "impact": pack_dict.get("impact"),
-            "reading_plan": pack_dict.get("reading_plan"),
+            "recommended_context": [
+                {
+                    "context_id": rc.get("context_id"),
+                    "symbol_id": rc.get("symbol_id"),
+                    "priority": rc.get("priority"),
+                    "content_mode": rc.get("content_mode"),
+                    "context_score": rc.get("context_score"),
+                    "reason": rc.get("reason"),
+                }
+                for rc in pack_dict.get("recommended_context", [])
+            ],
             "related_tests": pack_dict.get("related_tests", []),
+            "suggested_tests": pack_dict.get("suggested_tests", []),
+            "reading_plan": pack_dict.get("reading_plan"),
             "agent_instructions": pack_dict.get("agent_instructions"),
             "token_budget": pack_dict.get("token_budget", {}),
             "optional_context_count": len(pack_dict.get("optional_context", [])),
-            "warnings": pack_dict.get("warnings", []),
         }
     elif mode == "markdown":
         # Export to markdown and return the file path

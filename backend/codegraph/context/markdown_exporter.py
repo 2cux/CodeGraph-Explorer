@@ -1,28 +1,34 @@
-"""Markdown export for Context Pack — human-readable output.
+"""Markdown export for Evidence Pack — human-readable structured evidence.
 
-PRD §15 — Markdown export format.
+Section order: Task → Index Status → Entry Point Candidates → Selected
+Context → Call Graph → Impact Signals → Tests → Warnings → Pack Notes →
+Token Budget.
+
+No Reading Plan, Agent Instructions, or action directives are emitted.
 """
 
 from pathlib import Path
 
-from codegraph.context.models import ContextPack
+from codegraph.context.models import ContextPack, ContextType
 
 
 def export_to_markdown(pack: ContextPack) -> str:
-    """Render a ContextPack as a formatted Markdown string."""
+    """Render an Evidence Pack as a formatted Markdown string."""
     lines: list[str] = []
-    _w = lines.append  # local alias for speed
+    _w = lines.append
 
-    # ── Header ─────────────────────────────────────────────────────────────
-    _w("# CodeGraph Context Pack")
+    # ── Header ───────────────────────────────────────────────────────
+    _w("# CodeGraph Evidence Pack")
     _w("")
     _w(f"- **Pack ID:** `{pack.pack_id or 'N/A'}`")
     _w(f"- **Schema Version:** {pack.schema_version}")
+    if pack.created_at:
+        _w(f"- **Created:** {pack.created_at}")
     if pack.repo.get("name"):
         _w(f"- **Repository:** {pack.repo['name']}")
     _w("")
 
-    # ── Task ───────────────────────────────────────────────────────────────
+    # ── Task ─────────────────────────────────────────────────────────
     _w("## Task")
     _w("")
     _w(pack.task.raw_request or "_No task description provided._")
@@ -35,8 +41,20 @@ def export_to_markdown(pack: ContextPack) -> str:
         _w(f"- **Target Symbols:** {', '.join(pack.task.target_symbols)}")
     _w("")
 
-    # ── Entry Points ───────────────────────────────────────────────────────
-    _w("## Entry Points")
+    # ── Index Status ─────────────────────────────────────────────────
+    _w("## Index Status")
+    _w("")
+    ist = pack.index_status
+    _w(f"- **Symbols indexed:** {ist.symbol_count}")
+    _w(f"- **Edges indexed:** {ist.edge_count}")
+    _w(f"- **Format:** {ist.index_format}")
+    _w(f"- **Language:** {ist.language}")
+    _w("")
+
+    # ── Entry Point Candidates ───────────────────────────────────────
+    _w("## Entry Point Candidates")
+    _w("")
+    _w("_Candidate entry points matched by keyword search. No reading order is implied._")
     _w("")
     if pack.entry_points:
         for ep in pack.entry_points:
@@ -44,101 +62,23 @@ def export_to_markdown(pack: ContextPack) -> str:
             _w(f"  - **Type:** {ep.type}")
             _w(f"  - **File:** {ep.file_path}")
             if ep.reason:
-                _w(f"  - **Reason:** {ep.reason}")
+                _w(f"  - **Match reason:** {ep.reason}")
             _w(f"  - **Score:** {ep.score:.2f}")
             if ep.match_sources:
-                _w(f"  - **Match:** {', '.join(ep.match_sources)}")
+                _w(f"  - **Match sources:** {', '.join(ep.match_sources)}")
             _w("")
     else:
-        _w("_No entry points found._")
+        _w("_No entry point candidates found._")
         _w("")
 
-    # ── Related Tests (existing) ───────────────────────────────────────────
-    _w("## Related Tests")
+    # ── Selected Context ─────────────────────────────────────────────
+    _w("## Selected Context")
     _w("")
-    if pack.related_tests:
-        for rt in pack.related_tests:
-            _w(f"- `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
-    else:
-        _w("_No existing tests found related to this task._")
+    _w("_Context items selected under token budget. Each item carries its "
+       "relation, confidence, and evidence source._")
     _w("")
-
-    # ── Suggested Tests ────────────────────────────────────────────────────
-    if pack.suggested_tests:
-        _w("### Suggested Tests")
-        _w("")
-        for st in pack.suggested_tests:
-            _w(f"- `{st.test_name}` in `{st.test_file}` — {st.reason}")
-        _w("")
-
-    # ── Recommendations / Reading Order ────────────────────────────────────
-    if pack.reading_plan:
-        _w("## Recommended Reading Order")
-        _w("")
-        for step in pack.reading_plan:
-            _w(f"{step.step}. `{step.target}` — {step.reason}")
-        _w("")
-
-    # ── Call Graph Summary ─────────────────────────────────────────────────
-    if pack.call_graph.nodes:
-        _w("## Call Graph")
-        _w("")
-        _w(f"- **Center:** `{pack.call_graph.center}`")
-        _w(f"- **Depth:** {pack.call_graph.depth}")
-        _w(f"- **Nodes:** {len(pack.call_graph.nodes)}")
-        _w(f"- **Edges:** {len(pack.call_graph.edges)}")
-        _w("")
-        if pack.call_graph.edges:
-            _w("### Key Call Relationships")
-            _w("")
-            for edge in pack.call_graph.edges:
-                parts = [f"confidence={edge.confidence:.2f}"]
-                if edge.resolution:
-                    parts.append(f"resolution={edge.resolution}")
-                meta = ", ".join(parts)
-                marker = " [low confidence]" if edge.confidence < 0.6 else ""
-                _w(f"- `{edge.source}` → `{edge.target}` [{edge.type}, {meta}]{marker}")
-            _w("")
-
-    # ── Impact Summary ─────────────────────────────────────────────────────
-    if pack.impact.changed_symbol:
-        _w("## Impact Summary")
-        _w("")
-        risk = pack.impact.risk
-        _w(f"- **Risk Level:** `{risk.level.value if hasattr(risk.level, 'value') else risk.level}`")
-        for reason in risk.reasons:
-            _w(f"  - {reason}")
-        _w("")
-
-        if pack.impact.affected_files:
-            _w("### Affected Files")
-            _w("")
-            for f in pack.impact.affected_files:
-                marker = "!!" if f.priority == "high" else " -"
-                _w(f"- {marker} `{f.file_path}` [{f.priority}] — {f.reason}")
-            _w("")
-
-        if pack.impact.affected_symbols:
-            _w("### Affected Symbols")
-            _w("")
-            for sym in pack.impact.affected_symbols:
-                _w(f"- `{sym.symbol_id}` ({sym.impact_type.value if hasattr(sym.impact_type, 'value') else sym.impact_type}, distance: {sym.distance}) — {sym.reason}")
-            _w("")
-
-    # ── Related Symbols ────────────────────────────────────────────────────
-    if pack.related_symbols:
-        _w("## Related Symbols")
-        _w("")
-        for rs in pack.related_symbols:
-            conf = f" (confidence: {rs.confidence:.2f})"
-            _w(f"- `{rs.symbol_id}` — {rs.reason}{conf}")
-        _w("")
-
-    # ── Recommended Context Detail ─────────────────────────────────────────
-    if pack.recommended_context:
-        _w("## Relevant Code")
-        _w("")
-        for ctx in pack.recommended_context:
+    if pack.selected_context:
+        for ctx in pack.selected_context:
             _w(f"### {ctx.symbol_id or ctx.context_id}")
             _w("")
             if ctx.file_path:
@@ -151,49 +91,130 @@ def export_to_markdown(pack: ContextPack) -> str:
                 else:
                     loc = f" ({ctx.file_path})"
                 _w(f"- **Location:** {loc}")
-            _w(f"- **Priority:** {ctx.priority}")
+            _w(f"- **Priority:** {ctx.priority.value if hasattr(ctx.priority, 'value') else ctx.priority}")
+            _w(f"- **Relation:** {ctx.relation}")
+            _w(f"- **Content Mode:** {ctx.content_mode.value if hasattr(ctx.content_mode, 'value') else ctx.content_mode}")
+            _w(f"- **Confidence:** {ctx.confidence:.2f} ({ctx.confidence_level.value if hasattr(ctx.confidence_level, 'value') else ctx.confidence_level})")
             _w(f"- **Estimated Tokens:** {ctx.estimated_tokens}")
-            _w(f"- **Content Mode:** {ctx.content_mode}")
-            _w(f"- **Context Score:** {ctx.context_score:.2f}")
-            if ctx.reason:
-                _w(f"- **Reason:** {ctx.reason}")
+            if ctx.selection_reason:
+                _w(f"- **Selection Reason:** {ctx.selection_reason}")
+            if ctx.resolution:
+                _w(f"- **Resolution:** {ctx.resolution}")
+            if ctx.evidence:
+                _w(f"- **Evidence:** {ctx.evidence}")
             _w("")
             if ctx.content:
-                _w("```python")
+                if ctx.content_mode.value if hasattr(ctx.content_mode, 'value') else ctx.content_mode == "full_source":
+                    _w("```python")
+                else:
+                    _w("```")
                 _w(ctx.content)
                 _w("```")
                 _w("")
-            elif ctx.type == "file_summary":
-                _w(f"_Summary reference — see file for details._")
-                _w("")
-            elif ctx.type == "call_chain":
-                _w(f"_Call chain reference — see call graph above._")
-                _w("")
-
-    # ── Optional Context (low confidence) ────────────────────────────────────
-    if pack.optional_context:
-        _w("## Optional Context (Low Confidence)")
+    else:
+        _w("_No context items selected._")
         _w("")
-        _w("_These items have low confidence scores. Verify manually before relying on them._")
-        _w("")
-        for ctx in pack.optional_context:
-            _w(f"### {ctx.symbol_id or ctx.context_id}")
-            _w("")
-            if ctx.file_path:
-                _w(f"- **File:** {ctx.file_path}")
-            _w(f"- **Priority:** {ctx.priority}")
-            _w(f"- **Content Mode:** {ctx.content_mode}")
-            _w(f"- **Context Score:** {ctx.context_score:.2f}")
-            if ctx.reason:
-                _w(f"- **Reason:** {ctx.reason}")
-            _w("")
-            if ctx.content:
-                _w("```")
-                _w(ctx.content)
-                _w("```")
-                _w("")
 
-    # ── Token Budget ─────────────────────────────────────────────────────────
+    # ── Call Graph ───────────────────────────────────────────────────
+    if pack.call_graph.nodes:
+        _w("## Call Graph")
+        _w("")
+        _w(f"- **Center:** `{pack.call_graph.center}`")
+        _w(f"- **Depth:** {pack.call_graph.depth}")
+        _w(f"- **Nodes:** {len(pack.call_graph.nodes)}")
+        _w(f"- **Edges:** {len(pack.call_graph.edges)}")
+        _w("")
+        if pack.call_graph.edges:
+            _w("### Call Relationships")
+            _w("")
+            for edge in pack.call_graph.edges:
+                parts = [f"confidence={edge.confidence:.2f}"]
+                if edge.resolution:
+                    parts.append(f"resolution={edge.resolution}")
+                meta = ", ".join(parts)
+                marker = " [low confidence]" if edge.confidence < 0.6 else ""
+                _w(f"- `{edge.source}` → `{edge.target}` [{edge.type}, {meta}]{marker}")
+            _w("")
+
+    # ── Impact Signals ───────────────────────────────────────────────
+    if pack.impact.changed_symbol:
+        _w("## Impact Signals")
+        _w("")
+        risk = pack.impact.risk
+        _w(f"- **Risk Level:** `{risk.level.value if hasattr(risk.level, 'value') else risk.level}`")
+        for reason in risk.reasons:
+            _w(f"  - {reason}")
+        _w("")
+
+        if pack.impact.affected_files:
+            _w("### Affected Files")
+            _w("")
+            for f in pack.impact.affected_files:
+                prio = f.priority.value if hasattr(f.priority, 'value') else f.priority
+                _w(f"- `{f.file_path}` [{prio}] — {f.reason}")
+            _w("")
+
+        if pack.impact.affected_symbols:
+            _w("### Affected Symbols")
+            _w("")
+            for sym in pack.impact.affected_symbols:
+                itype = sym.impact_type.value if hasattr(sym.impact_type, 'value') else sym.impact_type
+                _w(f"- `{sym.symbol_id}` ({itype}, distance: {sym.distance}, "
+                   f"confidence: {sym.confidence:.2f}) — {sym.reason}")
+            _w("")
+
+    # ── Related Symbols ──────────────────────────────────────────────
+    if pack.related_symbols:
+        _w("## Related Symbols")
+        _w("")
+        for rs in pack.related_symbols:
+            rel = rs.relation.value if hasattr(rs.relation, 'value') else rs.relation
+            conf = f" (confidence: {rs.confidence:.2f})"
+            _w(f"- `{rs.symbol_id}` [{rel}]{conf} — {rs.reason}")
+        _w("")
+
+    # ── Tests ────────────────────────────────────────────────────────
+    _w("## Tests")
+    _w("")
+    if pack.tests.existing_tests:
+        _w("### Existing Tests")
+        _w("")
+        for rt in pack.tests.existing_tests:
+            _w(f"- `{rt.test_file}` :: `{rt.test_name}` — {rt.reason}")
+        _w("")
+    else:
+        _w("_No existing tests found related to this task._")
+        _w("")
+
+    if pack.tests.suggested_tests:
+        _w("### Suggested Tests (Heuristic)")
+        _w("")
+        _w("_These are naming-convention guesses, NOT directives to write tests._")
+        _w("")
+        for st in pack.tests.suggested_tests:
+            src = st.source.value if hasattr(st.source, 'value') else st.source
+            _w(f"- `{st.test_name}` in `{st.test_file}` [{src}, "
+               f"confidence: {st.confidence:.2f}] — {st.reason}")
+        _w("")
+
+    # ── Warnings ─────────────────────────────────────────────────────
+    if pack.warnings:
+        _w("## Warnings")
+        _w("")
+        for w in pack.warnings:
+            _w(f"- {w}")
+        _w("")
+
+    # ── Pack Notes ───────────────────────────────────────────────────
+    if pack.pack_notes:
+        _w("## Pack Notes")
+        _w("")
+        for note in pack.pack_notes:
+            ntype = note.type.value if hasattr(note.type, 'value') else note.type
+            _w(f"- [{ntype}] {note.message}")
+        _w("")
+
+    # ── Token Budget ─────────────────────────────────────────────────
     if pack.token_budget:
         _w("## Token Budget")
         _w("")
@@ -203,27 +224,7 @@ def export_to_markdown(pack: ContextPack) -> str:
         _w(f"- **Remaining:** {tb.get('remaining', 'N/A')}")
         _w("")
 
-    # ── Agent Instructions ─────────────────────────────────────────────────
-    _w("## Agent Instructions")
-    _w("")
-    instructions = pack.agent_instructions
-    if instructions.summary:
-        _w(f"**Summary:** {instructions.summary}")
-        _w("")
-    if instructions.recommended_strategy:
-        _w("### Recommended Strategy")
-        _w("")
-        for s in instructions.recommended_strategy:
-            _w(f"- {s}")
-        _w("")
-    if instructions.warnings:
-        _w("### Warnings")
-        _w("")
-        for w in instructions.warnings:
-            _w(f"- [Warning] {w}")
-        _w("")
-
-    # ── Footer ─────────────────────────────────────────────────────────────
+    # ── Footer ───────────────────────────────────────────────────────
     if pack.exports.markdown_path or pack.exports.json_path:
         _w("---")
         _w("")
