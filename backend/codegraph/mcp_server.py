@@ -2783,6 +2783,11 @@ def main() -> None:
         help="Start file watcher for automatic incremental index sync "
              "(env: CODEGRAPH_WATCH=1)",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate setup and exit without starting the MCP server",
+    )
     args = parser.parse_args()
 
     project_root = _resolve_project_root(args.project_root)
@@ -2793,6 +2798,13 @@ def main() -> None:
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # --check mode: validate and exit
+    if args.check:
+        print(f"CodeGraph MCP check passed")
+        print(f"Project root: {project_root}")
+        print(f"Index dir:   {_cg_dir}")
+        sys.exit(0)
 
     # Start watch mode if requested
     if args.watch and _cg_dir is not None:

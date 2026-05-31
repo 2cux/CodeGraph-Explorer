@@ -39,17 +39,17 @@ def home_tmp(monkeypatch, tmp_path):
 
 
 class TestBuildServerConfig:
-    def test_default_command_is_codegraph_serve_mcp(self):
-        """Default uses stable ``codegraph serve --mcp`` command."""
+    def test_default_uses_sys_executable_with_m_module(self):
+        """Default uses current Python interpreter absolute path with -m."""
         cfg = build_server_config()
-        assert cfg["command"] == "codegraph"
-        assert cfg["args"] == ["serve", "--mcp"]
+        assert cfg["command"] == sys.executable
+        assert cfg["args"] == ["-m", "codegraph.mcp_server"]
 
     def test_with_root_adds_env(self):
         """When root is provided, adds CODEGRAPH_PROJECT_ROOT to env."""
         cfg = build_server_config(root="/tmp/myproject")
-        assert cfg["command"] == "codegraph"
-        assert cfg["args"] == ["serve", "--mcp"]
+        assert cfg["command"] == sys.executable
+        assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/tmp/myproject").resolve())}
 
     def test_without_root_has_no_env(self):
@@ -57,11 +57,17 @@ class TestBuildServerConfig:
         cfg = build_server_config()
         assert "env" not in cfg
 
-    def test_custom_python_command(self):
-        """python_command overrides the 'codegraph' default."""
-        cfg = build_server_config(python_command="/usr/bin/python3.12")
-        assert cfg["command"] == "/usr/bin/python3.12"
+    def test_command_override_codegraph_uses_legacy_serve_mcp(self):
+        """command_override='codegraph' writes legacy CLI entry point."""
+        cfg = build_server_config(command_override="codegraph")
+        assert cfg["command"] == "codegraph"
         assert cfg["args"] == ["serve", "--mcp"]
+
+    def test_command_override_custom_python_uses_m_module(self):
+        """Custom python path uses -m codegraph.mcp_server args."""
+        cfg = build_server_config(command_override="/usr/bin/python3.12")
+        assert cfg["command"] == "/usr/bin/python3.12"
+        assert cfg["args"] == ["-m", "codegraph.mcp_server"]
 
 
 # ── read_config ───────────────────────────────────────────────────────────
@@ -147,10 +153,11 @@ class TestConfigureTarget:
         assert result["status"] == "already_configured"
 
     def test_configure_force_overwrite(self, home_tmp):
-        configure_target(ConfigTarget.CLAUDE, python_command="/old/python")
-        result = configure_target(ConfigTarget.CLAUDE, python_command="/new/python", force=True)
+        configure_target(ConfigTarget.CLAUDE, command_override="/old/python")
+        result = configure_target(ConfigTarget.CLAUDE, command_override="/new/python", force=True)
         assert result["status"] == "overwritten"
         assert result["config"]["command"] == "/new/python"
+        assert result["config"]["args"] == ["-m", "codegraph.mcp_server"]
 
     def test_configure_with_root(self, home_tmp):
         result = configure_target(ConfigTarget.CURSOR, root="/abs/project")
@@ -261,13 +268,14 @@ class TestCliConfigureAll:
         assert home_tmp.joinpath(".claude.json").exists()
         assert home_tmp.joinpath(".cursor", "mcp.json").exists()
 
-        # Both should contain codegraph entry with serve --mcp
+        # Both should contain codegraph entry with sys.executable + -m
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cursor_data = json.loads(home_tmp.joinpath(".cursor", "mcp.json").read_text(encoding="utf-8"))
         assert "codegraph" in claude_data["mcpServers"]
         assert "codegraph" in cursor_data["mcpServers"]
-        # Verify the stable command format
-        assert claude_data["mcpServers"]["codegraph"]["args"] == ["serve", "--mcp"]
+        # Verify the default command format
+        assert claude_data["mcpServers"]["codegraph"]["command"] == sys.executable
+        assert claude_data["mcpServers"]["codegraph"]["args"] == ["-m", "codegraph.mcp_server"]
 
     def test_configure_all_idempotent(self, runner, home_tmp):
         runner.invoke(app, ["configure", "all"])
@@ -286,7 +294,8 @@ class TestCliConfigureAll:
         assert result.exit_code == 0
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cfg = claude_data["mcpServers"]["codegraph"]
-        assert cfg["args"] == ["serve", "--mcp"]
+        assert cfg["command"] == sys.executable
+        assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path("/tmp/testproj").resolve())
 
     def test_configure_all_force_updates_project_root(self, runner, home_tmp):
@@ -296,7 +305,7 @@ class TestCliConfigureAll:
         assert result.exit_code == 0
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cfg = claude_data["mcpServers"]["codegraph"]
-        assert cfg["args"] == ["serve", "--mcp"]
+        assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path("/new/path").resolve())
 
     def test_configure_all_defaults_no_env_without_root(self, runner, home_tmp):
@@ -305,9 +314,25 @@ class TestCliConfigureAll:
         assert result.exit_code == 0
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cfg = claude_data["mcpServers"]["codegraph"]
+        assert cfg["command"] == sys.executable
+        assert cfg["args"] == ["-m", "codegraph.mcp_server"]
+        assert "env" not in cfg  # No root → auto-detect from CWD
+
+    def test_configure_all_with_command_codegraph_legacy(self, runner, home_tmp):
+        """--command codegraph writes legacy CLI entry point."""
+        result = runner.invoke(app, ["configure", "all", "--command", "codegraph"])
+        assert result.exit_code == 0
+        claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
+        cfg = claude_data["mcpServers"]["codegraph"]
         assert cfg["command"] == "codegraph"
         assert cfg["args"] == ["serve", "--mcp"]
-        assert "env" not in cfg  # No root → auto-detect from CWD
+
+    def test_configure_all_shows_command_in_output(self, runner, home_tmp):
+        """After configure, output shows the actual command being written."""
+        result = runner.invoke(app, ["configure", "all"])
+        assert result.exit_code == 0
+        assert "Command:" in result.stdout
+        assert "codegraph.mcp_server" in result.stdout
 
 
 class TestCliConfigureClaude:

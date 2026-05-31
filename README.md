@@ -336,7 +336,15 @@ demo: install configure init-demo status
 
 ## 在 Claude Code / Cursor 中使用
 
-运行 `codegraph configure all` 即可自动注册 MCP Server。或手动添加到配置文件：
+**推荐由 `codegraph configure` 自动生成配置。** 它会写入当前 Python 环境的绝对路径，避免 Windows PATH 找不到 `codegraph` 命令。
+
+运行以下命令即可自动注册 MCP Server：
+
+```bash
+codegraph configure all
+```
+
+如需手动配置，参考以下示例（注意使用当前 Python 解释器的绝对路径）：
 
 ### Claude Code
 
@@ -345,8 +353,26 @@ demo: install configure init-demo status
 {
   "mcpServers": {
     "codegraph": {
-      "command": "python",
-      "args": ["-m", "codegraph.mcp_server"]
+      "command": "C:\\path\\to\\venv\\Scripts\\python.exe",
+      "args": ["-m", "codegraph.mcp_server"],
+      "env": {
+        "CODEGRAPH_PROJECT_ROOT": "C:\\path\\to\\project"
+      }
+    }
+  }
+}
+```
+
+macOS / Linux 示例：
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "/path/to/venv/bin/python",
+      "args": ["-m", "codegraph.mcp_server"],
+      "env": {
+        "CODEGRAPH_PROJECT_ROOT": "/path/to/project"
+      }
     }
   }
 }
@@ -416,11 +442,17 @@ codegraph configure all --force
 
 这会用当前项目路径更新 MCP 配置。也可以用 `codegraph configure show` 查看当前配置的路径。
 
-### 3. codegraph 命令不可用
+### 3. MCP 配置中的 command 不可用
 
-MCP 配置使用 `codegraph serve --mcp` 命令。如果 `codegraph` 不在 PATH 中：
+从 v0.1.1 开始，`codegraph configure` 默认写入当前 Python 解释器的绝对路径（如 `C:\...\python.exe -m codegraph.mcp_server`），不再依赖 `codegraph` 命令在 PATH 中。
+
+如果之前配置的是旧格式（`codegraph serve --mcp`）且 `codegraph` 不在 PATH 中：
 
 ```bash
+# 重新生成配置（使用 Python 绝对路径）
+codegraph configure all --force
+
+# 或手动安装 codegraph 到 PATH
 pip install -e "backend[mcp,watch]"
 ```
 
@@ -428,7 +460,14 @@ pip install -e "backend[mcp,watch]"
 
 ```bash
 codegraph --help
+python -m codegraph.mcp_server --check
 codegraph serve --mcp --check
+```
+
+如果仍想使用 `codegraph` CLI 入口点作为 MCP 命令：
+
+```bash
+codegraph configure all --command codegraph
 ```
 
 ### 4. 修改配置后没有重启 Claude Code / Cursor

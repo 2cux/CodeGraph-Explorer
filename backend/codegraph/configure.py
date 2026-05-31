@@ -28,28 +28,48 @@ class ConfigTarget(Enum):
 
 def build_server_config(
     root: str | None = None,
-    python_command: str | None = None,
+    command_override: str | None = None,
 ) -> dict[str, Any]:
     """Build a single MCP server config entry for codegraph.
 
-    Uses the stable ``codegraph serve --mcp`` command so that the same
-    CLI entry-point handles startup validation, error messages, and the
-    stdio MCP loop.
+    By default, uses the current Python interpreter's absolute path with
+    ``-m codegraph.mcp_server`` so that the MCP server starts reliably even
+    when the ``codegraph`` CLI entry point is not on PATH (common on Windows).
+
+    When ``command_override="codegraph"`` is passed explicitly, writes the
+    legacy ``codegraph serve --mcp`` command instead — this is opt-in for
+    users who prefer the CLI entry point.
 
     Args:
         root: If set, adds ``env.CODEGRAPH_PROJECT_ROOT`` to pin the server
               to a specific project. When omitted, the MCP server auto-detects
               the project by walking up from the current working directory.
-        python_command: Override the Python interpreter path (advanced; normally
-                        ``codegraph`` on PATH is preferred).
+        command_override: Override the MCP server command.
+            - ``None`` (default): use ``sys.executable`` + ``["-m", "codegraph.mcp_server"]``
+            - ``"codegraph"``: use ``"codegraph"`` + ``["serve", "--mcp"]`` (legacy CLI mode)
+            - any other string: use that as the command + ``["-m", "codegraph.mcp_server"]``
 
     Returns:
         A dict with ``command``, ``args``, and optionally ``env``.
     """
-    entry: dict[str, Any] = {
-        "command": python_command or "codegraph",
-        "args": ["serve", "--mcp"],
-    }
+    if command_override is None:
+        # Default: current Python interpreter absolute path (reliable on Windows)
+        entry: dict[str, Any] = {
+            "command": sys.executable,
+            "args": ["-m", "codegraph.mcp_server"],
+        }
+    elif command_override == "codegraph":
+        # Legacy CLI entry point (opt-in via --command codegraph)
+        entry: dict[str, Any] = {
+            "command": "codegraph",
+            "args": ["serve", "--mcp"],
+        }
+    else:
+        # Custom Python interpreter path
+        entry: dict[str, Any] = {
+            "command": command_override,
+            "args": ["-m", "codegraph.mcp_server"],
+        }
     if root:
         entry["env"] = {"CODEGRAPH_PROJECT_ROOT": str(Path(root).resolve())}
     return entry
@@ -96,7 +116,7 @@ def configure_target(
     target: ConfigTarget,
     *,
     root: str | None = None,
-    python_command: str | None = None,
+    command_override: str | None = None,
     project: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
@@ -123,7 +143,7 @@ def configure_target(
             "config": existing,
         }
 
-    server_config = build_server_config(root=root, python_command=python_command)
+    server_config = build_server_config(root=root, command_override=command_override)
     data["mcpServers"][MCP_SERVER_NAME] = server_config
     write_config(filepath, data)
 

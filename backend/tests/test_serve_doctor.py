@@ -243,23 +243,87 @@ class TestDoctor:
         assert result.exit_code == 0
         assert "serve --mcp would fail" in result.stdout
 
+    def test_doctor_checks_mcp_command_exists(self, runner, tmp_path, monkeypatch):
+        """doctor should report MCP command existence (check 8)."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "drproj_cmd"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+
+        # Configure with sys.executable (should exist)
+        configure_target(cfg.ConfigTarget.CLAUDE)
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP command existence" in result.stdout
+
+    def test_doctor_detects_missing_mcp_command(self, runner, tmp_path, monkeypatch):
+        """doctor should FAIL when configured command does not exist."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "drproj_badcmd"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+
+        # Write a config with a nonexistent command
+        bad_cfg = {
+            "mcpServers": {
+                "codegraph": {
+                    "command": "/nonexistent/path/to/python",
+                    "args": ["-m", "codegraph.mcp_server"],
+                }
+            }
+        }
+        cfg.write_config(tmp_path / "claude_cfg.json", bad_cfg)
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP command existence" in result.stdout
+        # Should report failure for the nonexistent command
+        assert "not found" in result.stdout.lower() or "FAIL" in result.stdout
+
+    def test_doctor_validates_mcp_server_launch(self, runner, tmp_path, monkeypatch):
+        """doctor should check MCP server launch (check 9)."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "drproj_launch"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+
+        # Configure with sys.executable
+        configure_target(cfg.ConfigTarget.CLAUDE)
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP server launch check" in result.stdout
+
 
 # ── configure writes serve --mcp ─────────────────────────────────────────
 
 
 class TestConfigureWritesServeMcp:
-    """Verify configure writes the stable ``codegraph serve --mcp`` command."""
+    """Verify configure writes Python interpreter with -m codegraph.mcp_server."""
 
-    def test_configure_writes_serve_mcp(self, tmp_path, monkeypatch):
-        """configure should write codegraph serve --mcp into MCP config."""
+    def test_configure_writes_sys_executable(self, tmp_path, monkeypatch):
+        """configure should write sys.executable with -m codegraph.mcp_server."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
         monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / ".cursor" / "mcp.json")
 
         result = configure_target(cfg.ConfigTarget.CLAUDE)
         assert result["status"] == "configured"
-        assert result["config"]["command"] == "codegraph"
-        assert result["config"]["args"] == ["serve", "--mcp"]
+        assert result["config"]["command"] == sys.executable
+        assert result["config"]["args"] == ["-m", "codegraph.mcp_server"]
 
     def test_configure_with_root_writes_env(self, tmp_path, monkeypatch):
         """configure --root should set CODEGRAPH_PROJECT_ROOT."""
@@ -267,19 +331,20 @@ class TestConfigureWritesServeMcp:
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
 
         result = configure_target(cfg.ConfigTarget.CLAUDE, root="/abs/path")
+        assert result["config"]["command"] == sys.executable
         assert result["config"]["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/abs/path").resolve())}
 
     def test_configure_force_updates_old_config(self, tmp_path, monkeypatch):
-        """--force should update from old python -m to new serve --mcp."""
+        """--force should update old codegraph CLI config to sys.executable format."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
 
-        # Write old-style config
+        # Write old-style config (codegraph serve --mcp)
         old_cfg = {
             "mcpServers": {
                 "codegraph": {
-                    "command": "python",
-                    "args": ["-m", "codegraph.mcp_server"],
+                    "command": "codegraph",
+                    "args": ["serve", "--mcp"],
                     "env": {"CODEGRAPH_PROJECT_ROOT": "/old"},
                 }
             }
@@ -288,11 +353,11 @@ class TestConfigureWritesServeMcp:
 
         result = configure_target(cfg.ConfigTarget.CLAUDE, force=True)
         assert result["status"] == "overwritten"
-        assert result["config"]["command"] == "codegraph"
-        assert result["config"]["args"] == ["serve", "--mcp"]
+        assert result["config"]["command"] == sys.executable
+        assert result["config"]["args"] == ["-m", "codegraph.mcp_server"]
 
-    def test_configure_all_cli_writes_serve_mcp(self, runner, tmp_path, monkeypatch):
-        """CLI ``configure all`` writes stable command."""
+    def test_configure_all_cli_writes_sys_executable(self, runner, tmp_path, monkeypatch):
+        """CLI ``configure all`` writes sys.executable by default."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
         monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / ".cursor" / "mcp.json")
@@ -302,8 +367,8 @@ class TestConfigureWritesServeMcp:
 
         claude_data = read_config(tmp_path / ".claude.json")
         entry = claude_data["mcpServers"]["codegraph"]
-        assert entry["command"] == "codegraph"
-        assert entry["args"] == ["serve", "--mcp"]
+        assert entry["command"] == sys.executable
+        assert entry["args"] == ["-m", "codegraph.mcp_server"]
 
 
 # ── configure output messages ────────────────────────────────────────────

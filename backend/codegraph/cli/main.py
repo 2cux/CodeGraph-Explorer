@@ -1139,8 +1139,8 @@ def doctor(
     """Diagnose CodeGraph setup and report any issues.
 
     Checks: CLI availability, Python version, package path, project root,
-    .codegraph presence, index status, MCP config paths, and serve --mcp
-    readiness.
+    .codegraph presence, index status, MCP config paths, serve --mcp
+    readiness, MCP command existence, and MCP server launch check.
     """
     import sys
     import platform
@@ -1291,6 +1291,88 @@ def doctor(
         ok("serve --mcp can start")
     except typer.Exit:
         fail("serve --mcp would fail — see errors above")
+    typer.echo()
+
+    # 8. MCP command existence
+    typer.echo("8. MCP command existence")
+    import shutil
+    for label, cfg_path in config_paths:
+        data = read_config(cfg_path)
+        server_cfg = data.get("mcpServers", {}).get(MCP_SERVER_NAME)
+        if not server_cfg:
+            continue
+        cmd = server_cfg.get("command", "")
+        if not cmd:
+            fail(f"{label}: empty command in config")
+            continue
+        # Determine if it's a bare command name or a path
+        cmd_path = Path(cmd)
+        if cmd_path.is_absolute() or "/" in cmd or "\\" in cmd:
+            # Absolute or relative path — check file existence
+            if cmd_path.exists():
+                ok(f"{label}: {cmd}")
+            elif shutil.which(cmd):
+                ok(f"{label}: {cmd} (found on PATH)")
+            else:
+                fail(f"{label}: {cmd} — file not found")
+        else:
+            # Bare command name — check PATH
+            found = shutil.which(cmd)
+            if found:
+                ok(f"{label}: {cmd} -> {found}")
+            else:
+                fail(f"{label}: {cmd} — not found on PATH")
+    typer.echo()
+
+    # 9. MCP server launch check
+    typer.echo("9. MCP server launch check")
+    import subprocess
+    for label, cfg_path in config_paths:
+        data = read_config(cfg_path)
+        server_cfg = data.get("mcpServers", {}).get(MCP_SERVER_NAME)
+        if not server_cfg:
+            continue
+        cmd = server_cfg.get("command", "")
+        args = server_cfg.get("args", [])
+        env_vars = server_cfg.get("env", {})
+        if not cmd:
+            continue
+
+        # Build check command based on config style
+        if args == ["serve", "--mcp"]:
+            # legacy codegraph CLI mode
+            check_args = [cmd, "serve", "--mcp", "--check"]
+        else:
+            # python -m codegraph.mcp_server mode
+            check_args = [cmd] + args + ["--check"]
+
+        # Pass project root via env if configured
+        check_env = os.environ.copy()
+        if "CODEGRAPH_PROJECT_ROOT" in env_vars:
+            check_env["CODEGRAPH_PROJECT_ROOT"] = env_vars["CODEGRAPH_PROJECT_ROOT"]
+
+        try:
+            proc = subprocess.run(
+                check_args,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=check_env,
+            )
+            if proc.returncode == 0:
+                ok(f"{label}: {' '.join(check_args)} — success")
+            else:
+                err_msg = proc.stderr.strip() or proc.stdout.strip()
+                fail(f"{label}: {' '.join(check_args)} — exit code {proc.returncode}")
+                if err_msg:
+                    typer.echo(f"       {err_msg[:200]}")
+        except FileNotFoundError:
+            fail(f"{label}: {cmd} — command not found")
+        except subprocess.TimeoutExpired:
+            warn(f"{label}: {cmd} — check timed out (may be OK, server may just need more time)")
+        except Exception as e:
+            warn(f"{label}: {cmd} — could not check: {e}")
+    typer.echo()
 
 
 # ── configure command group ──────────────────────────────────────────────
@@ -1326,9 +1408,9 @@ def configure_all(
         None, "--root", "-r",
         help="Set CODEGRAPH_PROJECT_ROOT env var in config (omit for CWD auto-detection)",
     ),
-    python_command: str = typer.Option(
+    command_override: str = typer.Option(
         None, "--command", "-c",
-        help="Python interpreter path (default: current interpreter)",
+        help="MCP server command (default: current Python interpreter). Use 'codegraph' for the CLI entry point.",
     ),
     force: bool = typer.Option(
         False, "--force", "-f",
@@ -1350,15 +1432,16 @@ def configure_all(
         codegraph configure all --force
         codegraph configure all --root /path/to/project
         codegraph configure all --project
+        codegraph configure all --command codegraph
     """
-    from codegraph.configure import configure_target, ConfigTarget
+    from codegraph.configure import configure_target, ConfigTarget, build_server_config
 
     results = []
     for target in (ConfigTarget.CLAUDE, ConfigTarget.CURSOR):
         result = configure_target(
             target,
             root=root,
-            python_command=python_command,
+            command_override=command_override,
             project=project,
             force=force,
         )
@@ -1375,7 +1458,13 @@ def configure_all(
         typer.echo("Existing CodeGraph MCP config found.")
         typer.echo("Use --force to update CODEGRAPH_PROJECT_ROOT.\n")
     else:
-        typer.echo("Configured CodeGraph MCP.\n")
+        # Show the actual command that was written
+        server_cfg = build_server_config(root=root, command_override=command_override)
+        cmd_str = " ".join([server_cfg["command"]] + server_cfg["args"])
+        typer.echo("Configured CodeGraph MCP.")
+        typer.echo(f"Command:")
+        typer.echo(f"  {cmd_str}")
+        typer.echo()
         typer.echo("Next:")
         typer.echo("  cd your-project")
         typer.echo("  codegraph init")
@@ -1390,9 +1479,9 @@ def configure_claude(
         None, "--root", "-r",
         help="Set CODEGRAPH_PROJECT_ROOT env var in config",
     ),
-    python_command: str = typer.Option(
+    command_override: str = typer.Option(
         None, "--command", "-c",
-        help="Python interpreter path (default: current interpreter)",
+        help="MCP server command (default: current Python interpreter). Use 'codegraph' for the CLI entry point.",
     ),
     force: bool = typer.Option(
         False, "--force", "-f",
@@ -1415,7 +1504,7 @@ def configure_claude(
     result = configure_target(
         ConfigTarget.CLAUDE,
         root=root,
-        python_command=python_command,
+        command_override=command_override,
         project=project,
         force=force,
     )
@@ -1428,9 +1517,9 @@ def configure_cursor(
         None, "--root", "-r",
         help="Set CODEGRAPH_PROJECT_ROOT env var in config",
     ),
-    python_command: str = typer.Option(
+    command_override: str = typer.Option(
         None, "--command", "-c",
-        help="Python interpreter path (default: current interpreter)",
+        help="MCP server command (default: current Python interpreter). Use 'codegraph' for the CLI entry point.",
     ),
     force: bool = typer.Option(
         False, "--force", "-f",
@@ -1453,7 +1542,7 @@ def configure_cursor(
     result = configure_target(
         ConfigTarget.CURSOR,
         root=root,
-        python_command=python_command,
+        command_override=command_override,
         project=project,
         force=force,
     )
