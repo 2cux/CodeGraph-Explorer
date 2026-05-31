@@ -150,18 +150,17 @@ Recommendations:
 
 ---
 
-## 5. Context Pack
+## 5. Evidence Pack
 
 ```bash
 $ codegraph context "add MFA to login flow" --root "$DEMO"
 
-Context Pack: ctx_20260527_071630_add
+Evidence Pack: ctx_20260527_071630_add
   Task:         add MFA to login flow
   Intent:       add_feature
   Entry Points: 5
   Related:      8
   Call Graph:   6 nodes, 5 edges
-  Reading Plan: 6 steps
   Risk Level:   medium
   Markdown:     .codegraph/context_packs/ctx_20260527_071630_add.md
   JSON:         .codegraph/context_packs/ctx_20260527_071630_add.json
@@ -178,14 +177,6 @@ Entry Points:
   [0.80] app/store/token_store.py
          File path contains: token
 
-Recommended Reading Order:
-  1. app/api/auth.py::login — Start from entry point
-  2. app/api/auth.py::logout — Start from entry point
-  3. app/store/token_store.py::save_token — Follow downstream call
-  4. app/store/token_store.py::revoke_token — Follow downstream call
-  5. main.py::main — Review upstream caller
-  6. app/api/users.py::get_users — Review upstream caller
-
 Warnings:
   ! 1 edge(s) have confidence below 0.6 — treat these as weak signals.
 ```
@@ -195,7 +186,7 @@ The generated Markdown file provides a complete self-contained document:
 ```bash
 $ head -30 .codegraph/context_packs/ctx_20260527_071630_add.md
 
-# CodeGraph Context Pack
+# CodeGraph Evidence Pack
 
 - **Pack ID:** `ctx_20260527_071630_add`
 - **Schema Version:** 1.0.0
@@ -241,7 +232,7 @@ Open `http://localhost:8765` in a browser. The Dashboard provides:
 | Detail | `/symbol/:id` | Full symbol info with callers/callees |
 | Graph | `/graph` | Interactive subgraph (React Flow) |
 | Impact | `/impact` | Impact analysis with risk assessment |
-| Context | `/context` | Generate and view Context Packs |
+| Context | `/context` | Generate and view Evidence Packs |
 
 ---
 
@@ -259,7 +250,7 @@ codegraph explain login --root ./examples/demo_python_project
 ```bash
 codegraph explain login --depth 3        # Explain with depth-3 call chain
 codegraph impact login --depth 3         # Impact analysis with depth-3 traversal
-codegraph context "fix login" --depth 3  # Context Pack with depth-3 call graph
+codegraph context "fix login" --depth 3  # Evidence Pack with depth-3 call graph
 ```
 
 ### JSON output for programmatic consumption
@@ -271,7 +262,7 @@ codegraph impact login --json
 codegraph context "refactor auth" --json
 ```
 
-### Token budget for Context Packs
+### Token budget for Evidence Packs
 
 ```bash
 codegraph context "refactor user authentication" --max-tokens 8000

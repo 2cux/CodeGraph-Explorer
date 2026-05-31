@@ -46,3 +46,7 @@ pip-log.txt
 # --- Benchmark artifacts (generated) ---
 reports/
 tests/agent_benchmark/results/
+
+# --- Frontend build cache ---
+frontend/tsconfig.tsbuildinfo
+frontend/.vite/
