@@ -31,7 +31,8 @@ export interface EdgeInspectorData {
   confidence_level: string;
   resolution: string;
   reason_codes?: string[];
-  evidence?: string;
+  reason?: string;
+  evidence?: string | Record<string, unknown>;
   source_location?: { file_path: string; line_start: number; line_end?: number } | null;
 }
 
@@ -300,10 +301,24 @@ function EdgeInspector({ data }: { data?: EdgeInspectorData | null }) {
         <KV label="Resolution" value={resolutionLabel(resolution)} mono />
       </InspectorSection>
 
-      {data.evidence && (
+      {data.evidence ? (
         <InspectorSection title="Evidence">
           <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "var(--cg-text-secondary)" }}>
-            {data.evidence}
+            {typeof data.evidence === "string" ? data.evidence : JSON.stringify(data.evidence, null, 2)}
+          </p>
+        </InspectorSection>
+      ) : (
+        <InspectorSection title="Evidence">
+          <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "var(--cg-text-muted)", fontStyle: "italic" }}>
+            No detailed evidence available
+          </p>
+        </InspectorSection>
+      )}
+
+      {data.reason && (
+        <InspectorSection title="Reason">
+          <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "var(--cg-text-secondary)" }}>
+            {data.reason}
           </p>
         </InspectorSection>
       )}

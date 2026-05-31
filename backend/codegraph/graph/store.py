@@ -80,6 +80,16 @@ class GraphStore:
     def get_incoming_edges(self, node_id: str) -> list[GraphEdge]:
         return list(self._edges_by_target.get(node_id, []))
 
+    def get_edges_between(
+        self, source: str, target: str, edge_type: str | None = None
+    ) -> list[GraphEdge]:
+        """Return all edges from *source* to *target*, optionally filtered by type."""
+        candidates = self._edges_by_source.get(source, [])
+        matches = [e for e in candidates if e.target == target]
+        if edge_type:
+            matches = [e for e in matches if (e.type.value if hasattr(e.type, "value") else str(e.type)) == edge_type]
+        return matches
+
     # ── Search ─────────────────────────────────────────────────────────
 
     def search_nodes(self, query: str) -> list[GraphNode]:

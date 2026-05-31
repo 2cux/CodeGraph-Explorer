@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from codegraph.api.deps import get_store
 from codegraph.graph.store import GraphStore
 from codegraph.graph import query as graph_query
+from codegraph.graph.models import EdgeType
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -213,4 +214,135 @@ async def get_graph_overview(
             )
             for (src, tgt), count in cross_edges.items()
         ],
+    )
+
+
+# ── Edge detail models ────────────────────────────────────────────────
+
+
+class EdgeSourceLocation(BaseModel):
+    file_path: str
+    line_start: int
+    line_end: int
+
+
+class EdgeDetail(BaseModel):
+    source: str
+    target: str
+    type: str
+    confidence: float
+    confidence_level: str
+    resolution: str
+    reason_codes: list[str] = []
+    reason: str = ""
+    evidence: dict = {}
+    source_location: EdgeSourceLocation | None = None
+
+
+class EdgeDetailOk(BaseModel):
+    ok: bool = True
+    edge: EdgeDetail
+    warnings: list[str] = []
+
+
+class EdgeErrorDetail(BaseModel):
+    code: str
+    message: str
+    details: dict = {}
+
+
+class EdgeDetailError(BaseModel):
+    ok: bool = False
+    error: EdgeErrorDetail
+    warnings: list[str] = []
+
+
+def _confidence_level(c: float) -> str:
+    if c >= 0.80:
+        return "high"
+    if c >= 0.60:
+        return "medium"
+    if c >= 0.40:
+        return "low"
+    return "unknown"
+
+
+@router.get("/edge", response_model=EdgeDetailOk | EdgeDetailError)
+async def get_edge_detail(
+    source: str = Query(..., description="Source node ID"),
+    target: str = Query(..., description="Target node ID"),
+    type: str | None = Query(default=None, description="Edge type for disambiguation"),
+    store: GraphStore = Depends(get_store),
+):
+    """Return full detail for a single edge identified by source and target.
+
+    If multiple edges exist between the same source-target pair, the optional
+    *type* parameter disambiguates. If multiple edges still match, returns
+    AMBIGUOUS_EDGE with candidate list.
+    """
+    edges = store.get_edges_between(source, target, type)
+
+    if not edges:
+        return EdgeDetailError(
+            ok=False,
+            error=EdgeErrorDetail(
+                code="EDGE_NOT_FOUND",
+                message="Edge not found",
+                details={"source": source, "target": target, "type": type or "*"},
+            ),
+            warnings=[],
+        )
+
+    if len(edges) > 1:
+        candidates = []
+        for e in edges:
+            etype = e.type.value if hasattr(e.type, "value") else str(e.type)
+            candidates.append({"source": e.source, "target": e.target, "type": etype})
+        return EdgeDetailError(
+            ok=False,
+            error=EdgeErrorDetail(
+                code="AMBIGUOUS_EDGE",
+                message=f"Multiple edges found between {source} and {target}. Provide the 'type' parameter to disambiguate.",
+                details={"candidates": candidates},
+            ),
+            warnings=[],
+        )
+
+    edge = edges[0]
+    etype = edge.type.value if hasattr(edge.type, "value") else str(edge.type)
+    resolution = ""
+    reason = ""
+    evidence: dict = {}
+    reason_codes: list[str] = []
+    source_location = None
+
+    if edge.metadata:
+        resolution = edge.metadata.resolution.value if hasattr(edge.metadata.resolution, "value") else str(edge.metadata.resolution)
+        reason = edge.metadata.reason or ""
+        evidence = edge.metadata.evidence or {}
+        if edge.metadata.resolution:
+            reason_codes.append(resolution)
+
+    if edge.source_location:
+        source_location = EdgeSourceLocation(
+            file_path=edge.source_location.file_path,
+            line_start=edge.source_location.line_start,
+            line_end=edge.source_location.line_end,
+        )
+
+    return EdgeDetailOk(
+        ok=True,
+        edge=EdgeDetail(
+            source=edge.source,
+            target=edge.target,
+            type=etype,
+            confidence=edge.confidence,
+            confidence_level=_confidence_level(edge.confidence),
+            resolution=resolution,
+            reason_codes=reason_codes,
+            reason=reason,
+            evidence=evidence,
+            source_location=source_location,
+        ),
+        warnings=[],
     )

@@ -269,6 +269,28 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+export interface EdgeDetailResponse {
+  ok: boolean;
+  edge?: {
+    source: string;
+    target: string;
+    type: string;
+    confidence: number;
+    confidence_level: string;
+    resolution: string;
+    reason_codes: string[];
+    reason: string;
+    evidence: Record<string, unknown>;
+    source_location: { file_path: string; line_start: number; line_end: number } | null;
+  };
+  error?: {
+    code: string;
+    message: string;
+    details: Record<string, unknown>;
+  };
+  warnings: string[];
+}
+
 export interface StatusResponse {
   status: string;  // "fresh" | "stale" | "missing"
   indexed_at: string | null;
@@ -324,6 +346,12 @@ export const api = {
       fetchJSON<SubgraphResponse>(`${BASE}/graph/subgraph`, { symbol_id: symbolId, depth }),
     stats: () => fetchJSON<GraphStats>(`${BASE}/graph/stats`),
     overview: () => fetchJSON<OverviewResponse>(`${BASE}/graph/overview`),
+    edge: (source: string, target: string, type?: string) =>
+      fetchJSON<EdgeDetailResponse>(`${BASE}/graph/edge`, {
+        source,
+        target,
+        ...(type ? { type } : {}),
+      }),
   },
 
   dashboard: {

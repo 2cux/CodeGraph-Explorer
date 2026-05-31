@@ -1,4 +1,4 @@
-import { GraphCanvas, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "../app/components/GraphCanvas";
+import { GraphCanvas, type EdgeIdentity, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "../app/components/GraphCanvas";
 
 interface Props {
   canvasState: CanvasState;
@@ -8,7 +8,7 @@ interface Props {
   indexStatus?: "fresh" | "stale" | "missing" | "indexing" | "error";
   onSelectNode?: (nodeId: string) => void;
   onSelectFile?: (filePath: string) => void;
-  onSelectEdge?: () => void;
+  onSelectEdge?: (edge: EdgeIdentity) => void;
 }
 
 export default function GraphExplorer({
@@ -46,4 +46,4 @@ export default function GraphExplorer({
 }
 
 // Re-export types used by GraphExplorer consumers
-export type { CanvasState, GraphNodeData, GraphEdgeData, NodeKind };
+export type { EdgeIdentity, CanvasState, GraphNodeData, GraphEdgeData, NodeKind };

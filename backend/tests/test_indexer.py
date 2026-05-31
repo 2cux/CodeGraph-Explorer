@@ -2731,21 +2731,6 @@ class TestConfidenceLevelInContextPack:
 
     def test_low_confidence_items_produce_warnings(self):
         """Low-confidence items produce warnings in the Evidence Pack."""
-        from codegraph.context import reading_plan as rplan
-        # build_reading_plan is a stub in Evidence Pack — returns empty list
-        plan = rplan.build_reading_plan(
-            entry_point_ids=["app/api/auth.py::login"],
-            callee_ids=["app/services/auth_service.py::AuthService.login_user"],
-            caller_ids=[],
-            test_ids=[],
-            low_confidence_ids={"app/store/token_store.py::TokenStore"},
-            store_ids=["app/store/token_store.py::TokenStore"],
-        )
-        # Evidence Pack: reading plans are removed — plan is always empty
-        assert isinstance(plan, list)
-        assert len(plan) == 0, "Evidence Pack: reading plans removed, build_reading_plan returns []"
-
-        # Verify the real pipeline: build_context_pack produces warnings for low-confidence items
         from codegraph.graph.store import GraphStore
         from codegraph.graph.models import GraphNode, NodeType, EdgeType, GraphEdge
         from codegraph.context.pack_builder import build_context_pack

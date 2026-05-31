@@ -114,42 +114,6 @@ class TestBuildReason:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Reading plan — DEPRECATED in Evidence Pack
-# ══════════════════════════════════════════════════════════════════════════
-
-
-class TestBuildReadingPlan:
-    """Evidence Pack: build_reading_plan is a stub that returns [].
-
-    All reading plan functionality was removed in Round 4. The stub
-    exists for backward compatibility.
-    """
-
-    def test_stub_returns_empty_list(self):
-        from codegraph.context.reading_plan import build_reading_plan
-        plan = build_reading_plan(
-            entry_point_ids=["auth.py::login"],
-            callee_ids=["store.py::save"],
-            caller_ids=["main.py::main"],
-            test_ids=["test_auth.py::test_login"],
-        )
-        assert plan == []
-
-    def test_stub_with_strategy(self):
-        from codegraph.context.reading_plan import build_reading_plan
-        from codegraph.context.strategies import get_strategy
-        s = get_strategy(TaskIntent.add_feature)
-        plan = build_reading_plan(
-            entry_point_ids=["auth.py::login"],
-            callee_ids=["store.py::save"],
-            caller_ids=[],
-            test_ids=[],
-            strategy=s,
-        )
-        assert plan == []
-
-
-# ══════════════════════════════════════════════════════════════════════════
 # Markdown export — Evidence Pack structure
 # ══════════════════════════════════════════════════════════════════════════
 

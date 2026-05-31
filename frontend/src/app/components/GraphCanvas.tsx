@@ -102,11 +102,17 @@ const focusedEdges: GraphEdgeData[] = [
   { from: "login",  to: "session", label: "calls",      state: "default" },
 ];
 
+export interface EdgeIdentity {
+  source: string;
+  target: string;
+  type: string;
+}
+
 interface Props {
   state: CanvasState;
   onSelectNode?: (nodeId: string) => void;
   onSelectFile?: (filePath: string) => void;
-  onSelectEdge?: () => void;
+  onSelectEdge?: (edge: EdgeIdentity) => void;
   nodes?: GraphNodeData[];
   edges?: GraphEdgeData[];
   overviewData?: OverviewResponse | null;
@@ -155,7 +161,7 @@ export function GraphCanvas({ state, onSelectNode, onSelectFile, onSelectEdge, n
             <g
               key={edgeKey(e)}
               className="cg-edge-group"
-              onClick={onSelectEdge}
+              onClick={() => onSelectEdge?.({ source: e.from, target: e.to, type: e.label })}
               onMouseEnter={() => setHoveredEdge(edgeKey(e))}
               onMouseLeave={() => setHoveredEdge(null)}
             >

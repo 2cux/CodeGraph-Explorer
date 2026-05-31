@@ -220,17 +220,38 @@ export default function App() {
     }
   }, [handleSelectSymbol, showToast]);
 
-  // Edge selection → show edge inspector
-  const handleSelectEdge = useCallback((edgeData?: EdgeInspectorData) => {
+  // Edge selection → fetch real edge detail from API
+  const handleSelectEdge = useCallback(async (edgeId: { source: string; target: string; type: string }) => {
     setInspectorOpen(true);
     setInspectorTarget("edge");
-    if (edgeData) {
-      setEdgeInspectorData(edgeData);
-      setInspectorMode("edge");
-    } else {
-      setInspectorMode("auto");
+    setInspectorMode("loading");
+
+    try {
+      const res = await api.graph.edge(edgeId.source, edgeId.target, edgeId.type);
+      if (res.ok && res.edge) {
+        const e = res.edge;
+        setEdgeInspectorData({
+          source: e.source,
+          target: e.target,
+          type: e.type,
+          confidence: e.confidence,
+          confidence_level: e.confidence_level,
+          resolution: e.resolution,
+          reason_codes: e.reason_codes,
+          reason: e.reason,
+          evidence: e.evidence,
+          source_location: e.source_location,
+        });
+        setInspectorMode("edge");
+      } else {
+        setInspectorMode("error");
+        showToast("error", res.error?.message || "Edge not found");
+      }
+    } catch {
+      setInspectorMode("error");
+      showToast("error", "Failed to load edge details.");
     }
-  }, []);
+  }, [showToast]);
 
   return (
     <>
@@ -266,7 +287,7 @@ export default function App() {
                 indexStatus={indexStatus}
                 onSelectNode={handleSelectSymbol}
                 onSelectFile={handleSelectFile}
-                onSelectEdge={() => handleSelectEdge()}
+                onSelectEdge={handleSelectEdge}
               />
             )}
             {activeTab === "search" && (

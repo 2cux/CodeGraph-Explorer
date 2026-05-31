@@ -194,3 +194,86 @@ describe("RightInspector - Edge mode", () => {
     }
   });
 });
+
+describe("RightInspector - Edge evidence display", () => {
+  it("shows reason field when provided", () => {
+    const edgeData: EdgeInspectorData = {
+      ...mockEdgeData,
+      reason: "Resolved verify_token via from-import in auth module.",
+    };
+
+    const { container } = render(
+      <RightInspector target="edge" mode="edge" onClose={() => {}} edgeData={edgeData} />
+    );
+
+    expect(container.textContent).toContain("Resolved verify_token via from-import");
+  });
+
+  it("shows 'No detailed evidence available' when evidence is empty", () => {
+    const edgeData: EdgeInspectorData = {
+      ...mockEdgeData,
+      evidence: "",
+    };
+
+    render(
+      <RightInspector target="edge" mode="edge" onClose={() => {}} edgeData={edgeData} />
+    );
+
+    expect(screen.getByText("No detailed evidence available")).toBeInTheDocument();
+  });
+
+  it("shows 'No detailed evidence available' when evidence is null", () => {
+    const edgeData: EdgeInspectorData = {
+      ...mockEdgeData,
+      evidence: undefined,
+    };
+
+    render(
+      <RightInspector target="edge" mode="edge" onClose={() => {}} edgeData={edgeData} />
+    );
+
+    expect(screen.getByText("No detailed evidence available")).toBeInTheDocument();
+  });
+
+  it("shows all required fields: source, target, type, confidence, confidence_level, resolution", () => {
+    const { container } = render(
+      <RightInspector target="edge" mode="edge" onClose={() => {}} edgeData={mockEdgeData} />
+    );
+
+    const text = container.textContent || "";
+    expect(text).toContain("authenticate");
+    expect(text).toContain("verify_token");
+    expect(text).toContain("calls");
+    expect(text).toContain("0.72");
+    expect(text).toContain("Medium");
+    expect(text).toContain("Imported function (exact name)");
+  });
+
+  it("displays source_location when provided", () => {
+    const { container } = render(
+      <RightInspector target="edge" mode="edge" onClose={() => {}} edgeData={mockEdgeData} />
+    );
+
+    expect(container.textContent).toContain("src/auth.py:45");
+  });
+
+  it("displays reason_codes as badges", () => {
+    render(
+      <RightInspector target="edge" mode="edge" onClose={() => {}} edgeData={mockEdgeData} />
+    );
+
+    expect(screen.getByText("import_resolved")).toBeInTheDocument();
+    expect(screen.getByText("same_module_fallback")).toBeInTheDocument();
+  });
+});
+
+describe("RightInspector - Error state", () => {
+  it("shows error state when mode is error", () => {
+    render(
+      <RightInspector target="edge" mode="error" onClose={() => {}} onRetry={() => {}} />
+    );
+
+    expect(screen.getByText("Failed to load data.")).toBeInTheDocument();
+    expect(screen.getByText("Retry")).toBeInTheDocument();
+  });
+});
