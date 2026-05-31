@@ -120,11 +120,11 @@ class TestGetGraphStats:
         stats = get_graph_stats(populated_store)
         assert stats["symbol_count"] == 8
         assert stats["edge_count"] == 4
-        assert stats["file_count"] == 3  # auth.py, token_store.py, main.py
+        assert stats["file_count"] == 4  # auth.py, token_store.py, main.py, user.py
 
     def test_stats_type_counts(self, populated_store):
         stats = get_graph_stats(populated_store)
-        assert stats["function_count"] == 4  # login, logout, save_token, revoke_token, but also file and class nodes
+        assert stats["function_count"] == 5  # login, logout, save_token, revoke_token, main
         # Actually: login (function), logout (function), save_token (function),
         # revoke_token (function), main (function) = 5
         # User (class) = 1

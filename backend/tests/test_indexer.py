@@ -2382,7 +2382,9 @@ class TestModelConfigFixture:
         store.add_edges(edges)
 
         result = analyze_impact(store, "app/services/auth_service.py::AuthService.login_user")
-        affected_ids = {s["symbol_id"] for s in result["affected_symbols"]}
+        confirmed_ids = {s["symbol_id"] for s in result["confirmed_impact"]["symbols"]}
+        possible_ids = {s["symbol_id"] for s in result["possible_impact"]["symbols"]}
+        affected_ids = confirmed_ids | possible_ids
         assert "app/models/user.py::User" in affected_ids, f"Affected: {affected_ids}"
 
     def test_impact_includes_settings(self):
@@ -2396,7 +2398,9 @@ class TestModelConfigFixture:
         store.add_edges(edges)
 
         result = analyze_impact(store, "app/services/auth_service.py::AuthService.login_user")
-        affected_ids = {s["symbol_id"] for s in result["affected_symbols"]}
+        confirmed_ids = {s["symbol_id"] for s in result["confirmed_impact"]["symbols"]}
+        possible_ids = {s["symbol_id"] for s in result["possible_impact"]["symbols"]}
+        affected_ids = confirmed_ids | possible_ids
         assert "app/config.py::Settings" in affected_ids, f"Affected: {affected_ids}"
 
     def test_impact_includes_token_store(self):
@@ -2410,7 +2414,9 @@ class TestModelConfigFixture:
         store.add_edges(edges)
 
         result = analyze_impact(store, "app/services/auth_service.py::AuthService.login_user")
-        affected_ids = {s["symbol_id"] for s in result["affected_symbols"]}
+        confirmed_ids = {s["symbol_id"] for s in result["confirmed_impact"]["symbols"]}
+        possible_ids = {s["symbol_id"] for s in result["possible_impact"]["symbols"]}
+        affected_ids = confirmed_ids | possible_ids
         assert "app/store/token_store.py::TokenStore" in affected_ids, f"Affected: {affected_ids}"
 
     def test_model_symbols_have_right_relation_type(self):

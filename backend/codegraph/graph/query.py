@@ -94,6 +94,9 @@ def search_symbols(
             "file_path": node.file_path,
             "score": score,
             "match_sources": sources,
+            "tags": node.tags,
+            "line_start": node.location.line_start if node.location else None,
+            "line_end": node.location.line_end if node.location else None,
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)
