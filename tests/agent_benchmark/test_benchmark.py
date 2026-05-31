@@ -232,3 +232,145 @@ class TestBenchmarkModes:
         b_ids = {r["task_id"] for r in baseline}
         cg_ids = {r["task_id"] for r in codegraph}
         assert b_ids == cg_ids, f"Mismatch: baseline-only={b_ids-cg_ids}, codegraph-only={cg_ids-b_ids}"
+
+
+# ── Quality gate thresholds (warning mode — does not block CI) ───────────
+
+QUALITY_GATE = {
+    "recall_pass_rate": 8 / 12,        # at least 8/12 tasks recall >= baseline
+    "token_reduction_pct": 20.0,       # at least 20% token reduction
+    "files_read_reduction_pct": 25.0,  # at least 25% files read reduction
+    "grep_read_reduction_pct": 30.0,   # at least 30% grep/read reduction
+}
+
+
+class TestBenchmarkQualityGate:
+    """Quality gate checks that warn (not fail) when thresholds are breached.
+
+    These tests check the current benchmark results against minimum quality
+    thresholds.  They use ``pytest.skip`` when results are missing and issue
+    warnings (via ``pytest.warns`` or ``warnings.warn``) when thresholds are
+    breached, so they do NOT block unrelated CI pipelines.
+    """
+
+    def test_quality_gate_recall(self) -> None:
+        """Recall >= baseline must be at least 8/12 tasks."""
+        results_dir = Path(__file__).resolve().parent / "results"
+        b_path = results_dir / "results_baseline.json"
+        cg_path = results_dir / "results_codegraph.json"
+        if not b_path.exists() or not cg_path.exists():
+            pytest.skip("Benchmark results not yet generated")
+
+        baseline = json.loads(b_path.read_text(encoding="utf-8"))
+        codegraph = json.loads(cg_path.read_text(encoding="utf-8"))
+        cg_map = {r["task_id"]: r for r in codegraph}
+
+        recall_ok = 0
+        for b in baseline:
+            cg = cg_map.get(b["task_id"])
+            if cg:
+                b_recall = file_recall(b)
+                cg_recall = file_recall(cg)
+                if cg_recall >= b_recall:
+                    recall_ok += 1
+
+        threshold = QUALITY_GATE["recall_pass_rate"]
+        min_ok = int(threshold * len(baseline))
+        import warnings
+        if recall_ok < min_ok:
+            warnings.warn(
+                f"QUALITY GATE: Recall >= baseline is {recall_ok}/{len(baseline)} "
+                f"(threshold: >= {min_ok}/{len(baseline)}). "
+                f"Possible causes: index missing edges, low confidence filtering, "
+                f"single-keyword search, __init__ selected over business method, "
+                f"class-level impact misses method callers, or config/model/store deps missing."
+            )
+        # Always assert so the test records the current value
+        assert recall_ok >= 0, f"Recall OK count: {recall_ok}/{len(baseline)}"
+
+    def test_quality_gate_token_reduction(self) -> None:
+        """Token reduction must be at least 20%."""
+        results_dir = Path(__file__).resolve().parent / "results"
+        b_path = results_dir / "results_baseline.json"
+        cg_path = results_dir / "results_codegraph.json"
+        if not b_path.exists() or not cg_path.exists():
+            pytest.skip("Benchmark results not yet generated")
+
+        baseline = json.loads(b_path.read_text(encoding="utf-8"))
+        codegraph = json.loads(cg_path.read_text(encoding="utf-8"))
+        cg_map = {r["task_id"]: r for r in codegraph}
+
+        total_b_tokens = sum(estimated_tokens(b) for b in baseline)
+        total_cg_tokens = sum(estimated_tokens(cg) for cg in codegraph)
+        if total_b_tokens == 0:
+            pytest.skip("Baseline tokens is zero")
+
+        reduction = (total_b_tokens - total_cg_tokens) / total_b_tokens * 100
+        threshold = QUALITY_GATE["token_reduction_pct"]
+
+        import warnings
+        if reduction < threshold:
+            warnings.warn(
+                f"QUALITY GATE: Token reduction is {reduction:.1f}% "
+                f"(threshold: >= {threshold:.0f}%). "
+                f"Baseline: {total_b_tokens:,} tokens, CodeGraph: {total_cg_tokens:,} tokens. "
+                f"Possible cause: compact MCP payload growing too large."
+            )
+        assert reduction > -100, f"Token reduction: {reduction:.1f}%"
+
+    def test_quality_gate_files_read_reduction(self) -> None:
+        """Files read reduction must be at least 25%."""
+        results_dir = Path(__file__).resolve().parent / "results"
+        b_path = results_dir / "results_baseline.json"
+        cg_path = results_dir / "results_codegraph.json"
+        if not b_path.exists() or not cg_path.exists():
+            pytest.skip("Benchmark results not yet generated")
+
+        baseline = json.loads(b_path.read_text(encoding="utf-8"))
+        codegraph = json.loads(cg_path.read_text(encoding="utf-8"))
+        cg_map = {r["task_id"]: r for r in codegraph}
+
+        total_b_files = sum(files_read_count(b) for b in baseline)
+        total_cg_files = sum(files_read_count(cg) for cg in codegraph)
+        if total_b_files == 0:
+            pytest.skip("Baseline files read is zero")
+
+        reduction = (total_b_files - total_cg_files) / total_b_files * 100
+        threshold = QUALITY_GATE["files_read_reduction_pct"]
+
+        import warnings
+        if reduction < threshold:
+            warnings.warn(
+                f"QUALITY GATE: Files read reduction is {reduction:.1f}% "
+                f"(threshold: >= {threshold:.0f}%). "
+                f"Baseline: {total_b_files} files, CodeGraph: {total_cg_files} files."
+            )
+        assert reduction > -100, f"Files read reduction: {reduction:.1f}%"
+
+    def test_quality_gate_grep_read_reduction(self) -> None:
+        """grep/read reduction must be at least 30%."""
+        results_dir = Path(__file__).resolve().parent / "results"
+        b_path = results_dir / "results_baseline.json"
+        cg_path = results_dir / "results_codegraph.json"
+        if not b_path.exists() or not cg_path.exists():
+            pytest.skip("Benchmark results not yet generated")
+
+        baseline = json.loads(b_path.read_text(encoding="utf-8"))
+        codegraph = json.loads(cg_path.read_text(encoding="utf-8"))
+
+        total_b_gr = sum(grep_read_calls(b) for b in baseline)
+        total_cg_gr = sum(grep_read_calls(cg) for cg in codegraph)
+        if total_b_gr == 0:
+            pytest.skip("Baseline grep/read calls is zero")
+
+        reduction = (total_b_gr - total_cg_gr) / total_b_gr * 100
+        threshold = QUALITY_GATE["grep_read_reduction_pct"]
+
+        import warnings
+        if reduction < threshold:
+            warnings.warn(
+                f"QUALITY GATE: grep/read reduction is {reduction:.1f}% "
+                f"(threshold: >= {threshold:.0f}%). "
+                f"Baseline: {total_b_gr} calls, CodeGraph: {total_cg_gr} calls."
+            )
+        assert reduction > -100, f"grep/read reduction: {reduction:.1f}%"

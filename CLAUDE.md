@@ -11,30 +11,36 @@ CodeGraph Explorer 是一个 Python-first 的本地代码图谱索引与 MCP 工
 
 ## Product Scope
 
-当前处于 Phase 0（未开始编码），基于 PRD 定义的 MVP 范围：
+当前处于 MVP 完成阶段，基于 PRD 定义的 MVP 范围已全部实现。
 
-### MVP 核心功能（按优先级排序）
+### 核心能力优先级
 
+**Primary（Agent 主入口）:**
 1. **MCP 细粒度图查询工具** — Agent 通过 MCP 协议按需调用结构化查询工具，替代 grep/glob/read 扫描
    - `search_symbols` — 搜索代码符号
    - `get_symbol` — 获取符号详情（签名、docstring、源码位置）
    - `get_callers` — 查询调用者
    - `get_callees` — 查询被调用者
-   - `get_neighbors` — 查询局部子图（center node + depth）
+   - `get_neighbors` — 查询局部子图（center node + depth，按 role 分组）
    - `get_impact` — 分析修改影响面
    - `repo_status` — 检查索引新鲜度、覆盖率、低置信度边比例
-   - `build_evidence_pack` — 可选快照导出（summary-only，供人类或非 MCP Agent 使用）
-2. **可靠索引与新鲜度检测** — `/codegraph index` 扫描代码库，解析 AST，构建代码图谱；`repo_status` 检测索引是否过期
-3. **Impact / neighbors / callers / callees** — 图查询核心能力，MCP 工具和 CLI 共用同一查询引擎
-4. **Dashboard 作为证据验证界面** — 人类验证索引质量、调用关系置信度、影响面的可视化入口
-5. **Evidence Pack 作为可选快照** — 面向任务的范围快照，默认 summary-only，不带阅读计划和 Agent 指令
+   - `repo_summary` — 仓库概览（类型分布、top modules、入口点、测试覆盖信号）
+   - `build_context_pack` — 可选快照导出（summary-only，供人类或非 MCP Agent 使用）
 
-- 第一版只支持 **Python** 语言
+**Secondary（辅助界面）:**
+- **Dashboard** — 人类验证索引质量、调用关系置信度、影响面的可视化入口（6 个页面）
+- **Evidence Pack** — 面向任务的范围快照，默认 summary-only，不包含 reading_plan/agent_instructions
 
-### 暂不处理（非目标）
+**Not a goal（非目标）:**
+- Not an implementation planner
+- Not a reading-plan generator
+- Not a replacement for agent reasoning
+- Not a full semantic runtime analyzer
 - SaaS 平台、多用户权限、企业工作区、PR Bot、IDE 插件深度集成
 - 云端代码上传、全量大图展示、Neo4j、多语言支持、复杂 embedding RAG
 - 不承诺 100% 精准静态调用图
+
+- 第一版只支持 **Python** 语言
 
 ## Tech Stack
 
@@ -88,12 +94,11 @@ CodeGraph Explorer 是一个 Python-first 的本地代码图谱索引与 MCP 工
 │   │   │   ├── store.py      # 图谱存储接口
 │   │   │   ├── query.py      # 查询（search, callers, callees）
 │   │   │   └── impact.py     # 影响面分析
-│   │   ├── mcp/              # MCP 工具定义（Agent 主入口）
-│   │   │   ├── tools.py      # MCP tool handlers
-│   │   │   └── server.py     # MCP server 启动
-│   │   ├── evidence/         # Evidence Pack 生成（可选快照）
-│   │   │   ├── models.py     # Evidence Pack Schema
+│   │   ├── mcp_server.py     # MCP 服务器（Agent 主入口，8 个细粒度工具）
+│   │   ├── context/          # Context Pack / Evidence Pack 生成（辅助）
+│   │   │   ├── models.py     # Context Pack Schema
 │   │   │   ├── pack_builder.py
+│   │   │   ├── reading_plan.py    # Stub（已废弃，始终返回 []）
 │   │   │   └── markdown_exporter.py
 │   │   ├── api/              # FastAPI HTTP API（供 Dashboard 使用）
 │   │   │   ├── main.py
@@ -183,7 +188,7 @@ cd frontend && npm run build    # 需人工确认
 0. **PRD 优先** — 对任何功能、Schema、命令有疑问时，先去 `docs/PRD/INDEX.md` 找到对应部分确认，不要凭假设编码。
 1. **先读 PRD，再改代码** — 任何时候修改功能前，先对照 `docs/PRD/INDEX.md` 找到对应的部分确认需求，避免偏离产品定位。
 2. **最小化改动** — 一次只做一个功能的增量开发。不要超前实现 PRD 中标记为"后续"或"非目标"的功能。
-3. **按 Phase 顺序开发** — 严格按以下阶段顺序：Phase 1 Schema/Indexer → Phase 2 Query Engine → Phase 3 MCP Tools → Phase 4 CLI → Phase 5 Dashboard → Phase 6 Evidence Pack。不要跳过阶段。
+3. **MCP-first 开发原则** — 新功能优先暴露为 MCP 工具（compact 模式），CLI 和 API 作为辅助入口。修改图查询逻辑时必须同步验证 MCP 工具输出格式。
 4. **先写 Model/Schema，再写逻辑** — 任何模块先定义 Pydantic models，再实现业务逻辑。
 5. **修改前查看 git status** — 确认工作区干净，避免混合多个任务的改动。
 
@@ -296,8 +301,29 @@ cd frontend && npm run build    # 需人工确认
 - **Confidence 机制容易被遗忘** — 新增调用关系解析时，记得同时设置 `confidence` 和 `resolution`。
 - **Node ID 不一致** — 不同模块生成的 Node ID 格式必须完全一致，否则图谱查询会断裂。始终以 PRD Section 12.5 的规则为准。
 - **Evidence Pack 越界** — 最容易犯的错误是 Evidence Pack 做得太重：加 reading plan、加 agent instructions、默认返回大段源码。必须保持 summary-only 定位。
-- **Dashboard 过度开发** — 容易在 Dashboard 上花过多时间追求视觉效果，而 MCP 工具链尚未完整实现。必须严格遵守 Phase 顺序。
-- **PRD 与当前实现可能不一致** — 项目仅有 PRD，无实际代码。实际开发中的目录结构、命令名、Schema 字段可能会与 PRD 有出入，在 CLAUDE.md 中持续更新。
+- **Dashboard 过度开发** — 容易在 Dashboard 上花过多时间追求视觉效果，而 MCP 工具链尚有改进空间。Dashboard 是证据验证界面，不是主产品。
+- **MCP compact 膨胀** — compact 模式禁止默认返回 full evidence、long reason、source code、selected_context content、full graph edges metadata。
+
+## Benchmark Regression Notes
+
+以下 regression 模式曾在 benchmark 中导致 recall/token 退化，修改相关模块时必须检查：
+
+1. **search only uses first keyword** — `_codegraph_search_best` 在第一个关键词命中后停止，导致遗漏文件。修复：搜索所有关键词并合并结果。
+2. **`__init__` selected over business method** — `__init__` 方法无调用者/被调用者，导致 impact 为空。修复：符号选择时降低 `__init__` 优先级。
+3. **class-level impact misses method callers/callees** — 类节点本身可能无直接调用边，但其方法有。修复：analyze_impact 对类节点聚合所有方法的上下游。
+4. **config/model/store dependencies missing from impact** — 配置文件仅通过 imports 连接，不在 calls 遍历路径中。修复：impact 遍历 callee 文件的 imports 以发现 config/model/store 类。
+5. **compact MCP payload grows too large** — MCP 响应包含完整 evidence/reason/source。修复：compact 模式只返回 symbol_id、name、type、file_path、confidence、reason_codes。
+
+### Benchmark Quality Gate
+
+| Gate | Threshold | Current |
+|---|---|---|
+| Recall >= baseline | ≥ 8/12 | 11/12 |
+| Token reduction | ≥ 20% | ~29% |
+| Files read reduction | ≥ 25% | ~78% |
+| grep/read reduction | ≥ 30% | ~90% |
+
+Run: `python -m tests.agent_benchmark.runner --mode both && pytest tests/agent_benchmark/ -v`
 
 ## Response Format After Changes
 
