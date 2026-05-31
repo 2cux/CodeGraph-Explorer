@@ -32,18 +32,23 @@ def build_server_config(
 ) -> dict[str, Any]:
     """Build a single MCP server config entry for codegraph.
 
+    Uses the stable ``codegraph serve --mcp`` command so that the same
+    CLI entry-point handles startup validation, error messages, and the
+    stdio MCP loop.
+
     Args:
         root: If set, adds ``env.CODEGRAPH_PROJECT_ROOT`` to pin the server
               to a specific project. When omitted, the MCP server auto-detects
               the project by walking up from the current working directory.
-        python_command: Override the Python interpreter path.
+        python_command: Override the Python interpreter path (advanced; normally
+                        ``codegraph`` on PATH is preferred).
 
     Returns:
         A dict with ``command``, ``args``, and optionally ``env``.
     """
     entry: dict[str, Any] = {
-        "command": python_command or sys.executable,
-        "args": ["-m", "codegraph.mcp_server"],
+        "command": python_command or "codegraph",
+        "args": ["serve", "--mcp"],
     }
     if root:
         entry["env"] = {"CODEGRAPH_PROJECT_ROOT": str(Path(root).resolve())}

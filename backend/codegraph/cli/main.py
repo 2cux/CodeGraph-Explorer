@@ -944,7 +944,7 @@ def watch(
     run_watch_loop(root_path, debounce_ms=debounce_ms, poll_interval=poll_interval)
 
 
-# ── mcp command ──────────────────────────────────────────────────────────
+# ── mcp command (debug) ──────────────────────────────────────────────────
 
 
 @app.command()
@@ -959,20 +959,11 @@ def mcp(
         help="Enable watch mode for automatic incremental index sync",
     ),
 ) -> None:
-    """Start the MCP server for AI agent integration.
+    """[Debug] Start the MCP server directly over stdio.
 
-    Runs a Model Context Protocol server over stdio, exposing tools
-    for AI coding agents (Claude Code, Cursor) to query the code graph.
-
-    Requires the 'mcp' extra: pip install codegraph[mcp]
-
-    Configure in Claude Code:
-      .claude/settings.local.json:
-        {"mcpServers": {"codegraph": {
-          "command": "python",
-          "args": ["-m", "codegraph.mcp_server"],
-          "env": {"CODEGRAPH_PROJECT_ROOT": "/path/to/project"}
-        }}}
+    Prefer ``codegraph serve --mcp`` for normal use — it includes startup
+    validation and clear error messages. This command is a debug shortcut
+    that launches the MCP server without validation.
     """
     from codegraph.mcp_server import main as mcp_main
 
@@ -982,6 +973,324 @@ def mcp(
         os.environ["CODEGRAPH_WATCH"] = "1"
 
     mcp_main()
+
+
+# ── serve command ──────────────────────────────────────────────────────
+
+
+def _validate_serve_env(root_path: str | None) -> Path:
+    """Validate the environment for ``serve --mcp`` startup.
+
+    Checks CODEGRAPH_PROJECT_ROOT, directory existence, .codegraph presence,
+    and index file completeness. Returns the resolved project root Path.
+
+    Exits with a clear message on any failure (no traceback).
+    """
+    # Resolve project root
+    env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT", "")
+    cli_root = root_path
+
+    if cli_root:
+        resolved = Path(cli_root).resolve()
+    elif env_root:
+        resolved = Path(env_root).resolve()
+    else:
+        # Walk up from CWD to find .codegraph
+        cg_dir = _find_codegraph_dir(None)
+        if cg_dir is not None:
+            resolved = cg_dir.parent.resolve()
+        else:
+            resolved = Path.cwd().resolve()
+
+    # Check 1: path exists
+    if not resolved.exists():
+        typer.echo(
+            f"ERROR: Project root does not exist.\n"
+            f"  Path: {resolved}\n"
+            f"  Run:  mkdir -p {resolved}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Check 2: path is a directory
+    if not resolved.is_dir():
+        typer.echo(
+            f"ERROR: Project root is not a directory.\n"
+            f"  Path: {resolved}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    cg_dir = resolved / ".codegraph"
+
+    # Check 3: .codegraph directory exists
+    if not cg_dir.exists():
+        typer.echo(
+            f"No CodeGraph index found.\n"
+            f"Project root: {resolved}\n"
+            f"Run:\n"
+            f"  cd {resolved}\n"
+            f"  codegraph init",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Check 4: index files are complete
+    missing_files: list[str] = []
+    for fname in ("graph.json", "nodes.json", "edges.json", "metadata.json"):
+        if not (cg_dir / fname).exists():
+            missing_files.append(fname)
+
+    if missing_files:
+        typer.echo(
+            f"CodeGraph index is incomplete — missing files: {', '.join(missing_files)}\n"
+            f"Project root: {resolved}\n"
+            f"Run:\n"
+            f"  cd {resolved}\n"
+            f"  codegraph init --force",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    return resolved
+
+
+@app.command()
+def serve(
+    mcp_flag: bool = typer.Option(
+        False, "--mcp",
+        help="Start as MCP server over stdio (for AI agent integration)",
+    ),
+    check: bool = typer.Option(
+        False, "--check",
+        help="Only validate environment, do not start the server",
+    ),
+    watch: bool = typer.Option(
+        False, "--watch", "-w",
+        help="Enable watch mode for automatic incremental index sync",
+    ),
+) -> None:
+    """Start the CodeGraph server.
+
+    With --mcp: start MCP server over stdio for AI agent integration.
+    This is the command written into MCP config by ``codegraph configure``.
+
+    With --mcp --check: validate the environment and exit without starting.
+    Use this to diagnose MCP startup issues.
+
+    Examples:
+        codegraph serve --mcp
+        codegraph serve --mcp --check
+    """
+    if not mcp_flag:
+        typer.echo("Usage: codegraph serve --mcp", err=True)
+        typer.echo("")
+        typer.echo("  --mcp    Start MCP server over stdio (for AI agent integration)")
+        typer.echo("  --check  Validate environment only, do not start the server")
+        typer.echo("  --watch  Enable watch mode for automatic incremental index sync")
+        typer.echo("")
+        typer.echo("This command is normally invoked by MCP clients (Claude Code, Cursor)")
+        typer.echo("via the config written by ``codegraph configure``.")
+        raise typer.Exit(1)
+
+    root_path: str | None = None
+    if os.environ.get("CODEGRAPH_PROJECT_ROOT"):
+        root_path = os.environ["CODEGRAPH_PROJECT_ROOT"]
+
+    project_root = _validate_serve_env(root_path)
+
+    if check:
+        # Check mode: validate and exit
+        typer.echo("CodeGraph MCP check passed.")
+        typer.echo(f"  Project root:  {project_root}")
+        typer.echo(f"  Index path:    {project_root / '.codegraph'}")
+        metadata_path = project_root / ".codegraph" / "metadata.json"
+        if metadata_path.exists():
+            from codegraph.graph.models import IndexMetadata
+            try:
+                meta = IndexMetadata.model_validate_json(metadata_path.read_text("utf-8"))
+                typer.echo(f"  Indexed at:    {meta.indexed_at}")
+                typer.echo(f"  Symbols:       {meta.symbol_count}")
+                typer.echo(f"  Edges:         {meta.edge_count}")
+                typer.echo(f"  Files:         {meta.file_count}")
+            except Exception:
+                pass
+        return
+
+    # Set env for the MCP server subprocess
+    os.environ["CODEGRAPH_PROJECT_ROOT"] = str(project_root)
+    if watch:
+        os.environ["CODEGRAPH_WATCH"] = "1"
+
+    from codegraph.mcp_server import main as mcp_main
+    mcp_main()
+
+
+# ── doctor command ──────────────────────────────────────────────────────
+
+
+@app.command()
+def doctor(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root to check (defaults to CODEGRAPH_PROJECT_ROOT or CWD)",
+    ),
+) -> None:
+    """Diagnose CodeGraph setup and report any issues.
+
+    Checks: CLI availability, Python version, package path, project root,
+    .codegraph presence, index status, MCP config paths, and serve --mcp
+    readiness.
+    """
+    import sys
+    import platform
+    import importlib.util
+
+    def ok(msg: str) -> None:
+        typer.echo(f"  [OK]    {msg}")
+
+    def warn(msg: str) -> None:
+        typer.echo(f"  [WARN]  {msg}")
+
+    def fail(msg: str) -> None:
+        typer.echo(f"  [FAIL]  {msg}")
+
+    typer.echo("CodeGraph Doctor")
+    typer.echo("=" * 50)
+    typer.echo()
+
+    # 1. CLI availability
+    typer.echo("1. CLI availability")
+    try:
+        import codegraph
+        ok(f"codegraph package importable (version: {getattr(codegraph, '__version__', 'unknown')})")
+    except ImportError:
+        fail("codegraph package not importable — reinstall with: pip install -e \"backend[mcp,watch]\"")
+    typer.echo()
+
+    # 2. Python version
+    typer.echo("2. Python version")
+    py_version = sys.version_info
+    if py_version >= (3, 10):
+        ok(f"Python {platform.python_version()} ({sys.executable})")
+    else:
+        fail(f"Python {platform.python_version()} — need 3.10+")
+    typer.echo()
+
+    # 3. Package path
+    typer.echo("3. Package path")
+    spec = importlib.util.find_spec("codegraph")
+    if spec and spec.origin:
+        pkg_path = Path(spec.origin).parent.parent
+        ok(str(pkg_path))
+    else:
+        warn("Could not determine package path")
+    typer.echo()
+
+    # 4. Project root
+    typer.echo("4. Project root")
+    if root:
+        project_root = Path(root).resolve()
+    elif os.environ.get("CODEGRAPH_PROJECT_ROOT"):
+        project_root = Path(os.environ["CODEGRAPH_PROJECT_ROOT"]).resolve()
+    else:
+        # Try auto-detect
+        cg_dir = _find_codegraph_dir(None)
+        project_root = cg_dir.parent.resolve() if cg_dir else Path.cwd().resolve()
+
+    if project_root.exists() and project_root.is_dir():
+        ok(str(project_root))
+    else:
+        fail(f"{project_root} — path does not exist or is not a directory")
+    typer.echo()
+
+    # 5. .codegraph presence & index status
+    typer.echo("5. Index status")
+    cg_dir = project_root / ".codegraph"
+    if not cg_dir.exists():
+        fail(f" No .codegraph directory in {project_root}")
+        typer.echo(f"     Run: cd {project_root} && codegraph init")
+        typer.echo()
+    else:
+        ok(f".codegraph found in {project_root}")
+        # Check each index file
+        index_files = {
+            "graph.json": (cg_dir / "graph.json").exists(),
+            "nodes.json": (cg_dir / "nodes.json").exists(),
+            "edges.json": (cg_dir / "edges.json").exists(),
+            "metadata.json": (cg_dir / "metadata.json").exists(),
+            "index.sqlite": (cg_dir / "index.sqlite").exists(),
+        }
+        all_present = all(index_files.values())
+        missing = [k for k, v in index_files.items() if not v]
+        if all_present:
+            ok("All index files present")
+        else:
+            fail(f"Missing index files: {', '.join(missing)}")
+            typer.echo(f"     Run: cd {project_root} && codegraph init --force")
+
+        # Print stats from metadata if available
+        if index_files["metadata.json"]:
+            from codegraph.graph.models import IndexMetadata
+            try:
+                meta = IndexMetadata.model_validate_json(
+                    (cg_dir / "metadata.json").read_text("utf-8")
+                )
+                typer.echo(f"     Indexed:  {meta.indexed_at}")
+                typer.echo(f"     Symbols:  {meta.symbol_count}")
+                typer.echo(f"     Edges:    {meta.edge_count}")
+                typer.echo(f"     Files:    {meta.file_count}")
+            except Exception:
+                pass
+
+        # Freshness check
+        if index_files["metadata.json"] and index_files["graph.json"]:
+            store = FileStore(cg_dir)
+            metadata = store.load_metadata()
+            if metadata:
+                result = detect_status(project_root, metadata)
+                if result.status == "fresh":
+                    ok("Index is fresh")
+                elif result.status == "stale":
+                    warn(f"Index is stale — {result.total_changes} file(s) changed")
+                    typer.echo(f"     Run: codegraph init --incremental")
+        typer.echo()
+
+    # 6. MCP config paths
+    typer.echo("6. MCP configuration")
+    from codegraph.configure import (
+        CLAUDE_USER_CONFIG, CURSOR_USER_CONFIG,
+        read_config, MCP_SERVER_NAME,
+    )
+
+    config_paths = [
+        ("Claude Code (user)", CLAUDE_USER_CONFIG),
+        ("Cursor (user)", CURSOR_USER_CONFIG),
+    ]
+    configured_any = False
+    for label, cfg_path in config_paths:
+        data = read_config(cfg_path)
+        server_cfg = data.get("mcpServers", {}).get(MCP_SERVER_NAME)
+        if server_cfg:
+            configured_any = True
+            cmd = server_cfg.get("command", "?")
+            args = server_cfg.get("args", [])
+            has_env = "env" in server_cfg and "CODEGRAPH_PROJECT_ROOT" in server_cfg.get("env", {})
+            root_str = server_cfg.get("env", {}).get("CODEGRAPH_PROJECT_ROOT", "auto-detect")
+            ok(f"{label}: configured ({' '.join([cmd] + args)}, root={root_str})")
+        else:
+            warn(f"{label}: not configured ({cfg_path})")
+    if not configured_any:
+        typer.echo("     Run: codegraph configure all")
+    typer.echo()
+
+    # 7. serve --mcp readiness
+    typer.echo("7. serve --mcp readiness")
+    try:
+        _validate_serve_env(str(project_root))
+        ok("serve --mcp can start")
+    except typer.Exit:
+        fail("serve --mcp would fail — see errors above")
 
 
 # ── configure command group ──────────────────────────────────────────────
@@ -999,17 +1308,16 @@ def _print_configure_result(result: dict) -> None:
     target = result["target"]
     filepath = result["filepath"]
     if status == "configured":
-        typer.echo(f"[OK] {target}: configured -> {filepath}")
+        typer.echo(f"  [CONFIGURED] {target} -> {filepath}")
     elif status == "overwritten":
-        typer.echo(f"[OK] {target}: overwritten -> {filepath}")
+        typer.echo(f"  [UPDATED]    {target} -> {filepath}")
     elif status == "removed":
-        typer.echo(f"[OK] {target}: removed from {filepath}")
+        typer.echo(f"  [REMOVED]    {target} from {filepath}")
     elif status == "not_configured":
-        typer.echo(f"[SKIP] {target}: not configured in {filepath}")
+        typer.echo(f"  [SKIP]       {target}: not configured in {filepath}")
     else:
-        typer.echo(f"Existing CodeGraph MCP config found ({target}).")
-        typer.echo("Skipped to avoid overwriting.")
-        typer.echo("Use --force to update CODEGRAPH_PROJECT_ROOT.")
+        typer.echo(f"  [SKIP]       {target}: already configured")
+        typer.echo(f"               Use --force to update CODEGRAPH_PROJECT_ROOT.")
 
 
 @configure_app.command(name="all")
@@ -1056,8 +1364,24 @@ def configure_all(
         )
         results.append(result)
 
+    typer.echo("\nCodeGraph MCP configuration:\n")
+    all_already = all(r["status"] == "already_configured" for r in results)
     for r in results:
         _print_configure_result(r)
+
+    typer.echo()
+
+    if all_already and not force:
+        typer.echo("Existing CodeGraph MCP config found.")
+        typer.echo("Use --force to update CODEGRAPH_PROJECT_ROOT.\n")
+    else:
+        typer.echo("Configured CodeGraph MCP.\n")
+        typer.echo("Next:")
+        typer.echo("  cd your-project")
+        typer.echo("  codegraph init")
+        typer.echo("  codegraph doctor")
+        typer.echo("  Restart Claude Code / Cursor.")
+        typer.echo()
 
 
 @configure_app.command(name="claude")

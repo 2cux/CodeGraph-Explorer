@@ -4,27 +4,31 @@ Provides Model Context Protocol tools for AI coding agents
 (Claude Code, Cursor, etc.) to query the code graph directly.
 
 Setup (recommended — one command):
-    codegraph configure all        # auto-detects project from CWD
+    codegraph configure all        # writes stable serve --mcp config
     codegraph configure all --root /path/to/project  # pinned to one project
 
-Manual setup (fallback):
-    # User-level config: ~/.claude.json  (Claude Code)
-    # Project-level config: .mcp.json    (Claude Code)
-    # User-level config: ~/.cursor/mcp.json  (Cursor)
-    # Project-level config: .cursor/mcp.json (Cursor)
+The configure command writes::
 
     {
       "mcpServers": {
         "codegraph": {
-          "command": "python",
-          "args": ["-m", "codegraph.mcp_server"]
+          "command": "codegraph",
+          "args": ["serve", "--mcp"],
+          "env": {"CODEGRAPH_PROJECT_ROOT": "/path/to/project"}
         }
       }
     }
 
-Usage:
+Usage (stable — for MCP client launch):
+    codegraph serve --mcp
+
+Usage (debug — direct launch):
     python -m codegraph.mcp_server
     python -m codegraph.mcp_server --project-root /path/to/project
+
+Diagnostics:
+    codegraph serve --mcp --check   # validate env, no stdio loop
+    codegraph doctor                # full health check
 """
 
 from __future__ import annotations
