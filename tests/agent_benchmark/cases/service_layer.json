@@ -1,0 +1,71 @@
+{
+  "project": "service_layer_project",
+  "description": "Layered architecture: route handler -> service -> repository -> model",
+  "root_path": "tests/agent_benchmark/fixtures/service_layer_project",
+  "tasks": [
+    {
+      "task_id": "svc_layer_locate_auth_service",
+      "task": "Find where AuthService.login_user is implemented.",
+      "category": "locate",
+      "expected_symbols": [
+        "app/services/auth_service.py::AuthService",
+        "app/services/auth_service.py::AuthService.login_user",
+        "app/api/auth_routes.py::login"
+      ],
+      "expected_files": [
+        "app/services/auth_service.py",
+        "app/api/auth_routes.py"
+      ]
+    },
+    {
+      "task_id": "svc_layer_impact_token_repo",
+      "task": "What files may be affected if I change TokenRepository?",
+      "category": "impact",
+      "expected_symbols": [
+        "app/repository/token_repository.py::TokenRepository",
+        "app/services/auth_service.py::AuthService",
+        "app/services/auth_service.py::AuthService.login_user",
+        "app/services/auth_service.py::AuthService.logout_user",
+        "app/services/auth_service.py::AuthService.validate_session"
+      ],
+      "expected_files": [
+        "app/repository/token_repository.py",
+        "app/services/auth_service.py",
+        "app/api/auth_routes.py",
+        "tests/test_auth_service.py"
+      ]
+    },
+    {
+      "task_id": "svc_layer_prep_rate_limit",
+      "task": "Prepare context for adding rate limiting to login.",
+      "category": "modification_prep",
+      "expected_symbols": [
+        "app/api/auth_routes.py::login",
+        "app/services/auth_service.py::AuthService",
+        "app/services/auth_service.py::AuthService.login_user",
+        "app/config/settings.py::Settings"
+      ],
+      "expected_files": [
+        "app/api/auth_routes.py",
+        "app/services/auth_service.py",
+        "app/config/settings.py",
+        "tests/test_auth_service.py"
+      ]
+    },
+    {
+      "task_id": "svc_layer_test_discovery",
+      "task": "Find tests related to AuthService.login_user.",
+      "category": "test_discovery",
+      "expected_symbols": [
+        "app/services/auth_service.py::AuthService.login_user",
+        "tests/test_auth_service.py::TestAuthServiceLoginUser",
+        "tests/test_auth_service.py::TestAuthServiceLoginUser.test_login_with_valid_credentials",
+        "tests/test_auth_service.py::TestAuthServiceLoginUser.test_login_user_not_found"
+      ],
+      "expected_files": [
+        "tests/test_auth_service.py",
+        "app/services/auth_service.py"
+      ]
+    }
+  ]
+}

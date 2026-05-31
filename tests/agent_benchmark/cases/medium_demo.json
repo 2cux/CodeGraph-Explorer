@@ -1,0 +1,84 @@
+{
+  "project": "medium_demo_project",
+  "description": "Multi-module project with auth, user, token, admin, middleware, utils, and tests (25+ files)",
+  "root_path": "tests/agent_benchmark/fixtures/medium_demo_project",
+  "tasks": [
+    {
+      "task_id": "medium_locate_token_save",
+      "task": "Find where authentication tokens are saved and validated.",
+      "category": "locate",
+      "expected_symbols": [
+        "app/store/token_store.py::TokenStore",
+        "app/store/token_store.py::TokenStore.save_token",
+        "app/store/token_store.py::TokenStore.validate_token",
+        "app/api/auth.py::login"
+      ],
+      "expected_files": [
+        "app/store/token_store.py",
+        "app/api/auth.py",
+        "app/models/token.py"
+      ]
+    },
+    {
+      "task_id": "medium_impact_login_change",
+      "task": "What files may be affected if I change the login function?",
+      "category": "impact",
+      "expected_symbols": [
+        "app/api/auth.py::login",
+        "app/store/token_store.py::TokenStore.save_token",
+        "app/models/user.py::User.find_by_name",
+        "app/models/user.py::User.check_password",
+        "app/services/mfa_service.py::MfaService",
+        "app/middleware/auth_middleware.py::AuthMiddleware.process"
+      ],
+      "expected_files": [
+        "app/api/auth.py",
+        "app/store/token_store.py",
+        "app/models/user.py",
+        "app/models/token.py",
+        "app/services/mfa_service.py",
+        "app/middleware/auth_middleware.py",
+        "tests/test_auth.py"
+      ]
+    },
+    {
+      "task_id": "medium_prep_mfa_feature",
+      "task": "Prepare context for adding MFA to login flow.",
+      "category": "modification_prep",
+      "expected_symbols": [
+        "app/api/auth.py::login",
+        "app/api/auth.py::verify_mfa",
+        "app/services/mfa_service.py::MfaService",
+        "app/store/token_store.py::TokenStore",
+        "app/models/user.py::User"
+      ],
+      "expected_files": [
+        "app/api/auth.py",
+        "app/services/mfa_service.py",
+        "app/store/token_store.py",
+        "app/models/user.py",
+        "app/config/settings.py",
+        "tests/test_auth.py"
+      ]
+    },
+    {
+      "task_id": "medium_test_discovery_auth",
+      "task": "Find tests related to auth module login and MFA verification.",
+      "category": "test_discovery",
+      "expected_symbols": [
+        "app/api/auth.py::login",
+        "app/api/auth.py::verify_mfa",
+        "tests/test_auth.py::TestAuthLogin",
+        "tests/test_auth.py::TestMfaFlow",
+        "tests/test_auth.py::TestAuthLogin.test_login_success_no_mfa",
+        "tests/test_auth.py::TestMfaFlow.test_login_with_mfa_returns_session"
+      ],
+      "expected_files": [
+        "tests/test_auth.py",
+        "app/api/auth.py",
+        "app/services/mfa_service.py",
+        "app/store/token_store.py"
+      ]
+    }
+  ]
+}

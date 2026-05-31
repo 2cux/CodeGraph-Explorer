@@ -1,0 +1,70 @@
+{
+  "project": "simple_auth_project",
+  "description": "Auth flow with login, token store, user model, and tests",
+  "root_path": "tests/agent_benchmark/fixtures/simple_auth_project",
+  "tasks": [
+    {
+      "task_id": "simple_auth_locate_token",
+      "task": "Find where login token is saved.",
+      "category": "locate",
+      "expected_symbols": [
+        "app/api/auth.py::login",
+        "app/store/token_store.py::TokenStore",
+        "app/store/token_store.py::TokenStore.save_token"
+      ],
+      "expected_files": [
+        "app/api/auth.py",
+        "app/store/token_store.py"
+      ]
+    },
+    {
+      "task_id": "simple_auth_impact_login",
+      "task": "What files may be affected if I change login?",
+      "category": "impact",
+      "expected_symbols": [
+        "app/api/auth.py::login",
+        "app/store/token_store.py::TokenStore.save_token",
+        "app/models/user.py::User.find_by_name",
+        "app/models/user.py::User.check_password"
+      ],
+      "expected_files": [
+        "app/api/auth.py",
+        "app/store/token_store.py",
+        "app/models/user.py",
+        "tests/test_auth.py"
+      ]
+    },
+    {
+      "task_id": "simple_auth_prep_mfa",
+      "task": "Prepare context for adding MFA to login flow.",
+      "category": "modification_prep",
+      "expected_symbols": [
+        "app/api/auth.py::login",
+        "app/store/token_store.py::TokenStore",
+        "app/models/user.py::User"
+      ],
+      "expected_files": [
+        "app/api/auth.py",
+        "app/store/token_store.py",
+        "app/models/user.py",
+        "tests/test_auth.py"
+      ]
+    },
+    {
+      "task_id": "simple_auth_test_discovery",
+      "task": "Find tests related to TokenStore.save_token.",
+      "category": "test_discovery",
+      "expected_symbols": [
+        "app/store/token_store.py::TokenStore",
+        "app/store/token_store.py::TokenStore.save_token",
+        "tests/test_auth.py::TestTokenStore",
+        "tests/test_auth.py::TestTokenStore.test_save_and_validate",
+        "tests/test_auth.py::TestTokenStore.test_revoke_removes_token"
+      ],
+      "expected_files": [
+        "tests/test_auth.py",
+        "app/store/token_store.py"
+      ]
+    }
+  ]
+}
