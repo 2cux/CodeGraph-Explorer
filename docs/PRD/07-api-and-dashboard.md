@@ -1,6 +1,6 @@
 # 16. Local API 设计
 
-API 是内部能力，供插件命令和 Dashboard 使用。
+API 是内部能力，供 MCP 工具、CLI 命令和 Dashboard 使用。
 
 ## 16.1 必须实现的 API
 
@@ -15,7 +15,7 @@ GET /api/symbols/{symbol_id}/callees
 GET /api/symbols/{symbol_id}/neighbors
 GET /api/symbols/{symbol_id}/impact
 
-POST /api/context-pack
+POST /api/evidence-pack
 
 GET /api/graph/subgraph
 GET /api/dashboard/stats
@@ -23,7 +23,7 @@ GET /api/dashboard/stats
 
 ---
 
-## 16.2 POST /api/context-pack
+## 16.2 POST /api/evidence-pack
 
 请求：
 
@@ -31,8 +31,7 @@ GET /api/dashboard/stats
 {
   "task": "add MFA to login flow",
   "query": "login authentication MFA",
-  "target_symbols": [],
-  "max_tokens": 6000,
+  "max_tokens": 3000,
   "include_tests": true,
   "depth": 2
 }
@@ -43,22 +42,22 @@ GET /api/dashboard/stats
 ```json
 {
   "schema_version": "1.0.0",
-  "pack_id": "ctx_auth_mfa",
+  "pack_id": "evi_auth_mfa",
   "task": {},
   "repo": {},
   "entry_points": [],
   "related_symbols": [],
   "call_graph": {},
   "impact": {},
-  "recommended_context": [],
-  "reading_plan": [],
-  "agent_instructions": {},
+  "warnings": [],
   "exports": {
-    "markdown_path": ".codegraph/context_packs/ctx_auth_mfa.md",
-    "json_path": ".codegraph/context_packs/ctx_auth_mfa.json"
+    "markdown_path": ".codegraph/evidence_packs/evi_auth_mfa.md",
+    "json_path": ".codegraph/evidence_packs/evi_auth_mfa.json"
   }
 }
 ```
+
+**不包含 reading_plan、agent_instructions、recommended_context。**
 
 ---
 
@@ -90,18 +89,18 @@ GET /api/graph/subgraph?symbol_id=src/app/api/auth.py::login&depth=2
 
 # 17. Dashboard 需求
 
-Dashboard 是人类验证入口，不是主产品入口。
+Dashboard 是证据验证界面，不是主产品入口。
 
 ## 17.1 页面结构
 
 ```text
 Dashboard
-├── Project Overview
-├── Symbol Search
-├── Symbol Detail
-├── Graph Explorer
-├── Impact View
-└── Context Pack Viewer
+├── Project Overview（索引状态、覆盖率、新鲜度）
+├── Symbol Search（符号搜索）
+├── Symbol Detail（符号详情 + callers/callees）
+├── Graph Explorer（局部调用图）
+├── Impact View（影响面分析）
+└── Evidence Pack Viewer（快照查看）
 ```
 
 ---
@@ -119,8 +118,9 @@ Dashboard
 7. 类数量；
 8. 调用边数量；
 9. 最近索引时间；
-10. 解析失败文件数量；
-11. 低置信度边比例。
+10. 索引是否过期（stale warning）；
+11. 解析失败文件数量；
+12. 低置信度边比例。
 
 ---
 
@@ -147,14 +147,13 @@ Dashboard
 4. 行号；
 5. 函数签名；
 6. docstring；
-7. code preview；
+7. code preview（按需加载，非默认）；
 8. callers；
 9. callees；
 10. related tests；
-11. impact summary；
+11. impact summary（1-hop）；
 12. confidence warnings；
-13. 生成 Context Pack 按钮；
-14. 打开局部图按钮。
+13. 打开局部图按钮。
 
 ---
 
@@ -185,34 +184,32 @@ Dashboard
 展示：
 
 1. target symbol；
-2. upstream callers；
-3. downstream callees；
+2. upstream callers（直接调用者）；
+3. downstream callees（直接下游）；
 4. affected files；
 5. related tests；
 6. risk level；
 7. risk reasons；
-8. recommended reading order；
-9. low-confidence warnings。
+8. low-confidence warnings。
+
+**不自动递归扩展影响链。**
 
 ---
 
-## 17.7 Context Pack Viewer
+## 17.7 Evidence Pack Viewer
 
 展示：
 
 1. task；
-2. entry points；
-3. related symbols；
-4. call graph；
-5. impact；
-6. recommended context；
-7. reading plan；
-8. agent instructions；
-9. warnings；
-10. token estimate；
-11. copy markdown；
-12. export JSON。
+2. entry points（symbol_id + reason + score）；
+3. related symbols（symbol_id + relation）；
+4. call graph（nodes + edges）；
+5. impact（1-hop）；
+6. warnings；
+7. token estimate；
+8. copy markdown；
+9. export JSON。
 
 重点：
 
-> Context Pack Viewer 必须能解释为什么系统选择这些上下文。
+> Evidence Pack Viewer 必须能解释为什么系统选择这些 entry points，每个推荐项必须展示 reason。

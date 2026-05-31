@@ -1,18 +1,336 @@
-# 11. 插件命令需求
+# 11. MCP 工具与 CLI 命令需求
 
-## 11.1 `/codegraph index`
+## 11.0 优先级说明
+
+MCP 工具是 Agent 的主入口，CLI 是开发调试入口，两者共用同一查询引擎。
+
+```text
+MCP Tools (Agent 主入口) > CLI (开发调试) > Evidence Pack (可选快照)
+```
+
+---
+
+# 11.1 MCP 工具定义
+
+## 11.1.1 `search_symbols`
 
 ### 功能
 
-扫描当前代码库，构建本地代码上下文索引。
+搜索代码符号。
 
 ### 输入
 
-```text
-/codegraph index
+```json
+{
+  "query": "login",
+  "symbol_types": ["function", "method", "class"],
+  "max_results": 10
+}
 ```
 
-CLI 模拟：
+### 返回
+
+```json
+[
+  {
+    "symbol_id": "src/app/api/auth.py::login",
+    "type": "function",
+    "name": "login",
+    "file_path": "src/app/api/auth.py",
+    "signature": "login(request: LoginRequest) -> LoginResponse",
+    "location": { "line_start": 24, "line_end": 68 },
+    "score": 0.92,
+    "match_sources": ["symbol_name", "file_path"],
+    "reason": "Symbol name matches 'login'"
+  }
+]
+```
+
+---
+
+## 11.1.2 `get_symbol`
+
+### 功能
+
+获取符号详情。
+
+### 输入
+
+```json
+{
+  "symbol_id": "src/app/api/auth.py::login",
+  "include_source": false
+}
+```
+
+### 返回
+
+```json
+{
+  "symbol_id": "src/app/api/auth.py::login",
+  "type": "function",
+  "name": "login",
+  "file_path": "src/app/api/auth.py",
+  "location": { "line_start": 24, "line_end": 68 },
+  "signature": "login(request: LoginRequest) -> LoginResponse",
+  "docstring": "Authenticate user and return LoginResponse.",
+  "caller_count": 2,
+  "callee_count": 5,
+  "related_tests": ["src/app/tests/test_auth.py::test_login_success"]
+}
+```
+
+**`include_source` 默认 `false`**。Agent 需要源码时显式传 `true`。
+
+---
+
+## 11.1.3 `get_callers`
+
+### 功能
+
+查询谁调用了指定符号。
+
+### 输入
+
+```json
+{
+  "symbol_id": "src/app/api/auth.py::login",
+  "max_depth": 1
+}
+```
+
+### 返回
+
+```json
+[
+  {
+    "symbol_id": "src/app/api/middleware.py::auth_middleware",
+    "type": "function",
+    "file_path": "src/app/api/middleware.py",
+    "relation": "calls",
+    "confidence": 0.85,
+    "resolution": "import_match"
+  }
+]
+```
+
+---
+
+## 11.1.4 `get_callees`
+
+### 功能
+
+查询指定符号调用了谁。
+
+### 输入
+
+```json
+{
+  "symbol_id": "src/app/api/auth.py::login",
+  "max_depth": 1
+}
+```
+
+### 返回
+
+```json
+[
+  {
+    "symbol_id": "src/app/services/auth.py::AuthService.validate_password",
+    "type": "method",
+    "file_path": "src/app/services/auth.py",
+    "relation": "called_by",
+    "confidence": 0.82,
+    "resolution": "class_method_match"
+  }
+]
+```
+
+---
+
+## 11.1.5 `get_neighbors`
+
+### 功能
+
+查询局部子图（center node + depth）。
+
+### 输入
+
+```json
+{
+  "symbol_id": "src/app/api/auth.py::login",
+  "depth": 2,
+  "direction": "both",
+  "max_nodes": 50
+}
+```
+
+### 返回
+
+```json
+{
+  "center_node_id": "src/app/api/auth.py::login",
+  "depth": 2,
+  "nodes": [],
+  "edges": [],
+  "layout_hints": {
+    "group_by": "file",
+    "max_nodes": 50
+  }
+}
+```
+
+---
+
+## 11.1.6 `get_impact`
+
+### 功能
+
+分析修改某个符号的影响面（1-hop only）。
+
+### 输入
+
+```json
+{
+  "symbol_id": "src/app/services/auth.py::AuthService.validate_token"
+}
+```
+
+### 返回
+
+```json
+{
+  "changed_symbol": "src/app/services/auth.py::AuthService.validate_token",
+  "upstream_callers": [
+    {
+      "symbol_id": "src/app/api/auth.py::login",
+      "file_path": "src/app/api/auth.py",
+      "confidence": 0.85
+    }
+  ],
+  "downstream_callees": [
+    {
+      "symbol_id": "src/app/security/jwt.py::decode_token",
+      "file_path": "src/app/security/jwt.py",
+      "confidence": 0.90
+    }
+  ],
+  "affected_files": [
+    {
+      "file_path": "src/app/api/auth.py",
+      "reason": "Contains direct caller",
+      "priority": "high"
+    }
+  ],
+  "related_tests": [
+    {
+      "symbol_id": "src/app/tests/test_auth.py::test_login_success",
+      "file_path": "src/app/tests/test_auth.py"
+    }
+  ],
+  "risk": {
+    "level": "high",
+    "reasons": [
+      "Authentication-sensitive flow",
+      "Multiple upstream callers"
+    ]
+  }
+}
+```
+
+**不自动递归扩展。** Agent 如需更深影响链，自行用 `get_neighbors` 逐跳扩展。
+
+---
+
+## 11.1.7 `repo_status`
+
+### 功能
+
+检查索引新鲜度、覆盖率、低置信度边比例。
+
+### 输入
+
+```json
+{}
+```
+
+### 返回
+
+```json
+{
+  "indexed": true,
+  "index_time": "2026-05-31T10:00:00Z",
+  "stale": false,
+  "total_files": 428,
+  "indexed_files": 428,
+  "total_symbols": 3912,
+  "total_edges": 7436,
+  "low_confidence_edge_ratio": 0.12,
+  "failed_files": 0,
+  "repo_root": "/path/to/project",
+  "language": "Python"
+}
+```
+
+---
+
+## 11.1.8 `build_evidence_pack`
+
+### 功能
+
+生成 Evidence Pack（可选快照，供人类或非 MCP Agent 使用）。
+
+### 输入
+
+```json
+{
+  "task": "add MFA to login flow",
+  "max_tokens": 3000,
+  "include_tests": true,
+  "depth": 2
+}
+```
+
+### 返回
+
+```json
+{
+  "pack_id": "evi_20260531_auth_mfa",
+  "task": {
+    "raw_request": "add MFA to login flow",
+    "intent": "add_feature",
+    "keywords": ["MFA", "login", "authentication"]
+  },
+  "entry_points": [],
+  "related_symbols": [],
+  "call_graph": {},
+  "impact": {},
+  "warnings": [],
+  "exports": {
+    "markdown_path": ".codegraph/evidence_packs/evi_20260531_auth_mfa.md",
+    "json_path": ".codegraph/evidence_packs/evi_20260531_auth_mfa.json"
+  }
+}
+```
+
+**明确不包含：**
+- `reading_plan`（Agent 有能力自己决定阅读顺序）
+- `agent_instructions`（不用硬编码建议教 Agent 做任务）
+- `recommended_context`（不默认返回大段源码）
+
+**默认 summary-only**：entry points 只返回 symbol_id + reason + score，不返回源码。
+
+---
+
+# 11.2 CLI 命令
+
+## 11.2.1 `codegraph index`
+
+### 功能
+
+扫描代码库，构建本地代码索引。
+
+### 输入
 
 ```bash
 codegraph index ./examples/demo_python_project
@@ -67,251 +385,95 @@ Index path: .codegraph/
 
 ---
 
-## 11.2 `/codegraph context <task>`
+## 11.2.2 `codegraph status`
 
-### 功能
-
-根据自然语言任务生成 Agent 可执行的 Context Pack。
-
-**这是本项目最核心功能。**
-
-### 输入
-
-```text
-/codegraph context "add MFA to login flow"
-```
-
-CLI 模拟：
+检查索引新鲜度。
 
 ```bash
-codegraph context "add MFA to login flow"
+codegraph status
 ```
 
-### 执行逻辑
-
-1. 解析任务文本；
-2. 判断 task intent；
-3. 提取关键词；
-4. 搜索候选符号；
-5. 选择 entry points；
-6. 扩展 1-hop / 2-hop 调用图；
-7. 查询 callers；
-8. 查询 callees；
-9. 查找 related tests；
-10. 分析 impact；
-11. 计算 risk level；
-12. 生成 recommended context；
-13. 生成 reading plan；
-14. 生成 agent instructions；
-15. 导出 JSON；
-16. 导出 Markdown；
-17. 返回摘要。
-
-### 输出必须包含
-
-1. Entry Points；
-2. Related Symbols；
-3. Impact Files；
-4. Related Tests；
-5. Recommended Reading Order；
-6. Risk Level；
-7. Warnings；
-8. Context Pack 文件路径。
-
-### 输出示例
-
-```text
-Context Pack generated for task:
-"add MFA to login flow"
-
-Entry points:
-1. src/app/api/auth.py::login
-   reason: Matches login and auth keywords
-   score: 0.92
-
-2. src/app/services/auth.py::AuthService.validate_password
-   reason: Direct callee in login flow
-   score: 0.84
-
-Recommended reading order:
-1. src/app/api/auth.py::login
-2. src/app/services/auth.py::AuthService.validate_password
-3. src/app/models/user.py::User
-4. src/app/tests/test_auth.py
-
-Impact:
-- Affected symbols: 7
-- Affected files: 4
-- Related tests: 2
-- Risk level: medium
-
-Warnings:
-- Some method calls were resolved by attribute guess.
-- Treat edges with confidence below 0.6 as weak signals.
-
-Saved:
-.codegraph/context_packs/ctx_auth_mfa.json
-.codegraph/context_packs/ctx_auth_mfa.md
-```
+输出同 `repo_status` MCP 工具。
 
 ---
 
-## 11.3 `/codegraph search <query>`
-
-### 功能
-
-搜索代码符号。
-
-### 输入
-
-```text
-/codegraph search login
-```
-
-CLI 模拟：
+## 11.2.3 `codegraph search`
 
 ```bash
 codegraph search login
 ```
 
-### 支持搜索对象
-
-1. 文件路径；
-2. 模块名；
-3. 类名；
-4. 函数名；
-5. 方法名；
-6. docstring；
-7. import；
-8. test。
-
-### 输出示例
-
-```text
-Found 5 symbols:
-
-1. src/app/api/auth.py::login
-   type: function
-   score: 0.96
-   match_sources: symbol_name, file_path
-
-2. src/app/services/auth.py::AuthService.login_user
-   type: method
-   score: 0.88
-   match_sources: symbol_name
-
-3. src/app/tests/test_auth.py::test_login_success
-   type: test
-   score: 0.74
-   match_sources: test_name
-```
+输出同 `search_symbols` MCP 工具。
 
 ---
 
-## 11.4 `/codegraph explain <file_or_symbol>`
+## 11.2.4 `codegraph explain`
 
-### 功能
-
-解释某个文件或符号。
-
-### 输入
-
-```text
-/codegraph explain src/app/api/auth.py
+```bash
+codegraph explain src/app/api/auth.py::login
 ```
 
-或：
-
-```text
-/codegraph explain src/app/api/auth.py::login
-```
-
-### 如果输入是文件，返回
-
-1. 文件职责；
-2. 定义的类；
-3. 定义的函数；
-4. imports；
-5. 被哪些文件依赖；
-6. 主要调用关系。
-
-### 如果输入是符号，返回
-
-1. 符号类型；
-2. 函数签名；
-3. 所在文件；
-4. docstring；
-5. callers；
-6. callees；
-7. related tests；
-8. impact summary；
-9. confidence warnings。
+输出同 `get_symbol` MCP 工具。
 
 ---
 
-## 11.5 `/codegraph impact <symbol>`
+## 11.2.5 `codegraph callers`
 
-### 功能
-
-分析修改某个符号的潜在影响。
-
-### 输入
-
-```text
-/codegraph impact src/app/services/auth.py::AuthService.validate_token
+```bash
+codegraph callers src/app/api/auth.py::login
 ```
 
-### 输出内容
-
-1. upstream callers；
-2. downstream callees；
-3. affected files；
-4. related tests；
-5. risk level；
-6. risk reasons；
-7. recommended check order。
-
-### 输出示例
-
-```text
-Impact analysis for:
-src/app/services/auth.py::AuthService.validate_token
-
-Upstream callers:
-- src/app/api/auth.py::login
-- src/app/api/auth.py::refresh_token
-
-Downstream dependencies:
-- src/app/security/jwt.py::decode_token
-- src/app/models/user.py::User
-
-Related tests:
-- src/app/tests/test_auth.py
-- src/app/tests/test_token.py
-
-Risk level: high
-
-Reasons:
-- Authentication-sensitive flow
-- Multiple upstream callers
-- Related tests exist and should be updated
-```
+输出同 `get_callers` MCP 工具。
 
 ---
 
-## 11.6 `/codegraph dashboard`
+## 11.2.6 `codegraph callees`
+
+```bash
+codegraph callees src/app/api/auth.py::login
+```
+
+输出同 `get_callees` MCP 工具。
+
+---
+
+## 11.2.7 `codegraph neighbors`
+
+```bash
+codegraph neighbors src/app/api/auth.py::login --depth 2
+```
+
+输出同 `get_neighbors` MCP 工具。
+
+---
+
+## 11.2.8 `codegraph impact`
+
+```bash
+codegraph impact src/app/api/auth.py::login
+```
+
+输出同 `get_impact` MCP 工具。
+
+---
+
+## 11.2.9 `codegraph evidence`
+
+```bash
+codegraph evidence "add MFA to login flow"
+```
+
+输出同 `build_evidence_pack` MCP 工具。
+
+---
+
+## 11.2.10 `codegraph dashboard`
 
 ### 功能
 
 启动并打开本地 Dashboard。
 
 ### 输入
-
-```text
-/codegraph dashboard
-```
-
-CLI 模拟：
 
 ```bash
 codegraph dashboard
@@ -330,3 +492,24 @@ codegraph dashboard
 ```text
 http://localhost:8765
 ```
+
+---
+
+## 11.2.11 `codegraph mcp`
+
+### 功能
+
+启动 MCP Server，供 MCP Agent 连接。
+
+### 输入
+
+```bash
+codegraph mcp
+```
+
+### 执行逻辑
+
+1. 检查 `.codegraph/` 是否存在；
+2. 启动 MCP Server；
+3. 注册全部 MCP 工具；
+4. 等待 Agent 连接。

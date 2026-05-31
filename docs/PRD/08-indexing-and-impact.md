@@ -83,20 +83,22 @@ source_location
 symbol_id
 ```
 
-或 Context Pack 中的 target symbol。
+或 Evidence Pack 中的 target symbol。
 
 ---
 
 ## 19.2 输出
 
 1. changed symbol；
-2. upstream callers；
-3. downstream callees；
+2. upstream callers（直接调用者，1-hop）；
+3. downstream callees（直接下游，1-hop）；
 4. affected symbols；
 5. affected files；
 6. related tests；
 7. risk level；
 8. risk reasons。
+
+**不自动递归扩展。** Agent 如需更深影响链，自行用 get_neighbors 逐跳扩展。
 
 ---
 

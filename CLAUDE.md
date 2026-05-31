@@ -2,22 +2,33 @@
 
 ## Project Overview
 
-CodeGraph Explorer 是一个 Agent-first 的本地代码上下文插件。它为 AI 编码 Agent 提供任务感知的代码上下文包（Context Pack），帮助 Agent 快速理解代码库结构、调用关系和影响面，而不是让 Agent 自行盲目搜索文件。
+CodeGraph Explorer is a Python-first local code graph index and MCP toolkit for AI coding agents.
+It helps agents query symbols, callers, callees, local subgraphs, impact, tests, and index freshness through structured tools instead of repeatedly grep/glob/read scanning the repository.
 
-核心定位：**Agent-first, Dashboard-second**。Agent 是主要使用方，Dashboard 是人类验证入口。
+CodeGraph Explorer 是一个 Python-first 的本地代码图谱索引与 MCP 工具集，用于帮助 AI 编码 Agent 通过结构化工具查询符号、调用关系、局部子图、影响面、测试信号和索引新鲜度，减少重复 grep、glob 和文件读取。
+
+核心定位：**MCP-first, Dashboard as evidence verifier**。MCP 细粒度图查询工具是 Agent 的主入口，Dashboard 是人类验证证据的界面，Evidence Pack 是可选的非 MCP 快照。
 
 ## Product Scope
 
 当前处于 Phase 0（未开始编码），基于 PRD 定义的 MVP 范围：
 
-### MVP 核心功能
-- `/codegraph index` — 扫描代码库，解析 AST，构建代码图谱，生成 `.codegraph/` 索引
-- `/codegraph context <task>` — 根据自然语言任务生成 Context Pack（核心差异化功能）
-- `/codegraph search <query>` — 搜索代码符号
-- `/codegraph explain <symbol>` — 解释文件或符号的调用关系
-- `/codegraph impact <symbol>` — 分析修改某个符号的影响面
-- `/codegraph dashboard` — 启动本地 Dashboard（React 前端）
-- Context Pack 必须包含：entry points, related symbols, call graph, impact, reading plan, agent instructions
+### MVP 核心功能（按优先级排序）
+
+1. **MCP 细粒度图查询工具** — Agent 通过 MCP 协议按需调用结构化查询工具，替代 grep/glob/read 扫描
+   - `search_symbols` — 搜索代码符号
+   - `get_symbol` — 获取符号详情（签名、docstring、源码位置）
+   - `get_callers` — 查询调用者
+   - `get_callees` — 查询被调用者
+   - `get_neighbors` — 查询局部子图（center node + depth）
+   - `get_impact` — 分析修改影响面
+   - `repo_status` — 检查索引新鲜度、覆盖率、低置信度边比例
+   - `build_evidence_pack` — 可选快照导出（summary-only，供人类或非 MCP Agent 使用）
+2. **可靠索引与新鲜度检测** — `/codegraph index` 扫描代码库，解析 AST，构建代码图谱；`repo_status` 检测索引是否过期
+3. **Impact / neighbors / callers / callees** — 图查询核心能力，MCP 工具和 CLI 共用同一查询引擎
+4. **Dashboard 作为证据验证界面** — 人类验证索引质量、调用关系置信度、影响面的可视化入口
+5. **Evidence Pack 作为可选快照** — 面向任务的范围快照，默认 summary-only，不带阅读计划和 Agent 指令
+
 - 第一版只支持 **Python** 语言
 
 ### 暂不处理（非目标）
@@ -77,18 +88,19 @@ CodeGraph Explorer 是一个 Agent-first 的本地代码上下文插件。它为
 │   │   │   ├── store.py      # 图谱存储接口
 │   │   │   ├── query.py      # 查询（search, callers, callees）
 │   │   │   └── impact.py     # 影响面分析
-│   │   ├── context/          # Context Pack 生成
-│   │   │   ├── models.py     # Context Pack Schema
+│   │   ├── mcp/              # MCP 工具定义（Agent 主入口）
+│   │   │   ├── tools.py      # MCP tool handlers
+│   │   │   └── server.py     # MCP server 启动
+│   │   ├── evidence/         # Evidence Pack 生成（可选快照）
+│   │   │   ├── models.py     # Evidence Pack Schema
 │   │   │   ├── pack_builder.py
-│   │   │   ├── ranking.py    # Entry point 排序
-│   │   │   ├── reading_plan.py
 │   │   │   └── markdown_exporter.py
 │   │   ├── api/              # FastAPI HTTP API（供 Dashboard 使用）
 │   │   │   ├── main.py
 │   │   │   ├── routes_repo.py
 │   │   │   ├── routes_symbols.py
 │   │   │   ├── routes_graph.py
-│   │   │   └── routes_context.py
+│   │   │   └── routes_evidence.py
 │   │   └── storage/          # 存储层
 │   │       ├── file_store.py
 │   │       └── sqlite_store.py
@@ -103,7 +115,7 @@ CodeGraph Explorer 是一个 Agent-first 的本地代码上下文插件。它为
 │   │   │   ├── SymbolDetail.tsx
 │   │   │   ├── GraphExplorer.tsx
 │   │   │   ├── ImpactView.tsx
-│   │   │   └── ContextPackViewer.tsx
+│   │   │   └── EvidencePackViewer.tsx
 │   │   ├── components/       # 通用组件
 │   │   └── api/              # 后端 API 调用封装
 │   └── package.json
@@ -126,20 +138,35 @@ cd frontend && npm install
 # 索引演示项目
 codegraph index ./examples/demo_python_project
 
+# 检查索引状态
+codegraph status
+
 # 搜索符号
 codegraph search login
 
-# 解释符号
+# 查看符号详情
 codegraph explain src/app/api/auth.py::login
+
+# 查询调用者
+codegraph callers src/app/api/auth.py::login
+
+# 查询被调用者
+codegraph callees src/app/api/auth.py::login
+
+# 查询局部子图
+codegraph neighbors src/app/api/auth.py::login --depth 2
 
 # 分析影响面
 codegraph impact src/app/api/auth.py::login
 
-# 生成 Context Pack
-codegraph context "add MFA to login flow"
+# 生成 Evidence Pack（可选快照，summary-only）
+codegraph evidence "add MFA to login flow"
 
 # 启动 Dashboard（启动后端 + 前端）
 codegraph dashboard
+
+# 启动 MCP Server（供 MCP Agent 连接）
+codegraph mcp
 
 # 运行测试
 pytest backend/tests/          # 需人工确认
@@ -156,7 +183,7 @@ cd frontend && npm run build    # 需人工确认
 0. **PRD 优先** — 对任何功能、Schema、命令有疑问时，先去 `docs/PRD/INDEX.md` 找到对应部分确认，不要凭假设编码。
 1. **先读 PRD，再改代码** — 任何时候修改功能前，先对照 `docs/PRD/INDEX.md` 找到对应的部分确认需求，避免偏离产品定位。
 2. **最小化改动** — 一次只做一个功能的增量开发。不要超前实现 PRD 中标记为"后续"或"非目标"的功能。
-3. **按 Phase 顺序开发** — 严格按 PRD Section 22 的阶段顺序：Phase 1 Schema/Indexer → Phase 2 Query → Phase 3 Context Pack → Phase 4 CLI → Phase 5 Dashboard。不要跳过阶段。
+3. **按 Phase 顺序开发** — 严格按以下阶段顺序：Phase 1 Schema/Indexer → Phase 2 Query Engine → Phase 3 MCP Tools → Phase 4 CLI → Phase 5 Dashboard → Phase 6 Evidence Pack。不要跳过阶段。
 4. **先写 Model/Schema，再写逻辑** — 任何模块先定义 Pydantic models，再实现业务逻辑。
 5. **修改前查看 git status** — 确认工作区干净，避免混合多个任务的改动。
 
@@ -166,7 +193,8 @@ cd frontend && npm run build    # 需人工确认
 - **分层职责**（严格遵守）:
   - `codegraph/indexer/` — 只负责从文件系统提取代码事实，不做业务决策
   - `codegraph/graph/` — 只负责图谱存储和查询，不涉及任务理解
-  - `codegraph/context/` — 只负责 Context Pack 生成，不操作文件系统
+  - `codegraph/mcp/` — 只负责 MCP 工具定义和协议处理，不包含图查询逻辑
+  - `codegraph/evidence/` — 只负责 Evidence Pack 生成（可选快照），不操作文件系统
   - `codegraph/api/` — 只做 HTTP 路由转发，不包含业务逻辑
   - `codegraph/storage/` — 只做读写，不做业务
   - `codegraph/cli/` — 只做命令解析和参数传递，不包含核心逻辑
@@ -199,32 +227,35 @@ cd frontend && npm run build    # 需人工确认
 - SQLite 数据库文件存储在 `.codegraph/index.sqlite`。
 - 数据库文件是索引产物，任何时候都可以通过 `codegraph index --force` 重建。
 - 不要在数据库迁移中破坏 `.codegraph/graph.json` 和 `.codegraph/symbols.json`，它们是互备存储。
-- Context Pack 导出文件（JSON + Markdown）存储在 `.codegraph/context_packs/`。
+- Evidence Pack 导出文件（JSON + Markdown）存储在 `.codegraph/evidence_packs/`。
 
 ## Frontend Rules
 
-- **6 个页面**必须全部实现：ProjectOverview, SymbolSearch, SymbolDetail, GraphExplorer, ImpactView, ContextPackViewer。
+- **6 个页面**必须全部实现：ProjectOverview, SymbolSearch, SymbolDetail, GraphExplorer, ImpactView, EvidencePackViewer。
 - **Graph Explorer** 默认只展示局部图（center node + depth 1/2），不展示全仓库大图。
 - **Confidence 展示** — 所有调用关系边必须在 UI 上显示 confidence 值，低于 0.6 的边用视觉警告。
-- **Context Pack Viewer** 必须展示每个推荐项的 `reason`，不能只展示黑盒结果。
-- **Dashboard 是验证入口**，不是主产品。不要为了 Dashboard 炫酷而忽略 Agent 命令流的完整性。
+- **Evidence Pack Viewer** 必须展示每个推荐项的 `reason`，不能只展示黑盒结果。
+- **Dashboard 是证据验证界面**，不是主产品。不要为了 Dashboard 炫酷而忽略 MCP 工具链的完整性。
 
 ## Backend Rules
 
 - **Controller (api/routes)** — 只做参数解析和响应返回，不包含业务逻辑。
-- **Service/Engine (indexer, context, graph)** — 核心业务逻辑在这里。每个模块职责单一。
+- **Service/Engine (indexer, evidence, graph)** — 核心业务逻辑在这里。每个模块职责单一。
 - **Repository/Store (storage)** — 数据读写，不包含业务判断。
-- **Models (graph/models.py, context/models.py)** — 纯数据定义，不包含方法逻辑。
+- **Models (graph/models.py, evidence/models.py)** — 纯数据定义，不包含方法逻辑。
 - **DTO** — 使用 Pydantic model 作为请求/响应 DTO，不额外定义。
 
 ## Agent / AI Rules
 
-- 本项目本身是一个 AI Agent 工具，以下规则适用于项目自身的 Context Pack 和调用链处理逻辑：
-- **Agent Instructions 生成** — `context/` 模块生成的 `agent_instructions` 必须包含：summary + recommended_strategy + warnings，不能只返回文件列表。
-- **Reading Plan** — 每个 Context Pack 的 `reading_plan` 必须是有序步骤（step 1, 2, 3...），不是 unordered files。
-- **Impact 分析** — 对于 modify/fix/refactor/add_feature 类任务，Context Pack 必须包含 `impact` 字段。
-- **Token 控制** — 当超过 token 预算时，按优先级降级：entry points 源码 > critical related symbols 源码 > medium/low 降为 summary > callers 降为列表 > 低置信度边放入 warnings。
-- **不可退化原则** — 任何时候 Context Pack 退化为普通搜索列表或文件拼接器，都是违规。
+- 本项目本身是一个 AI Agent 工具，以下规则适用于项目自身的 MCP 工具和 Evidence Pack 处理逻辑：
+- **MCP 工具优先** — MCP Agent 应优先按需调用 `search_symbols`、`get_symbol`、`get_callers`、`get_callees`、`get_neighbors`、`get_impact`、`repo_status` 等细粒度工具，而不是依赖 Evidence Pack。
+- **Evidence Pack 定位** — 可选的任务范围快照，供人类或非 MCP Agent 使用。默认 summary-only，不替代读源码。
+- **禁止生成 Reading Plan** — Evidence Pack 不包含 reading_plan。Agent 有能力自己决定阅读顺序。
+- **禁止生成 Agent Instructions** — Evidence Pack 不包含 agent_instructions。不用硬编码建议教 Agent 做任务。
+- **禁止默认返回大 JSON / 大源码** — Evidence Pack 默认只返回摘要和符号 ID 列表，按需获取源码。
+- **Impact 不自动扩张** — Impact 分析只返回直接上下游（1-hop），不自动展开全链。
+- **不自动修改用户配置文件** — 不自动修改用户的 CLAUDE.md / Cursor rules / 项目配置，除非用户显式执行 install 命令且可 uninstall。
+- **不可退化原则** — MCP 工具不能退化为简单的 grep/glob 包装器，每次查询必须利用索引图谱结构化返回。
 
 ## Deployment Rules
 
@@ -257,15 +288,15 @@ cd frontend && npm run build    # 需人工确认
 1. **构建检查** — 后端：`pip install -e backend` 无报错；前端：`npm run build` 无报错。（命令需确认）
 2. **测试** — `pytest backend/tests/` 通过。（需确认）
 3. **CLI 命令验证** — 修改涉及的命令必须手动执行验证输出格式。
-4. **Schema 验证** — 修改了 Graph Schema 或 Context Pack Schema 后，必须验证输出的 JSON 符合 PRD 定义的 Schema。
+4. **Schema 验证** — 修改了 Graph Schema 或 Evidence Pack Schema 后，必须验证输出的 JSON 符合 PRD 定义的 Schema。
 5. **Dashboard 页面检查** — 前端修改后，手动打开页面确认渲染和交互正确。
 
 ## Known Pitfalls
 
 - **Confidence 机制容易被遗忘** — 新增调用关系解析时，记得同时设置 `confidence` 和 `resolution`。
 - **Node ID 不一致** — 不同模块生成的 Node ID 格式必须完全一致，否则图谱查询会断裂。始终以 PRD Section 12.5 的规则为准。
-- **Context Pack 退化** — 最容易犯的错误是 Context Pack 退化为"相关文件列表"。必须始终包含：entry_points + related_symbols + call_graph + impact + recommended_context + reading_plan + agent_instructions。
-- **Dashboard 过度开发** — 容易在 Dashboard 上花过多时间追求视觉效果，而 Agent 命令流尚未完整实现。必须严格遵守 Phase 顺序。
+- **Evidence Pack 越界** — 最容易犯的错误是 Evidence Pack 做得太重：加 reading plan、加 agent instructions、默认返回大段源码。必须保持 summary-only 定位。
+- **Dashboard 过度开发** — 容易在 Dashboard 上花过多时间追求视觉效果，而 MCP 工具链尚未完整实现。必须严格遵守 Phase 顺序。
 - **PRD 与当前实现可能不一致** — 项目仅有 PRD，无实际代码。实际开发中的目录结构、命令名、Schema 字段可能会与 PRD 有出入，在 CLAUDE.md 中持续更新。
 
 ## Response Format After Changes
@@ -294,5 +325,5 @@ Phase 1 索引器开发，PRD Section 12 和 18 定义了 Node/Edge Schema 和 A
 
 **风险/后续待办：**
 - 跨文件调用解析尚未实现，将在下个 PR 完成
-- 低置信度边的 warning 机制尚未集成到 Context Pack
+- 低置信度边的 warning 机制尚未集成到 MCP 工具返回
 ```

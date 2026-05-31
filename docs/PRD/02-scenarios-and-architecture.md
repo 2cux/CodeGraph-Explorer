@@ -1,129 +1,126 @@
 # 5. 核心使用场景
 
-## 5.1 场景一：Agent 修改功能
+## 5.1 场景一：MCP Agent 按需探索代码库
 
-用户输入：
+Agent 收到任务 "add MFA to login flow"，不通过 grep/glob 扫描，而是调用 MCP 工具：
 
 ```text
-/codegraph context "add MFA to login flow"
+search_symbols("login authentication MFA")
+→ 返回匹配符号列表
+
+get_symbol("src/app/api/auth.py::login")
+→ 返回函数签名、docstring、源码位置
+
+get_callees("src/app/api/auth.py::login")
+→ 返回 login 调用的所有下游函数
+
+get_neighbors("src/app/api/auth.py::login", depth=2)
+→ 返回 2-hop 局部子图
+
+get_impact("src/app/api/auth.py::login")
+→ 返回直接上下游影响面、风险等级
+
+repo_status()
+→ 检查索引是否过期
 ```
 
-系统返回：
-
-1. 登录相关入口函数；
-2. 认证服务相关方法；
-3. 用户模型；
-4. session / token 相关依赖；
-5. 相关测试；
-6. 调用链；
-7. 影响文件；
-8. 风险等级；
-9. 推荐阅读顺序；
-10. Agent 修改建议。
+Agent 自主决定调用顺序和深度，不需要系统预生成"上下文包"。
 
 ---
 
-## 5.2 场景二：Agent 修 bug
+## 5.2 场景二：开发者用 CLI 快速查询
 
-用户输入：
-
-```text
-/codegraph context "fix token expiration bug"
+```bash
+codegraph search login
+codegraph explain src/app/api/auth.py::login
+codegraph callers src/app/api/auth.py::login
+codegraph callees src/app/api/auth.py::login
+codegraph neighbors src/app/api/auth.py::login --depth 2
+codegraph impact src/app/api/auth.py::login
 ```
-
-系统应返回：
-
-1. token 相关函数；
-2. JWT decode / encode 逻辑；
-3. token 配置来源；
-4. 相关测试；
-5. 可能受影响的 API；
-6. 风险提示。
 
 ---
 
-## 5.3 场景三：开发者解释符号
+## 5.3 场景三：开发者用 Dashboard 验证证据
 
-用户输入：
-
-```text
-/codegraph explain src/app/api/auth.py::login
+```bash
+codegraph dashboard
 ```
 
-系统返回：
+打开本地 Dashboard，验证：
 
-1. 函数职责；
-2. 函数签名；
-3. 所在文件；
-4. docstring；
-5. callers；
-6. callees；
-7. related tests；
-8. 影响摘要。
+1. 索引覆盖率和新进度；
+2. 调用关系是否合理；
+3. 哪些边是低置信度；
+4. 影响面分析是否正确。
 
 ---
 
-## 5.4 场景四：开发者查看图谱
+## 5.4 场景四：生成 Evidence Pack 快照
 
-用户输入：
-
-```text
-/codegraph dashboard
+```bash
+codegraph evidence "token expiration bug"
 ```
 
-系统打开本地 Dashboard。
-
-用户可以：
-
-1. 搜索符号；
-2. 查看函数详情；
-3. 查看局部调用图；
-4. 查看影响面；
-5. 查看 Context Pack；
-6. 复制 Markdown 给 Agent。
+生成可选快照（summary-only），供：
+- 人类开发者离线查看
+- 非 MCP Agent 使用
+- 任务上下文存档
 
 ---
 
 # 6. 产品形态
 
-产品对用户表现为一个插件，但内部由三部分组成：
+产品由四部分组成：
 
 ```text
 CodeGraph Explorer
-├── Plugin Command Layer
-├── Local Runtime Service
-└── Local Dashboard
+├── MCP Tool Server（Agent 主入口）
+├── CLI Commands（开发调试入口）
+├── Local Runtime Service（索引与查询引擎）
+└── Local Dashboard（证据验证界面）
 ```
 
-## 6.1 Plugin Command Layer
+## 6.1 MCP Tool Server
 
-负责接收用户在 Agent 工具中的斜杠命令。
+Agent 通过 MCP 协议调用的结构化查询工具。
 
 第一版必须实现：
 
 ```text
-/codegraph index
-/codegraph context <task>
-/codegraph search <query>
-/codegraph explain <file_or_symbol>
-/codegraph impact <symbol>
-/codegraph dashboard
-```
-
-如果暂时无法接入真实 Agent 插件系统，可以先用 CLI 模拟同名命令：
-
-```bash
-codegraph index
-codegraph context "add MFA to login flow"
-codegraph search login
-codegraph explain src/app/api/auth.py::login
-codegraph impact src/app/api/auth.py::login
-codegraph dashboard
+search_symbols      — 搜索代码符号
+get_symbol          — 获取符号详情
+get_callers         — 查询调用者
+get_callees         — 查询被调用者
+get_neighbors       — 查询局部子图
+get_impact          — 分析修改影响面（1-hop）
+repo_status         — 检查索引新鲜度
+build_evidence_pack — 可选快照导出
 ```
 
 ---
 
-## 6.2 Local Runtime Service
+## 6.2 CLI Commands
+
+开发调试用，与 MCP 工具共用同一查询引擎：
+
+```bash
+codegraph index
+codegraph status
+codegraph search
+codegraph explain
+codegraph callers
+codegraph callees
+codegraph neighbors
+codegraph impact
+codegraph evidence
+codegraph dashboard
+codegraph mcp
+```
+
+---
+
+## 6.3 Local Runtime Service
 
 负责实际计算：
 
@@ -134,12 +131,12 @@ codegraph dashboard
 5. 存储索引；
 6. 查询调用链；
 7. 分析影响面；
-8. 生成 Context Pack；
+8. 生成 Evidence Pack；
 9. 为 Dashboard 提供数据。
 
 ---
 
-## 6.3 Local Dashboard
+## 6.4 Local Dashboard
 
 本地浏览器看板，用于人类查看和验证：
 
@@ -148,7 +145,7 @@ codegraph dashboard
 3. Symbol Detail；
 4. Graph Explorer；
 5. Impact View；
-6. Context Pack Viewer。
+6. Evidence Pack Viewer。
 
 ---
 
@@ -166,7 +163,10 @@ codegraph dashboard
 8. Neo4j；
 9. 多语言全量支持；
 10. 复杂 embedding RAG；
-11. 100% 精准静态调用图承诺。
+11. 100% 精准静态调用图承诺；
+12. 生成 Reading Plan；
+13. 生成 Agent Instructions；
+14. 自动修改 CLAUDE.md / Cursor rules。
 
 ---
 
@@ -181,7 +181,8 @@ Pydantic
 NetworkX
 SQLite
 Python ast
-Typer 或 Click
+Typer
+MCP (Python SDK)
 ```
 
 ## 8.2 前端
@@ -204,9 +205,9 @@ Tailwind CSS
 ├── symbols.json
 ├── metadata.json
 ├── index.sqlite
-└── context_packs/
-    ├── ctx_xxx.json
-    └── ctx_xxx.md
+└── evidence_packs/
+    ├── evi_xxx.json
+    └── evi_xxx.md
 ```
 
 ## 8.4 第一版语言支持
@@ -217,23 +218,14 @@ Tailwind CSS
 Python
 ```
 
-后续再扩展：
-
-```text
-TypeScript
-Java
-Go
-Rust
-```
-
 ---
 
 # 9. 系统架构
 
 ```text
-User / Agent
+User / MCP Agent
    ↓
-Plugin Commands
+MCP Tool Server (Agent 主入口)
    ↓
 Local Runtime Service
    ↓
@@ -241,19 +233,23 @@ Code Index Engine
    ↓
 Graph Store + Symbol Index
    ↓
-Context Query Engine
+Query Engine (search, callers, callees, neighbors, impact, status)
    ↓
-├── Agent Command Response
-└── Dashboard API
+├── MCP Tool Response
+├── CLI Output
+├── Dashboard API
+└── Evidence Pack Export (可选快照)
 ```
 
 核心实现原则：
 
 ```text
 Graph Schema = 代码事实层
-Context Pack Schema = Agent 任务上下文层
-Plugin Commands = Agent 使用入口
-Dashboard = 人类验证入口
+Query Engine = 结构化图查询层
+MCP Tools = Agent 主入口
+CLI = 开发调试入口
+Dashboard = 人类证据验证入口
+Evidence Pack = 可选非 MCP 快照
 Local Runtime = 索引与查询引擎
 ```
 
@@ -288,11 +284,13 @@ codegraph-explorer/
 │   │   │   ├── query.py
 │   │   │   └── impact.py
 │   │   │
-│   │   ├── context/
+│   │   ├── mcp/
+│   │   │   ├── tools.py
+│   │   │   └── server.py
+│   │   │
+│   │   ├── evidence/
 │   │   │   ├── models.py
 │   │   │   ├── pack_builder.py
-│   │   │   ├── ranking.py
-│   │   │   ├── reading_plan.py
 │   │   │   └── markdown_exporter.py
 │   │   │
 │   │   ├── api/
@@ -300,7 +298,7 @@ codegraph-explorer/
 │   │   │   ├── routes_repo.py
 │   │   │   ├── routes_symbols.py
 │   │   │   ├── routes_graph.py
-│   │   │   └── routes_context.py
+│   │   │   └── routes_evidence.py
 │   │   │
 │   │   └── storage/
 │   │       ├── file_store.py
@@ -317,7 +315,7 @@ codegraph-explorer/
 │   │   │   ├── SymbolDetail.tsx
 │   │   │   ├── GraphExplorer.tsx
 │   │   │   ├── ImpactView.tsx
-│   │   │   └── ContextPackViewer.tsx
+│   │   │   └── EvidencePackViewer.tsx
 │   │   ├── components/
 │   │   └── api/
 │   └── package.json
