@@ -1,220 +1,253 @@
 # CodeGraph Explorer
 
-**MCP-first local code graph evidence retrieval for AI coding agents**
+面向 AI 编码 Agent 的本地代码图谱索引与 MCP 查询工具。
 
-CodeGraph Explorer is a Python-first local code graph index and MCP toolkit for AI coding agents. It helps agents query symbols, callers, callees, local subgraphs, impact signals, tests, and index status through structured tools instead of repeatedly grep/glob/read scanning the repository.
+**Python-first local code graph index and MCP toolkit for AI coding agents.**
 
-CodeGraph Explorer 是一个 Python-first 的本地代码图谱索引与 MCP 工具集，用于帮助 AI 编码 Agent 通过结构化工具查询符号、调用关系、局部子图、影响面、测试信号和索引状态，减少重复 grep、glob 和文件读取。
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![MCP](https://img.shields.io/badge/MCP-Agent%20Tools-purple)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
+![CodeGraph](https://img.shields.io/badge/CodeGraph-Local%20Index-orange)
+![Benchmark](https://img.shields.io/badge/Benchmark--31.3%25%20tokens-success)
 
-> **MCP-first, Dashboard as evidence verifier.** MCP fine-grained graph query tools are the primary agent entry point. The Dashboard is a human verification interface. Evidence Pack is an optional non-MCP snapshot.
+CodeGraph Explorer 会提前将代码库解析为结构化代码图谱，让 Claude Code、Cursor、Codex 等 AI 编码 Agent 可以通过 MCP 查询符号、调用者、被调用者、局部子图、影响面、测试信号和索引状态，而不是反复 `grep` / `glob` / `read` 扫描代码文件。
 
----
-
-## Core Capabilities
-
-### Primary — MCP Fine-Grained Graph Queries
-
-These are the main tools an AI agent calls at runtime:
-
-| MCP Tool | Purpose |
-|---|---|
-| `search_symbols` | Search code symbols by name, type, path, or tag |
-| `get_symbol` | Get symbol details: signature, location, relations summary |
-| `get_callers` | Find all upstream callers of a symbol (transitive, depth-controlled) |
-| `get_callees` | Find all downstream callees (separates internal vs external) |
-| `get_neighbors` | Local subgraph centered on a symbol, grouped by role (callers/callees/tests/models/config/persistence) |
-| `get_impact` | Analyze modification impact: risk level, confirmed/possible files, related tests |
-| `repo_status` | Check index freshness, coverage, and low-confidence edge ratio |
-| `repo_summary` | Repository overview: type breakdown, top modules, entry points, test coverage signal |
-
-Every response supports **compact mode** (symbol_id, name, type, file_path, confidence, reason_codes — minimal tokens) and **standard mode** (full evidence). All inferred relationships carry `confidence` scores and `resolution` strategies so agents can weigh reliability.
-
-### Secondary
-
-- **Dashboard** — Human verification interface: 6 pages for exploring index quality, symbol details, call graphs, and impact surfaces.
-- **Evidence Pack** — Optional task-scoped snapshot for humans or non-MCP agents. Summary-only by default. No reading plans, no agent instructions.
-
-### Not a Goal
-
-- Not an implementation planner
-- Not a reading-plan generator
-- Not a replacement for agent reasoning
-- Not a full semantic runtime analyzer
+它提供的是 **代码图谱证据层**，不是实现计划生成器。
 
 ---
 
-## Benchmark Summary
+## 为什么需要 CodeGraph Explorer？
 
-We run an A/B comparison of a simulated agent using only grep/glob/read (baseline) vs an agent using CodeGraph MCP tools, across 3 fixture projects and 4 task types (locate, impact, modification_prep, test_discovery).
+你让 Agent 修改一个大型项目里的登录逻辑。
 
-> These results are measured on the included Python benchmark fixtures and should be treated as directional, not universal.
+Agent 通常会先做这些事：
 
-| Metric | Before | After | Target |
-|---|---:|---:|---:|
-| Recall >= baseline | 6/12 (50%) | 11/12 (92%) | ≥ 8/12 |
-| grep/read reduction | -100% | -90.3% | ≥ 30% |
-| Files read reduction | -100% | -77.5% | ≥ 25% |
-| Token reduction | +54% (worse) | -29.1% | ≥ 20% |
-| MCP payload (discovery phase) | N/A | -60.5% | — |
-| Full task estimate (discovery + reads) | N/A | -31.3% | — |
+* 搜索 `login`
+* 读取多个 `auth` 文件
+* 手动追踪调用链
+* 查找 token 存储逻辑
+* 查找相关测试
+* 估算修改影响面
 
-Phase-aware metrics separate the MCP discovery phase (payload-only, very cheap) from the full task cost (adds followup file reads for verification). The MCP payload alone is -60.5% vs baseline.
+这些探索过程会消耗大量工具调用和 token。
 
-### Quality Gate
+CodeGraph Explorer 的做法是：
 
-Benchmark tests enforce warning thresholds (not hard failures):
+```text
+先索引代码库
+      ↓
+生成本地代码图谱
+      ↓
+通过 MCP 暴露细粒度查询工具
+      ↓
+Agent 按需查询 callers / callees / neighbors / impact
+```
 
-| Gate | Threshold | Current |
-|---|---|---|
-| Recall >= baseline | ≥ 8/12 tasks | 11/12 |
-| Token reduction | ≥ 20% | 29.1% |
-| Files read reduction | ≥ 25% | 77.5% |
-| grep/read reduction | ≥ 30% | 90.3% |
+让 Agent 不再每次任务都重新扫描整个代码库。
 
-Run: `python -m tests.agent_benchmark.runner --mode both` then `pytest tests/agent_benchmark/ -v`
+---
 
-### Regression Notes
+## 核心亮点
 
-Known failure patterns that degrade benchmark results:
+### MCP-first，而不是一次性大上下文
 
-- **Single-keyword search** — Searching only the first keyword misses files. Fix: search all keywords, combine results.
-- **`__init__` selected over business method** — `__init__` methods have no callers/callees. Fix: deprioritize `__init__` in symbol selection.
-- **Class-level impact misses method callers** — A class node may have no direct edges while its methods do. Fix: aggregate from class methods when the class itself has no callers.
-- **Config/model/store deps missing** — Config files connected only via imports, not calls. Fix: traverse callee file imports for config/model/store classes.
-- **Compact payload grows too large** — MCP responses accumulating full evidence. Fix: compact mode must exclude reason_text, evidence, and source code.
+CodeGraph Explorer 的主路径是 MCP 细粒度查询。
+
+Agent 可以按需调用：
+
+* `codegraph_search_symbols`
+* `codegraph_get_symbol`
+* `codegraph_get_callers`
+* `codegraph_get_callees`
+* `codegraph_get_neighbors`
+* `codegraph_get_impact`
+
+而不是一次性接收一个巨大的上下文包。
+
+---
+
+### Compact 输出，减少 MCP payload
+
+MCP 工具默认返回紧凑 JSON，只保留关键字段：
+
+* `symbol_id`
+* `file_path`
+* `confidence`
+* `resolution`
+* `reason_codes`
+* `relation`
+
+需要完整解释时，再显式请求标准输出。
+
+---
+
+### 影响面分析区分 confirmed / possible
+
+`codegraph_get_impact` 会区分：
+
+* confirmed impact
+* possible impact
+* related tests
+* external / unresolved calls
+
+避免把低置信度关系、同模块 sibling、external 调用混进确定影响面。
+
+---
+
+### 可解释的代码关系
+
+关键边和关系可以包含：
+
+* `confidence`
+* `confidence_level`
+* `resolution`
+* `reason_codes`
+* `evidence`
+
+这让 Agent 和开发者都能判断：这条关系是确定事实，还是弱推断。
+
+---
+
+### 索引新鲜度检测
+
+CodeGraph Explorer 会检测索引是否过期：
+
+* `fresh`
+* `stale`
+* `missing`
+* `indexing`
+* `error`
+
+避免 Agent 基于旧图谱继续推理。
+
+---
+
+### Dashboard：证据验证界面
+
+Dashboard 不是花哨大屏，也不是 Agent 计划器。
+
+它用于验证 CodeGraph 返回的 evidence：
+
+* 节点
+* 边
+* confidence
+* resolution
+* evidence
+* confirmed / possible impact
+* index status
+* warnings
+
+---
+
+## Benchmark 结果
+
+我们用内置 Python benchmark fixtures 对比了两种流程：
+
+* **Baseline**：Agent 使用 grep / glob / read 进行代码探索
+* **CodeGraph**：Agent 使用 compact MCP 图查询
+
+| 指标                       |        优化前 |         优化后 |     目标 |
+| ------------------------ | ---------: | ----------: | -----: |
+| Recall 不低于 baseline      | 6/12 (50%) | 11/12 (92%) | ≥ 8/12 |
+| grep/read 调用减少           |      -100% |      -90.3% |  ≥ 30% |
+| 文件读取减少                   |      -100% |      -77.5% |  ≥ 25% |
+| token 估算减少               |   +54%（更差） |      -29.1% |  ≥ 20% |
+| MCP discovery payload 减少 |        N/A |      -60.5% |      — |
+| 完整任务 token 估算            |        N/A |      -31.3% |      — |
+
+> 以上结果来自项目内置 Python benchmark fixtures，只代表当前测试集上的方向性结果，不代表所有真实代码库。
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+ (for Dashboard)
-
-### Installation
+### 1. 安装
 
 ```bash
-# Backend (CLI + API)
-pip install -e backend
+git clone <repo-url>
+cd CodeGraph-Explorer
 
-# Frontend (Dashboard)
-cd frontend && npm install && cd ..
+pip install -e "backend[mcp,watch]"
 ```
 
-### Demo Walkthrough
+### 2. 索引示例项目
 
 ```bash
-# 0. Set a shortcut for the demo project root
-DEMO=./examples/demo_python_project
+codegraph index ./examples/demo_python_project
+```
 
-# 1. Index the demo project
-codegraph index "$DEMO"
+### 3. 查看索引状态
 
-# 2. Search for symbols
-codegraph search login --root "$DEMO"
+```bash
+codegraph status
+```
 
-# 3. Explain a symbol's relationships
-codegraph explain app/api/auth.py::login --root "$DEMO"
+### 4. 启动 MCP Server
 
-# 4. Analyze impact of modifying a symbol
-codegraph impact app/api/auth.py::login --root "$DEMO"
+```bash
+codegraph mcp --root ./examples/demo_python_project
+```
 
-# 5. Generate an Evidence Pack (optional snapshot)
-codegraph evidence "add MFA to login flow" --root "$DEMO"
+### 5. 可选：启动 Watch Mode
 
-# 6. Launch the Dashboard
-codegraph dashboard --root "$DEMO"
+```bash
+codegraph watch ./examples/demo_python_project
 ```
 
 ---
 
-## CLI Commands
-
-### `codegraph index <root>`
-
-Scan a Python codebase, parse AST, extract symbols and call relationships, and build the code graph.
+## 一键运行 Demo
 
 ```bash
-codegraph index ./my_project
-codegraph index ./my_project --force    # Re-index if already exists
-codegraph index ./my_project --no-sqlite  # Skip SQLite output
+make demo
 ```
 
-Output: `.codegraph/graph.json`, `.codegraph/nodes.json`, `.codegraph/edges.json`, `.codegraph/index.sqlite`
+如果项目还没有 `Makefile`，可以添加：
 
-### `codegraph search <query>`
+```makefile
+install:
+	pip install -e "backend[mcp,watch]"
 
-Search for code symbols by name, file path, qualified name, or docstring.
+index-demo:
+	codegraph index ./examples/demo_python_project
 
-```bash
-codegraph search login
-codegraph search user --json
-codegraph search auth --root ./my_project
+status:
+	codegraph status
+
+mcp:
+	codegraph mcp --root ./examples/demo_python_project
+
+dashboard:
+	cd frontend && npm install && npm run dev
+
+benchmark:
+	python -m tests.agent_benchmark.runner --mode baseline
+	python -m tests.agent_benchmark.runner --mode codegraph
+	python -m tests.agent_benchmark.report
+
+demo: install index-demo status
+	codegraph context "add MFA to login flow"
 ```
 
-### `codegraph explain <symbol>`
+如果要同时体验 MCP 和 Dashboard：
 
-Explain a symbol's call relationships — who calls it and what it calls.
+Terminal 1:
 
 ```bash
-codegraph explain app/api/auth.py::login
-codegraph explain login                  # Partial name auto-resolved
-codegraph explain login --depth 3        # Control call chain depth
-codegraph explain login --json           # JSON output
+make mcp
 ```
 
-### `codegraph impact <symbol>`
-
-Analyze what is affected when modifying a symbol. Includes risk assessment, affected symbols/files, and related tests.
+Terminal 2:
 
 ```bash
-codegraph impact app/api/auth.py::login
-codegraph impact login --depth 3
-codegraph impact login --json
-```
-
-Risk levels: `low`, `medium`, `high`, `critical` — based on caller count, callee chain depth, sensitive paths (auth/payment/security), test coverage, cross-module reach, and confidence levels.
-
-### `codegraph context <task>`
-
-Generate an Evidence Pack — an optional task-scoped snapshot for humans or non-MCP agents. Does NOT include reading plans or agent instructions.
-
-```bash
-codegraph context "add MFA to login flow"
-codegraph context "refactor user authentication" --max-tokens 8000
-codegraph context "fix bug in token validation" --depth 3
-codegraph context "add pagination to user list" --json
-codegraph context "update API error handling" --no-tests
-```
-
-Evidence Packs are exported to `.codegraph/context_packs/` as both JSON and Markdown.
-
-### `codegraph dashboard`
-
-Launch the local Dashboard (FastAPI backend + React frontend).
-
-```bash
-codegraph dashboard                      # Default: http://localhost:8765
-codegraph dashboard --port 8080
-codegraph dashboard --host 0.0.0.0
-codegraph dashboard --dev                # Vite dev mode with HMR
-codegraph dashboard --no-open            # Don't auto-open browser
+make dashboard
 ```
 
 ---
 
-## MCP Server
+## 在 Claude Code / Cursor 中使用
 
-Start the MCP server for direct agent integration (Claude Code, Cursor, etc.):
-
-```bash
-codegraph mcp
-# or
-python -m codegraph.mcp_server
-```
-
-Claude Code config (`.claude/settings.local.json`):
+### Claude Code
 
 ```json
 {
@@ -230,143 +263,338 @@ Claude Code config (`.claude/settings.local.json`):
 }
 ```
 
+### Cursor
+
+在 `.cursor/mcp.json` 中使用同样配置。
+
+CodeGraph Explorer 不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。
+
+---
+
+## MCP 工具一览
+
+| 工具                             | 用途                             |
+| ------------------------------ | ------------------------------ |
+| `codegraph_search_symbols`     | 按名称、类型、标签或路径搜索符号               |
+| `codegraph_get_symbol`         | 获取符号位置、签名、元数据和可选源码片段           |
+| `codegraph_get_callers`        | 查询某个符号的上游调用者                   |
+| `codegraph_get_callees`        | 查询某个符号的下游被调用者                  |
+| `codegraph_get_neighbors`      | 获取某个符号周围的局部子图                  |
+| `codegraph_get_impact`         | 查询修改某个符号可能影响的文件和测试             |
+| `codegraph_repo_status`        | 查看索引是否 fresh / stale / missing |
+| `codegraph_repo_summary`       | 查看仓库图谱统计信息                     |
+| `codegraph_build_context_pack` | 生成可选 Evidence Pack 快照          |
+
+---
+
+## 示例：Agent 查询调用关系
+
+Agent 想知道：
+
+```text
+login 会调用哪些下游逻辑？
+```
+
+它可以调用：
+
+```text
+codegraph_get_callees("app/api/auth.py::login")
+```
+
+返回结构化结果：
+
+```json
+{
+  "target": "app/api/auth.py::login",
+  "callees": [
+    {
+      "symbol_id": "app/services/auth_service.py::AuthService.login_user",
+      "file_path": "app/services/auth_service.py",
+      "distance": 1,
+      "confidence": 0.88,
+      "resolution": "module_instance_resolved"
+    }
+  ]
+}
+```
+
+---
+
+## 示例：Agent 查询影响面
+
+Agent 想知道：
+
+```text
+如果修改 login，会影响哪些文件？
+```
+
+它可以调用：
+
+```text
+codegraph_get_impact("app/api/auth.py::login")
+```
+
+返回结果区分：
+
+* confirmed impact
+* possible impact
+* related tests
+* unresolved / external calls
+
+这样 Agent 不需要手动递归追踪调用链。
+
 ---
 
 ## Dashboard
 
-The Dashboard provides 6 pages for human verification:
+Dashboard 的定位是 **Evidence Verification UI**。
 
-| Page | Description |
-|------|-------------|
-| **Project Overview** | Index stats, file/symbol counts, confidence ratios |
-| **Symbol Search** | Search and filter indexed symbols |
-| **Symbol Detail** | Full symbol information with callers and callees |
-| **Graph Explorer** | Interactive subgraph visualization (React Flow) |
-| **Impact View** | Impact analysis results with risk assessment |
-| **Evidence Pack Viewer** | Explore generated Evidence Packs with reasoning |
+它用于查看：
 
-All call edges display confidence scores; edges below 0.6 are visually flagged.
+* 局部代码图谱
+* 节点详情
+* 边详情
+* `confidence`
+* `resolution`
+* `evidence`
+* confirmed / possible impact
+* index status
+* warnings / pack notes
 
----
+如果已有截图：
 
-## Architecture
-
-```
-backend/codegraph/
-├── cli/            # CLI command definitions (Typer)
-├── indexer/        # Code indexing engine
-│   ├── scanner.py          # File discovery
-│   ├── parser_python.py    # AST parsing
-│   ├── symbol_extractor.py # Symbol extraction
-│   ├── call_extractor.py   # Call relationship extraction
-│   └── graph_builder.py    # Graph construction
-├── graph/          # Graph layer
-│   ├── models.py   # Node/Edge schema (Pydantic)
-│   ├── store.py    # In-memory graph store
-│   ├── query.py    # Search, callers, callees, subgraph
-│   └── impact.py   # Impact surface analysis
-├── mcp_server.py   # MCP server — primary agent entry point
-├── context/        # Evidence Pack generation (secondary)
-│   ├── models.py           # Evidence Pack schema
-│   ├── pack_builder.py     # Generation pipeline
-│   ├── ranking.py          # Entry point relevance scoring
-│   ├── reading_plan.py     # Stub (deprecated — always returns [])
-│   └── markdown_exporter.py
-├── api/            # FastAPI HTTP API (for Dashboard)
-├── storage/        # Storage layer (JSON + SQLite)
-└── __main__.py
+```markdown
+![Dashboard](docs/assets/dashboard.png)
 ```
 
-### Design Principles
+如果暂时没有截图：
 
-- **MCP-first** — The MCP server is the primary product surface. All graph queries are exposed as structured MCP tools.
-- **Compact by default** — All MCP responses default to compact mode: symbol_id, name, type, file_path, confidence, reason_codes. Standard mode and source inclusion are opt-in.
-- **Confidence scoring** — Every inferred relationship carries `confidence` and `resolution` fields so agents can weigh reliability.
-- **Stable Node IDs** — Format `file.py::function_name` — no UUIDs.
-- **Layered isolation** — indexer → graph → MCP/API — each layer has single responsibility.
-- **No reading plans** — Evidence Pack is a factual snapshot, not a task planner. It contains selected_context, warnings, and pack_notes — never reading_plan or agent_instructions.
+```markdown
+截图待补充。
+```
 
 ---
 
-## Tech Stack
+## Evidence Pack
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python 3.10+, FastAPI, Pydantic v2 |
-| Graph Analysis | NetworkX |
-| Storage | SQLite + JSON files |
-| AST Parsing | Python `ast` standard library |
-| CLI Framework | Typer |
-| MCP Protocol | FastMCP |
-| Frontend | TypeScript, React 18, Vite |
-| Graph Visualization | React Flow |
-| Styling | Tailwind CSS |
+Evidence Pack 是一个可选的任务级代码证据快照，适合：
+
+* 人类查看任务相关代码证据
+* 复制给不支持 MCP 的 Agent
+* 导出 JSON / Markdown 作为上下文材料
+
+Evidence Pack 不包含：
+
+* Reading Plan
+* Agent Instructions
+* 实现建议
+* 执行顺序
+
+它只包含结构化 evidence，例如：
+
+* entry point candidates
+* selected_context
+* related_symbols
+* call_graph
+* impact signals
+* tests
+* warnings
+* pack_notes
+* token_budget
 
 ---
 
-## Development
+## 它是什么 / 不是什么
 
-### Backend Tests
+### CodeGraph Explorer 是
+
+* 本地代码图谱索引工具
+* 面向 AI 编码 Agent 的 MCP 工具集
+* 结构化代码证据检索层
+* 调用关系 / 影响面 / 测试信号查询工具
+* 人类验证 evidence 的 Dashboard
+
+### CodeGraph Explorer 不是
+
+* 不是实现计划生成器
+* 不是 Reading Plan 生成器
+* 不是 Agent Instructions 生成器
+* 不是替代 Agent 推理的系统
+* 不是完整运行时语义分析器
+* 不是通用代码搜索 UI
+
+---
+
+## 架构概览
+
+```text
+Repository
+   |
+   v
+Indexer
+   |
+   v
+Code Graph Store
+   |
+   +--> CLI
+   +--> MCP Server
+   +--> Dashboard API
+   +--> Evidence Pack Export
+```
+
+| 模块          | 作用                                            |
+| ----------- | --------------------------------------------- |
+| Indexer     | 解析 Python 文件，提取符号、调用、导入、测试和元数据                |
+| Graph Store | 存储节点和边，并保留 confidence / resolution / evidence |
+| Query Layer | 提供 symbol、callers、callees、neighbors、impact 查询 |
+| MCP Server  | 将图查询能力暴露给 AI 编码 Agent                         |
+| Dashboard   | 面向人类的 evidence 验证界面                           |
+| Benchmark   | 评估 CodeGraph 相比 grep/read 的效率收益               |
+
+---
+
+## Under the Hood
+
+CodeGraph Explorer 当前采用 Python-first 的静态分析流程：
+
+1. 扫描项目文件
+2. 解析 Python AST
+3. 提取函数、类、方法、导入和调用关系
+4. 构建本地代码图谱
+5. 计算 confidence / resolution / evidence
+6. 通过 CLI、MCP Server 和 Dashboard API 暴露查询能力
+
+核心目标不是生成自然语言解释，而是提供稳定、可查询、可验证的代码图谱证据。
+
+---
+
+## Benchmark
+
+运行 benchmark：
 
 ```bash
-pip install -e backend          # Install in editable mode
-pip install pytest              # Install test runner
-pytest backend/tests/ -v       # Run tests (666+ tests)
+python -m tests.agent_benchmark.runner --mode baseline
+python -m tests.agent_benchmark.runner --mode codegraph
+python -m tests.agent_benchmark.report
 ```
 
-### Benchmark Tests
+报告会生成到：
 
-```bash
-# Run both modes
-python -m tests.agent_benchmark.runner --mode both
-
-# Run quality gate checks
-pytest tests/agent_benchmark/ -v
+```text
+reports/agent_benchmark.md
 ```
 
-### Frontend Build
+Benchmark 记录：
 
-```bash
-cd frontend && npm run dev      # Development server with HMR
-cd frontend && npm run build    # Production build
-```
+* expected symbol recall
+* expected file recall
+* grep / glob / read 调用数
+* MCP payload tokens
+* discovery token estimate
+* full task token estimate
+* elapsed time
+* failure cases
 
 ---
 
-## Demo Project
+## 推荐 GitHub Topics
 
-The repository includes a demo Python project at `examples/demo_python_project/`:
+请在 GitHub 仓库设置中添加：
 
+```text
+codegraph
+code-intelligence
+ai-coding
+ai-agent
+mcp
+model-context-protocol
+static-analysis
+ast
+python
+fastapi
+graph
+knowledge-graph
+developer-tools
+code-search
+impact-analysis
+claude-code
+cursor
+codex
+rag
+graph-rag
 ```
-demo_python_project/
-├── main.py              # Entry point: orchestrates login flow
-├── app/
-│   ├── api/
-│   │   ├── auth.py      # login(), logout() — authentication logic
-│   │   └── users.py     # get_users(), get_user_by_name()
-│   ├── models/
-│   │   └── user.py      # User dataclass
-│   └── store/
-│       └── token_store.py  # Token storage (save, revoke, validate)
-```
+
+> Topics 需要在 GitHub 仓库页面手动设置，README 中写入不会自动生效。
 
 ---
 
-## Project Status
+## 当前局限
 
-**MVP Complete.** The full pipeline is implemented:
-- [x] Code indexing with AST parsing
-- [x] Symbol extraction and call graph construction
-- [x] Graph storage (in-memory + SQLite + JSON)
-- [x] MCP server with 8 fine-grained query tools
-- [x] Symbol search, explain, impact analysis
-- [x] Evidence Pack generation (summary-only, no reading plans)
-- [x] CLI (Typer) with all commands
-- [x] Dashboard (React Frontend) with 6 pages
-- [x] Agent A/B benchmark with quality gate
+* 目前是 Python-first
+* 静态分析无法覆盖所有动态派发和 monkey patch
+* 多语言项目支持有限
+* benchmark 结果来自内置 fixtures，不代表所有真实项目
+* 复杂框架依赖注入仍可能需要 Agent 自行验证
+
+---
+
+## Roadmap
+
+* TypeScript / JavaScript 支持
+* Java 支持
+* 更多框架 route mapping
+* 更强的 test discovery
+* 更大的 benchmark suite
+* workspace-level indexing
+* 更强的 incremental sync
+* Dashboard 过滤和对比能力
+
+---
+
+## 设计原则
+
+### MCP-first
+
+主工作流是 MCP 细粒度查询，而不是一次性大上下文。
+
+### Compact by default
+
+默认返回紧凑 JSON，避免把 token 消耗转移到 MCP payload 上。
+
+### Evidence, not plans
+
+CodeGraph Explorer 提供结构化代码证据，不生成阅读计划、实现计划或 Agent 指令。
+
+### Confidence-aware
+
+关键关系带有置信度和解析来源，便于 Agent 和开发者判断可信度。
+
+### Freshness-aware
+
+索引状态会暴露给 CLI、MCP 和 Dashboard，避免使用过期图谱。
+
+### Human-verifiable
+
+Dashboard 用于让开发者验证图谱关系、confidence、resolution 和 impact signals。
 
 ---
 
 ## License
 
 MIT
+
+---
+
+## Project Status
+
+CodeGraph Explorer 当前重点是验证和打磨：
+
+* Python-first 代码图谱索引
+* MCP 细粒度图查询
+* compact payload
+* impact confirmed / possible 区分
+* index freshness
+* Dashboard evidence verification
+* Agent benchmark
+
+项目不追求替 Agent 做决策，而是提供更可靠、更紧凑、更可解释的代码图谱证据。
