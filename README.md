@@ -170,24 +170,37 @@ cd CodeGraph-Explorer
 pip install -e "backend[mcp,watch]"
 ```
 
-### 2. 初始化本地索引
+### 2. 配置 MCP Server
 
-首次使用需要在项目根目录运行一次 `init` 命令，扫描代码库、解析 AST 并构建代码图谱索引。索引完成后，MCP Server 和 Dashboard 即可直接使用。
+运行一次 `configure all`，将 CodeGraph Explorer 注册到 Claude Code 和 Cursor 的 MCP 配置中。之后 Agent 会自动启动 MCP Server，无需手动运行。
+
+```bash
+codegraph configure all
+```
+
+如果只使用某一个编辑器：
+```bash
+codegraph configure claude    # 仅配置 Claude Code
+codegraph configure cursor    # 仅配置 Cursor
+```
+
+查看当前配置状态：
+```bash
+codegraph configure show
+```
+
+### 3. 初始化本地索引
+
+在项目根目录运行 `init` 命令，扫描代码库、解析 AST 并构建代码图谱索引。一次初始化完成本地索引，MCP Server 和 Dashboard 可直接使用。
 
 ```bash
 codegraph init ./examples/demo_python_project
 ```
 
-### 3. 查看索引状态
+### 4. 查看索引状态
 
 ```bash
 codegraph status
-```
-
-### 4. 启动 MCP Server
-
-```bash
-codegraph mcp --root ./examples/demo_python_project
 ```
 
 ### 5. 可选：启动 Watch Mode
@@ -210,14 +223,14 @@ make demo
 install:
 	pip install -e "backend[mcp,watch]"
 
+configure:
+	codegraph configure all
+
 init-demo:
 	codegraph init ./examples/demo_python_project
 
 status:
 	codegraph status
-
-mcp:
-	codegraph mcp --root ./examples/demo_python_project
 
 dashboard:
 	cd frontend && npm install && npm run dev
@@ -227,19 +240,11 @@ benchmark:
 	python -m tests.agent_benchmark.runner --mode codegraph
 	python -m tests.agent_benchmark.report
 
-demo: install init-demo status
+demo: install configure init-demo status
 	codegraph context "add MFA to login flow"
 ```
 
-如果要同时体验 MCP 和 Dashboard：
-
-Terminal 1:
-
-```bash
-make mcp
-```
-
-Terminal 2:
+如果要同时体验 Dashboard：
 
 ```bash
 make dashboard
@@ -249,25 +254,29 @@ make dashboard
 
 ## 在 Claude Code / Cursor 中使用
 
+运行 `codegraph configure all` 即可自动注册 MCP Server。或手动添加到配置文件：
+
 ### Claude Code
 
+用户级配置 `~/.claude.json`：
 ```json
 {
   "mcpServers": {
     "codegraph": {
       "command": "python",
-      "args": ["-m", "codegraph.mcp_server"],
-      "env": {
-        "CODEGRAPH_PROJECT_ROOT": "/path/to/project"
-      }
+      "args": ["-m", "codegraph.mcp_server"]
     }
   }
 }
 ```
 
+项目级配置 `<project>/.mcp.json` 使用相同格式。
+
 ### Cursor
 
-在 `.cursor/mcp.json` 中使用同样配置。
+用户级配置 `~/.cursor/mcp.json`，项目级配置 `<project>/.cursor/mcp.json`，格式同上。
+
+MCP Server 会自动从当前工作目录检测 `.codegraph/` 索引。如需指定固定路径，在 `env` 中设置 `CODEGRAPH_PROJECT_ROOT`。
 
 CodeGraph Explorer 不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。
 

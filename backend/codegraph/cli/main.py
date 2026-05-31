@@ -882,5 +882,217 @@ def mcp(
     mcp_main()
 
 
+# ── configure command group ──────────────────────────────────────────────
+
+configure_app = typer.Typer(
+    name="configure",
+    help="Configure MCP server integration for AI coding agents (Claude Code, Cursor)",
+)
+app.add_typer(configure_app)
+
+
+def _print_configure_result(result: dict) -> None:
+    """Print a single configure_target / remove_target result."""
+    status = result["status"]
+    target = result["target"]
+    filepath = result["filepath"]
+    if status == "configured":
+        typer.echo(f"[OK] {target}: configured -> {filepath}")
+    elif status == "overwritten":
+        typer.echo(f"[OK] {target}: overwritten -> {filepath}")
+    elif status == "removed":
+        typer.echo(f"[OK] {target}: removed from {filepath}")
+    elif status == "not_configured":
+        typer.echo(f"[SKIP] {target}: not configured in {filepath}")
+    else:
+        typer.echo(f"[SKIP] {target}: already configured -> {filepath}")
+        typer.echo("  Use --force to overwrite.")
+
+
+@configure_app.command(name="all")
+def configure_all(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Set CODEGRAPH_PROJECT_ROOT env var in config (omit for CWD auto-detection)",
+    ),
+    python_command: str = typer.Option(
+        None, "--command", "-c",
+        help="Python interpreter path (default: current interpreter)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing configuration",
+    ),
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Write to project-level config (./.mcp.json, ./.cursor/mcp.json) instead of user-level",
+    ),
+) -> None:
+    """Configure both Claude Code and Cursor MCP servers (user-level by default).
+
+    This is the recommended one-time setup command. It writes MCP server
+    configuration so that Claude Code and Cursor can automatically discover
+    and use CodeGraph Explorer on every project.
+
+    Examples:
+        codegraph configure all
+        codegraph configure all --force
+        codegraph configure all --root /path/to/project
+        codegraph configure all --project
+    """
+    from codegraph.configure import configure_target, ConfigTarget
+
+    results = []
+    for target in (ConfigTarget.CLAUDE, ConfigTarget.CURSOR):
+        result = configure_target(
+            target,
+            root=root,
+            python_command=python_command,
+            project=project,
+            force=force,
+        )
+        results.append(result)
+
+    for r in results:
+        _print_configure_result(r)
+
+
+@configure_app.command(name="claude")
+def configure_claude(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Set CODEGRAPH_PROJECT_ROOT env var in config",
+    ),
+    python_command: str = typer.Option(
+        None, "--command", "-c",
+        help="Python interpreter path (default: current interpreter)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing configuration",
+    ),
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Write to project-level config (./.mcp.json) instead of user-level",
+    ),
+) -> None:
+    """Configure Claude Code MCP server only (user-level by default).
+
+    Examples:
+        codegraph configure claude
+        codegraph configure claude --project
+        codegraph configure claude --root /path/to/project
+    """
+    from codegraph.configure import configure_target, ConfigTarget
+
+    result = configure_target(
+        ConfigTarget.CLAUDE,
+        root=root,
+        python_command=python_command,
+        project=project,
+        force=force,
+    )
+    _print_configure_result(result)
+
+
+@configure_app.command(name="cursor")
+def configure_cursor(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Set CODEGRAPH_PROJECT_ROOT env var in config",
+    ),
+    python_command: str = typer.Option(
+        None, "--command", "-c",
+        help="Python interpreter path (default: current interpreter)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing configuration",
+    ),
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Write to project-level config (./.cursor/mcp.json) instead of user-level",
+    ),
+) -> None:
+    """Configure Cursor MCP server only (user-level by default).
+
+    Examples:
+        codegraph configure cursor
+        codegraph configure cursor --project
+        codegraph configure cursor --root /path/to/project
+    """
+    from codegraph.configure import configure_target, ConfigTarget
+
+    result = configure_target(
+        ConfigTarget.CURSOR,
+        root=root,
+        python_command=python_command,
+        project=project,
+        force=force,
+    )
+    _print_configure_result(result)
+
+
+@configure_app.command(name="show")
+def configure_show(
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Show project-level config status instead of user-level",
+    ),
+) -> None:
+    """Display current MCP configuration status for all targets."""
+    from codegraph.configure import show_status
+
+    status = show_status(project=project)
+    for target_name in ("claude", "cursor"):
+        info = status[target_name]
+        if info["configured"]:
+            cfg = info["config"] or {}
+            has_root = "env" in cfg and "CODEGRAPH_PROJECT_ROOT" in cfg.get("env", {})
+            typer.echo(f"[CONFIGURED] {target_name}")
+            typer.echo(f"  File:    {info['filepath']}")
+            typer.echo(f"  Command: {cfg.get('command', '?')}")
+            if has_root:
+                typer.echo(f"  Root:    {cfg['env']['CODEGRAPH_PROJECT_ROOT']}")
+            else:
+                typer.echo("  Root:    auto-detect (CWD)")
+        else:
+            typer.echo(f"[NOT CONFIGURED] {target_name}")
+            typer.echo(f"  File:    {info['filepath']}")
+        typer.echo()
+
+
+@configure_app.command(name="remove")
+def configure_remove(
+    target: str = typer.Argument(..., help="Target to remove: all, claude, or cursor"),
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Remove from project-level config instead of user-level",
+    ),
+) -> None:
+    """Remove MCP server configuration.
+
+    Examples:
+        codegraph configure remove all
+        codegraph configure remove claude
+        codegraph configure remove cursor --project
+    """
+    from codegraph.configure import remove_target, ConfigTarget
+
+    if target not in ("all", "claude", "cursor"):
+        typer.echo(f"Error: Invalid target '{target}'. Use: all, claude, cursor.", err=True)
+        raise typer.Exit(1)
+
+    targets: list[ConfigTarget]
+    if target == "all":
+        targets = [ConfigTarget.CLAUDE, ConfigTarget.CURSOR]
+    else:
+        targets = [ConfigTarget(target)]
+
+    for t in targets:
+        result = remove_target(t, project=project)
+        _print_configure_result(result)
+
+
 if __name__ == "__main__":
     app()
