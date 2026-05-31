@@ -43,8 +43,8 @@ def build_server_config(
         "command": python_command or sys.executable,
         "args": ["-m", "codegraph.mcp_server"],
     }
-    if root:
-        entry["env"] = {"CODEGRAPH_PROJECT_ROOT": root}
+    project_root = root if root else str(Path.cwd().resolve())
+    entry["env"] = {"CODEGRAPH_PROJECT_ROOT": project_root}
     return entry
 
 

@@ -662,7 +662,7 @@ def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
         searched = project_root or str(Path.cwd())
         raise RuntimeError(
             f"No .codegraph directory found (searched from: {searched}). "
-            "Run 'codegraph init <project>' first, or set CODEGRAPH_PROJECT_ROOT."
+            "Run 'codegraph init' first, or set CODEGRAPH_PROJECT_ROOT."
         )
 
     graph_path = cg_dir / "graph.json"

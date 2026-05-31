@@ -44,7 +44,7 @@ class StatusResult:
 
 def _default_recommendation(status: str) -> str:
     if status == "missing":
-        return "Run codegraph init <project>"
+        return "Run codegraph init"
     if status == "stale":
         return "Run codegraph init --incremental"
     return ""

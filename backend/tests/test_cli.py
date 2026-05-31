@@ -85,6 +85,33 @@ class TestCliIndex:
         assert result.exit_code != 0
         assert "valid directory" in result.output.lower()
 
+    def test_index_defaults_to_cwd(self, runner, tmp_path, monkeypatch):
+        """codegraph index without path should initialize current directory."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "greeter.py").write_text("""
+def greet(name: str) -> str:
+    return f"Hello {name}"
+""", encoding="utf-8")
+
+        result = runner.invoke(app, ["index"])
+        assert result.exit_code == 0
+        assert "Scanning" in result.output
+        assert "Found" in result.output
+        assert (tmp_path / ".codegraph" / "graph.json").exists()
+
+    def test_index_with_explicit_path(self, runner, tmp_path):
+        """codegraph index <path> should still work with explicit path."""
+        (tmp_path / "greeter.py").write_text("""
+def greet(name: str) -> str:
+    return f"Hello {name}"
+""", encoding="utf-8")
+
+        result = runner.invoke(app, ["index", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Scanning" in result.output
+        assert "Found" in result.output
+        assert (tmp_path / ".codegraph" / "graph.json").exists()
+
 
 class TestCliSearch:
     def test_search_no_index(self, runner, tmp_path):
@@ -159,3 +186,51 @@ def farewell(name: str) -> str:
         # Cleanup
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── Init without path (CWD default) ──────────────────────────────────────
+
+
+class TestCliInit:
+    def test_init_defaults_to_cwd(self, runner, tmp_path, monkeypatch):
+        """codegraph init without path should initialize current directory."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "greeter.py").write_text("""
+def greet(name: str) -> str:
+    return f"Hello {name}"
+""", encoding="utf-8")
+
+        result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        assert "Scanning" in result.output
+        assert "Found" in result.output
+        assert (tmp_path / ".codegraph" / "graph.json").exists()
+
+    def test_init_with_explicit_path(self, runner, tmp_path):
+        """codegraph init <path> should still work with explicit path."""
+        (tmp_path / "greeter.py").write_text("""
+def greet(name: str) -> str:
+    return f"Hello {name}"
+""", encoding="utf-8")
+
+        result = runner.invoke(app, ["init", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Scanning" in result.output
+        assert "Found" in result.output
+        assert (tmp_path / ".codegraph" / "graph.json").exists()
+
+    def test_init_nonexistent_dir(self, runner):
+        """codegraph init with non-existent path should error."""
+        result = runner.invoke(app, ["init", "/nonexistent/path"])
+        assert result.exit_code != 0
+        assert "valid directory" in result.output.lower()
+
+
+class TestCliStatus:
+    def test_status_missing_shows_codegraph_init(self, runner, tmp_path):
+        """codegraph status on missing index should suggest 'codegraph init'."""
+        result = runner.invoke(app, ["status", "--root", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "codegraph init" in result.output
+        # The old long-path form should no longer appear
+        assert "codegraph init " + str(tmp_path) not in result.output

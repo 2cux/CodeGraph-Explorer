@@ -172,7 +172,9 @@ pip install -e "backend[mcp,watch]"
 
 ### 2. 配置 MCP Server
 
-运行一次 `configure all`，将 CodeGraph Explorer 注册到 Claude Code 和 Cursor 的 MCP 配置中。之后 Agent 会自动启动 MCP Server，无需手动运行。
+`codegraph configure` 会将当前目录的绝对路径写入 `CODEGRAPH_PROJECT_ROOT`，Claude Code / Cursor 会自动使用该索引。
+
+首次配置：
 
 ```bash
 codegraph configure all
@@ -182,6 +184,11 @@ codegraph configure all
 ```bash
 codegraph configure claude    # 仅配置 Claude Code
 codegraph configure cursor    # 仅配置 Cursor
+```
+
+如果已有旧配置需要更新 `CODEGRAPH_PROJECT_ROOT`：
+```bash
+codegraph configure all --force
 ```
 
 查看当前配置状态：
@@ -194,7 +201,8 @@ codegraph configure show
 在项目根目录运行 `init` 命令，扫描代码库、解析 AST 并构建代码图谱索引。一次初始化完成本地索引，MCP Server 和 Dashboard 可直接使用。
 
 ```bash
-codegraph init ./examples/demo_python_project
+cd your-project
+codegraph init
 ```
 
 ### 4. 查看索引状态
@@ -227,7 +235,7 @@ configure:
 	codegraph configure all
 
 init-demo:
-	codegraph init ./examples/demo_python_project
+	cd examples/demo_python_project && codegraph init
 
 status:
 	codegraph status

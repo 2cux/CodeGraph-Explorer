@@ -39,11 +39,15 @@ def home_tmp(monkeypatch, tmp_path):
 
 
 class TestBuildServerConfig:
-    def test_without_root(self):
+    def test_without_root_defaults_to_cwd(self):
+        """When root is not provided, CODEGRAPH_PROJECT_ROOT defaults to CWD absolute path."""
         cfg = build_server_config()
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
-        assert "env" not in cfg
+        assert "env" in cfg
+        assert "CODEGRAPH_PROJECT_ROOT" in cfg["env"]
+        assert Path(cfg["env"]["CODEGRAPH_PROJECT_ROOT"]).is_absolute()
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
     def test_with_root(self):
         cfg = build_server_config(root="/tmp/myproject")
@@ -248,8 +252,8 @@ class TestCliConfigureAll:
     def test_configure_all_writes_both(self, runner, home_tmp):
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
-        assert "claude: configured" in result.stdout.lower()
-        assert "cursor: configured" in result.stdout.lower()
+        assert "[ok] claude: configured" in result.stdout.lower()
+        assert "[ok] cursor: configured" in result.stdout.lower()
 
         # Both config files should exist
         assert home_tmp.joinpath(".claude.json").exists()
@@ -265,12 +269,13 @@ class TestCliConfigureAll:
         runner.invoke(app, ["configure", "all"])
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
-        assert "already configured" in result.stdout.lower()
+        assert "Skipped to avoid overwriting" in result.stdout
 
     def test_configure_all_with_force(self, runner, home_tmp):
         runner.invoke(app, ["configure", "all"])
         result = runner.invoke(app, ["configure", "all", "--force"])
         assert result.exit_code == 0
+        assert "[ok]" in result.stdout.lower()
         assert "overwritten" in result.stdout.lower()
 
     def test_configure_all_with_root(self, runner, home_tmp):
@@ -280,31 +285,49 @@ class TestCliConfigureAll:
         cfg = claude_data["mcpServers"]["codegraph"]
         assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == "/tmp/testproj"
 
+    def test_configure_all_force_updates_project_root(self, runner, home_tmp):
+        """--force should update CODEGRAPH_PROJECT_ROOT even if already configured."""
+        runner.invoke(app, ["configure", "all", "--root", "/old/path"])
+        result = runner.invoke(app, ["configure", "all", "--root", "/new/path", "--force"])
+        assert result.exit_code == 0
+        claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
+        cfg = claude_data["mcpServers"]["codegraph"]
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == "/new/path"
+
+    def test_configure_all_defaults_cwd_in_env(self, runner, home_tmp):
+        """configure all without --root writes CWD as absolute path."""
+        result = runner.invoke(app, ["configure", "all"])
+        assert result.exit_code == 0
+        claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
+        cfg = claude_data["mcpServers"]["codegraph"]
+        assert "CODEGRAPH_PROJECT_ROOT" in cfg["env"]
+        assert Path(cfg["env"]["CODEGRAPH_PROJECT_ROOT"]).is_absolute()
+
 
 class TestCliConfigureClaude:
     def test_configure_claude(self, runner, home_tmp):
         result = runner.invoke(app, ["configure", "claude"])
         assert result.exit_code == 0
-        assert "claude: configured" in result.stdout.lower()
+        assert "[ok] claude: configured" in result.stdout.lower()
         assert home_tmp.joinpath(".claude.json").exists()
 
     def test_configure_claude_already_configured(self, runner, home_tmp):
         runner.invoke(app, ["configure", "claude"])
         result = runner.invoke(app, ["configure", "claude"])
-        assert "already configured" in result.stdout.lower()
+        assert "Skipped to avoid overwriting" in result.stdout
 
 
 class TestCliConfigureCursor:
     def test_configure_cursor(self, runner, home_tmp):
         result = runner.invoke(app, ["configure", "cursor"])
         assert result.exit_code == 0
-        assert "cursor: configured" in result.stdout.lower()
+        assert "[ok] cursor: configured" in result.stdout.lower()
         assert home_tmp.joinpath(".cursor", "mcp.json").exists()
 
     def test_configure_cursor_already_configured(self, runner, home_tmp):
         runner.invoke(app, ["configure", "cursor"])
         result = runner.invoke(app, ["configure", "cursor"])
-        assert "already configured" in result.stdout.lower()
+        assert "Skipped to avoid overwriting" in result.stdout
 
 
 class TestCliConfigureShow:

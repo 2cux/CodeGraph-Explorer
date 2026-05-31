@@ -188,7 +188,7 @@ def _save_index_artifacts(
 @app.command()
 def init(
     root: str = typer.Argument(
-        ..., help="Root path of the codebase to index",
+        ".", help="Root path of the codebase to index (defaults to current directory)",
     ),
     force: bool = typer.Option(
         False, "--force", "-f",
@@ -242,7 +242,7 @@ def init(
 @app.command(name="index", hidden=True)
 def index_cmd(
     root: str = typer.Argument(
-        ..., help="Root path of the codebase to index",
+        ".", help="Root path of the codebase to index (defaults to current directory)",
     ),
     force: bool = typer.Option(
         False, "--force", "-f",
@@ -273,7 +273,7 @@ def _run_incremental_index(
 
     if status_result.status == "missing":
         typer.echo("No existing index found. Run full index first:")
-        typer.echo(f"  codegraph init {root_path}")
+        typer.echo(f"  codegraph init")
         return
 
     if status_result.status == "fresh":
@@ -370,7 +370,7 @@ def status(
         typer.echo("Index status: missing")
         typer.echo("")
         typer.echo("No .codegraph index found. Run:")
-        typer.echo(f"  codegraph init {root_path}")
+        typer.echo(f"  codegraph init")
         return
 
     store = FileStore(output_dir)
@@ -905,8 +905,9 @@ def _print_configure_result(result: dict) -> None:
     elif status == "not_configured":
         typer.echo(f"[SKIP] {target}: not configured in {filepath}")
     else:
-        typer.echo(f"[SKIP] {target}: already configured -> {filepath}")
-        typer.echo("  Use --force to overwrite.")
+        typer.echo(f"Existing CodeGraph MCP config found ({target}).")
+        typer.echo("Skipped to avoid overwriting.")
+        typer.echo("Use --force to update CODEGRAPH_PROJECT_ROOT.")
 
 
 @configure_app.command(name="all")
