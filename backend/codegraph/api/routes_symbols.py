@@ -96,18 +96,12 @@ class ImpactRisk(BaseModel):
     reasons: list[str]
 
 
-class ImpactRecommendation(BaseModel):
-    step: int
-    message: str
-
-
 class ImpactResponse(BaseModel):
     changed_symbol: str
     changed_symbol_type: str = ""
     affected_symbols: list[ImpactAffectedSymbol] = []
     affected_files: list[ImpactAffectedFile] = []
     risk: ImpactRisk | None = None
-    recommendations: list[ImpactRecommendation] = []
     warnings: list[str] = []
 
 
@@ -210,12 +204,6 @@ async def get_impact(
 
     result = graph_impact.analyze_impact(store, normalized, depth=depth)
 
-    raw_recommendations = result.get("recommendations", [])
-    recommendations = [
-        ImpactRecommendation(step=i + 1, message=msg)
-        for i, msg in enumerate(raw_recommendations)
-    ]
-
     return ImpactResponse(
         changed_symbol=normalized,
         changed_symbol_type=result.get("changed_symbol_type", ""),
@@ -228,7 +216,6 @@ async def get_impact(
             for f in result.get("affected_files", [])
         ],
         risk=ImpactRisk(**result["risk"]) if result.get("risk") else None,
-        recommendations=recommendations,
         warnings=result.get("warnings", []),
     )
 

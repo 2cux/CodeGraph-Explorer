@@ -86,7 +86,6 @@ export interface ImpactResponse {
   affected_symbols: ImpactSymbol[];
   affected_files: ImpactFile[];
   risk: { level: string; reasons: string[] } | null;
-  recommendations: { step: number; message: string }[];
   warnings: string[];
 }
 
