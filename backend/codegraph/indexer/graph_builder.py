@@ -4,15 +4,15 @@ from pathlib import Path
 
 from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata, NodeType, Resolution
 from codegraph.graph.confidence import get_confidence
-from codegraph.indexer.scanner import scan_python_files, read_file
+from codegraph.indexer.scanner import scan_python_files, read_file, normalize_path
 from codegraph.indexer.parser_python import parse_file
 from codegraph.indexer.symbol_extractor import extract_symbols
 from codegraph.indexer.call_extractor import extract_calls
 
 
 def _rel_path(root: Path, path: Path) -> str:
-    """Return path relative to root, using forward slashes."""
-    return path.relative_to(root).as_posix()
+    """Return path relative to root, using POSIX forward slashes."""
+    return normalize_path(path.relative_to(root))
 
 
 def _module_id(rel: str) -> str:

@@ -39,6 +39,8 @@ from codegraph.graph import query as graph_query
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
 from codegraph.graph.models import CodeGraph, EdgeType, GraphEdge, GraphNode, NodeType, Resolution
 from codegraph.graph.store import GraphStore
+from codegraph.graph.warnings import build_warning, build_stale_index_warning
+from codegraph.indexer.scanner import _is_safe_path
 from codegraph.indexer.status import detect_status
 from codegraph.storage.file_store import FileStore
 
@@ -429,29 +431,22 @@ def _build_index_status() -> dict[str, Any]:
 def _collect_warnings(
     fuzzy_warning: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect warnings including stale index check."""
+    """Collect warnings including stale index check (unified format)."""
     warnings: list[dict[str, Any]] = []
     index_status = _build_index_status()
     if index_status["status"] == "stale":
-        stale_msg = f"Index is stale — {len(index_status['changed_files']) + len(index_status['added_files']) + len(index_status['deleted_files'])} file(s) changed."
-        stale_entry: dict[str, Any] = {
-            "type": "stale_index",
-            "message": stale_msg,
-            "reason_code": "stale_index",
-        }
-        if index_status["changed_files"]:
-            stale_entry["changed_files"] = index_status["changed_files"][:10]
-        if index_status["added_files"]:
-            stale_entry["added_files"] = index_status["added_files"][:10]
-        if index_status["deleted_files"]:
-            stale_entry["deleted_files"] = index_status["deleted_files"][:10]
+        stale_entry = build_stale_index_warning(
+            changed_files=index_status.get("changed_files", []),
+            added_files=index_status.get("added_files", []),
+            deleted_files=index_status.get("deleted_files", []),
+        )
         warnings.append(stale_entry)
     if fuzzy_warning:
-        warnings.append({
-            "type": "fuzzy_match",
-            "message": fuzzy_warning,
-            "reason_code": "fuzzy_name_match",
-        })
+        warnings.append(build_warning(
+            "fuzzy_match",
+            message=fuzzy_warning,
+            reason_code="fuzzy_name_match",
+        ))
     return warnings
 
 
@@ -884,12 +879,20 @@ def _read_source_snippet(
         max_source_lines: Maximum lines to return
 
     Returns ``{"included": bool, "content": str|None, "truncated": bool, "lines": int}``.
+    Performs realpath validation to prevent symlink escape reads.
     """
     if _project_root is None:
         return {"included": False, "content": None, "truncated": False, "lines": 0, "source_mode": source_mode}
     full_path = Path(_project_root) / file_path
     if not full_path.exists():
         return {"included": False, "content": None, "truncated": False, "lines": 0, "source_mode": source_mode}
+
+    # Symlink safety: reject reads that escape the project root
+    root_path = Path(_project_root)
+    is_safe, _ = _is_safe_path(full_path, root_path)
+    if not is_safe:
+        return {"included": False, "content": None, "truncated": False, "lines": 0, "source_mode": source_mode}
+
     try:
         lines = full_path.read_text(encoding="utf-8").splitlines()
     except Exception:

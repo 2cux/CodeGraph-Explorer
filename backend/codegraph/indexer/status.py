@@ -7,7 +7,7 @@ to determine which files have changed, been added, or been deleted.
 from pathlib import Path
 
 from codegraph.graph.models import FileEntry, IndexMetadata
-from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
+from codegraph.indexer.scanner import scan_python_files, compute_fingerprint, normalize_path
 
 
 class StatusResult:
@@ -63,7 +63,7 @@ def detect_status(root: Path, metadata: IndexMetadata | None) -> StatusResult:
         return StatusResult(status="missing")
 
     current_files = scan_python_files(root)
-    current_rel = {f.relative_to(root).as_posix() for f in current_files}
+    current_rel = {normalize_path(f.relative_to(root)) for f in current_files}
 
     metadata_map: dict[str, str] = {f.path: f.fingerprint for f in metadata.files}
     metadata_rel = set(metadata_map.keys())
@@ -74,7 +74,7 @@ def detect_status(root: Path, metadata: IndexMetadata | None) -> StatusResult:
 
     # Check existing + new files
     for f in current_files:
-        rel = f.relative_to(root).as_posix()
+        rel = normalize_path(f.relative_to(root))
         if rel not in metadata_rel:
             added_files.append(rel)
         else:

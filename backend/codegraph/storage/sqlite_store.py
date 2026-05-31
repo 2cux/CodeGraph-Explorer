@@ -1,11 +1,16 @@
 """SQLite-based storage for graph data.
 
-Stores nodes and edges in a local SQLite database at `.codegraph/index.sqlite`.
+Stores nodes and edges in a local SQLite database at ``.codegraph/index.sqlite``.
+
+All batch writes are automatically chunked to avoid hitting SQLite's
+``SQLITE_MAX_VARIABLE_NUMBER`` limit.
 """
 
 import json
 import sqlite3
 from pathlib import Path
+
+from codegraph.storage.sqlite_utils import safe_executemany
 
 
 def _row_to_node(row: sqlite3.Row) -> dict:
@@ -110,7 +115,8 @@ class SqliteStore:
         Each dict should have keys matching the GraphNode model fields.
         """
         c = self.conn
-        c.executemany(
+        safe_executemany(
+            c,
             """INSERT OR REPLACE INTO nodes
                (id, type, name, qualified_name, display_name, file_path,
                 module, language, location, signature, docstring,
@@ -200,7 +206,8 @@ class SqliteStore:
     def save_edges(self, edges: list[dict]) -> None:
         """Insert or replace a batch of edges."""
         c = self.conn
-        c.executemany(
+        safe_executemany(
+            c,
             """INSERT OR REPLACE INTO edges
                (id, type, source, target, confidence, source_location, edge_metadata)
                VALUES
