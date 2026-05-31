@@ -18,7 +18,7 @@ def init_store(store: GraphStore, codegraph_dir: Path | None = None) -> None:
 def get_store() -> GraphStore:
     if _store is None:
         raise RuntimeError(
-            "GraphStore not initialized. Run 'codegraph index' first."
+            "GraphStore not initialized. Run 'codegraph init' first."
         )
     return _store
 

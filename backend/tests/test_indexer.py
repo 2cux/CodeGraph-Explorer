@@ -2966,7 +2966,7 @@ class TestStatusDetection:
         from codegraph.indexer.status import detect_status
         result = detect_status(tmp_path, None)
         assert result.status == "missing"
-        assert "codegraph index" in result.recommendation
+        assert "codegraph init" in result.recommendation
 
     def test_fresh_status_when_no_changes(self, tmp_path):
         from codegraph.indexer.status import detect_status

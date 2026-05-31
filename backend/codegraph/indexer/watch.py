@@ -302,7 +302,7 @@ class WatchSyncManager:
             elif result.status == "fresh":
                 self._state_store.update_status(status="fresh")
             elif result.status == "missing":
-                print("Warning: No index found. Run 'codegraph index' first.")
+                print("Warning: No index found. Run 'codegraph init' first.")
 
             self._state_store.clear_pending_changes()
 

@@ -91,7 +91,7 @@ async def get_repo_status():
     if not metadata_path.exists():
         return StatusResponse(
             status="missing",
-            recommendation="Run codegraph index <project>",
+            recommendation="Run codegraph init <project>",
         )
 
     store = FileStore(cg_dir)

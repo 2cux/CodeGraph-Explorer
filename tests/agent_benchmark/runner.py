@@ -49,7 +49,7 @@ def load_store_for_project(root_path: str) -> GraphStore:
     graph_path = cg_dir / "graph.json"
     if not graph_path.exists():
         raise FileNotFoundError(
-            f"No index found at {graph_path}. Run 'codegraph index {root_path}' first."
+            f"No index found at {graph_path}. Run 'codegraph init {root_path}' first."
         )
     graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
     store = GraphStore()

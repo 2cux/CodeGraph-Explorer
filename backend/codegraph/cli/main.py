@@ -47,7 +47,7 @@ def _load_store(root: str | None = None) -> tuple[GraphStore, Path]:
     cg_dir = _find_codegraph_dir(root)
     if cg_dir is None:
         typer.echo(
-            "Error: No .codegraph directory found. Run 'codegraph index' first.",
+            "Error: No .codegraph directory found. Run 'codegraph init' first.",
             err=True,
         )
         raise typer.Exit(1)
@@ -186,7 +186,7 @@ def _save_index_artifacts(
 
 
 @app.command()
-def index(
+def init(
     root: str = typer.Argument(
         ..., help="Root path of the codebase to index",
     ),
@@ -203,7 +203,11 @@ def index(
         help="Skip SQLite output",
     ),
 ) -> None:
-    """Scan the codebase, parse AST, and build code graph index."""
+    """Initialize local code graph index. One-time setup, then MCP Server and Dashboard work directly.
+
+    This scans the codebase, parses AST, and builds the code graph index.
+    Once initialized, MCP Server and Dashboard can consume the index immediately.
+    """
     root_path = Path(root).resolve()
     if not root_path.is_dir():
         typer.echo(f"Error: {root} is not a valid directory", err=True)
@@ -235,6 +239,28 @@ def index(
     typer.echo(f"  Edges:         {len(edges)}")
 
 
+@app.command(name="index", hidden=True)
+def index_cmd(
+    root: str = typer.Argument(
+        ..., help="Root path of the codebase to index",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Re-index even if index already exists",
+    ),
+    incremental: bool = typer.Option(
+        False, "--incremental", "-i",
+        help="Incrementally update only changed/new/deleted files",
+    ),
+    no_sqlite: bool = typer.Option(
+        False, "--no-sqlite",
+        help="Skip SQLite output",
+    ),
+) -> None:
+    """Backward-compatible alias for 'init'. Use 'codegraph init' instead."""
+    init(root=root, force=force, incremental=incremental, no_sqlite=no_sqlite)
+
+
 def _run_incremental_index(
     root_path: Path,
     output_dir: Path,
@@ -247,7 +273,7 @@ def _run_incremental_index(
 
     if status_result.status == "missing":
         typer.echo("No existing index found. Run full index first:")
-        typer.echo(f"  codegraph index {root_path}")
+        typer.echo(f"  codegraph init {root_path}")
         return
 
     if status_result.status == "fresh":
@@ -344,7 +370,7 @@ def status(
         typer.echo("Index status: missing")
         typer.echo("")
         typer.echo("No .codegraph index found. Run:")
-        typer.echo(f"  codegraph index {root_path}")
+        typer.echo(f"  codegraph init {root_path}")
         return
 
     store = FileStore(output_dir)
@@ -720,7 +746,7 @@ def dashboard(
     if cg_dir is None:
         typer.echo(
             "Warning: No .codegraph directory found. "
-            "Run 'codegraph index <project>' first to enable full functionality.",
+            "Run 'codegraph init <project>' first to enable full functionality.",
             err=True,
         )
 
@@ -809,7 +835,7 @@ def watch(
         typer.echo(
             "Warning: No existing index found. Watch will start but "
             "auto-sync requires a full index first:\n"
-            f"  codegraph index {root_path}",
+            f"  codegraph init {root_path}",
             err=True,
         )
 

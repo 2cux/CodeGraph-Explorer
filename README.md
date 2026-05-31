@@ -170,10 +170,12 @@ cd CodeGraph-Explorer
 pip install -e "backend[mcp,watch]"
 ```
 
-### 2. 索引示例项目
+### 2. 初始化本地索引
+
+首次使用需要在项目根目录运行一次 `init` 命令，扫描代码库、解析 AST 并构建代码图谱索引。索引完成后，MCP Server 和 Dashboard 即可直接使用。
 
 ```bash
-codegraph index ./examples/demo_python_project
+codegraph init ./examples/demo_python_project
 ```
 
 ### 3. 查看索引状态
@@ -208,8 +210,8 @@ make demo
 install:
 	pip install -e "backend[mcp,watch]"
 
-index-demo:
-	codegraph index ./examples/demo_python_project
+init-demo:
+	codegraph init ./examples/demo_python_project
 
 status:
 	codegraph status
@@ -225,7 +227,7 @@ benchmark:
 	python -m tests.agent_benchmark.runner --mode codegraph
 	python -m tests.agent_benchmark.report
 
-demo: install index-demo status
+demo: install init-demo status
 	codegraph context "add MFA to login flow"
 ```
 
