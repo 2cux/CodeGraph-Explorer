@@ -768,6 +768,54 @@ def dashboard(
         server_process.wait()
 
 
+# ── watch command ────────────────────────────────────────────────────────
+
+
+@app.command()
+def watch(
+    root: str = typer.Argument(
+        ..., help="Root path of the project to watch",
+    ),
+    debounce_ms: int = typer.Option(
+        500, "--debounce-ms", "-d",
+        help="Debounce delay in milliseconds for batching file changes",
+    ),
+    poll_interval: float = typer.Option(
+        2.0, "--poll-interval", "-p",
+        help="Polling interval in seconds (only used when watchdog is unavailable)",
+    ),
+) -> None:
+    """Watch the project for file changes and auto-update the index.
+
+    Monitors Python files and config files for changes, additions, and
+    deletions. When changes are detected, automatically runs an incremental
+    index update after a debounce period.
+
+    Requires the 'watch' extra for optimal performance:
+        pip install -e "backend[watch]"
+
+    Without watchdog, falls back to polling mode.
+    """
+    from codegraph.indexer.watch import run_watch_loop
+
+    root_path = Path(root).resolve()
+    if not root_path.is_dir():
+        typer.echo(f"Error: {root} is not a valid directory", err=True)
+        raise typer.Exit(1)
+
+    # Check if .codegraph/index exists, warn if not
+    cg_dir = root_path / ".codegraph"
+    if not (cg_dir / "metadata.json").exists():
+        typer.echo(
+            "Warning: No existing index found. Watch will start but "
+            "auto-sync requires a full index first:\n"
+            f"  codegraph index {root_path}",
+            err=True,
+        )
+
+    run_watch_loop(root_path, debounce_ms=debounce_ms, poll_interval=poll_interval)
+
+
 # ── mcp command ──────────────────────────────────────────────────────────
 
 
@@ -777,6 +825,10 @@ def mcp(
         None, "--root", "-r",
         help="Project root (auto-detected from cwd if omitted, "
              "or set CODEGRAPH_PROJECT_ROOT env var)",
+    ),
+    watch: bool = typer.Option(
+        False, "--watch", "-w",
+        help="Enable watch mode for automatic incremental index sync",
     ),
 ) -> None:
     """Start the MCP server for AI agent integration.
@@ -796,9 +848,10 @@ def mcp(
     """
     from codegraph.mcp_server import main as mcp_main
 
-    # Forward --project-root via env var so argparse doesn't conflict
     if root:
         os.environ["CODEGRAPH_PROJECT_ROOT"] = root
+    if watch:
+        os.environ["CODEGRAPH_WATCH"] = "1"
 
     mcp_main()
 

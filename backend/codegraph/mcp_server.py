@@ -43,6 +43,7 @@ from codegraph.graph.warnings import build_warning, build_stale_index_warning
 from codegraph.indexer.scanner import _is_safe_path
 from codegraph.indexer.status import detect_status
 from codegraph.storage.file_store import FileStore
+from codegraph.storage.state_store import IndexStateStore
 
 # ── MCP Server ────────────────────────────────────────────────────────────
 
@@ -51,6 +52,7 @@ mcp = FastMCP("codegraph-explorer")
 _store: GraphStore | None = None
 _cg_dir: Path | None = None
 _project_root: str | None = None
+_watch_manager: Any | None = None  # WatchSyncManager when watch mode is active
 
 SCHEMA_VERSION = "1.0.0"
 
@@ -355,7 +357,11 @@ def _serialize_edge_full(
 
 
 def _build_index_status() -> dict[str, Any]:
-    """Build the index_status block shared by all tool responses."""
+    """Build the index_status block shared by all tool responses.
+
+    Reads from state.json first (for watch-driven state), falling back
+    to detect_status for non-watch scenarios.
+    """
     cg_dir = _find_codegraph_dir(_project_root)
     if cg_dir is None:
         return {
@@ -372,6 +378,11 @@ def _build_index_status() -> dict[str, Any]:
             },
             "stats": {"files": 0, "symbols": 0, "edges": 0},
         }
+
+    # Read state.json for watch-driven status
+    state_store = IndexStateStore(cg_dir)
+    state = state_store.load()
+    watch_status = state.get("status", "missing")
 
     file_store = FileStore(cg_dir)
     metadata = file_store.load_metadata()
@@ -407,6 +418,12 @@ def _build_index_status() -> dict[str, Any]:
 
     result = detect_status(root_path, metadata)
 
+    # If watch is active, state.json has authority for indexing/error
+    if watch_status in ("indexing", "error"):
+        result_status = watch_status
+    else:
+        result_status = result.status
+
     stats = {"files": 0, "symbols": 0, "edges": 0}
     if _store is not None:
         nodes = _store.all_nodes()
@@ -417,8 +434,8 @@ def _build_index_status() -> dict[str, Any]:
             "edges": _store.edge_count(),
         }
 
-    return {
-        "status": result.status,
+    status_block = {
+        "status": result_status,
         "indexed_at": result.indexed_at,
         "changed_files": result.changed_files[:20],
         "added_files": result.added_files[:20],
@@ -426,21 +443,41 @@ def _build_index_status() -> dict[str, Any]:
         "index_files": index_files,
         "stats": stats,
     }
+    if watch_status == "error":
+        status_block["last_error"] = state.get("last_error")
+    return status_block
 
 
 def _collect_warnings(
     fuzzy_warning: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect warnings including stale index check (unified format)."""
+    """Collect warnings including stale index check and watch state."""
     warnings: list[dict[str, Any]] = []
     index_status = _build_index_status()
-    if index_status["status"] == "stale":
+    status = index_status["status"]
+
+    if status == "indexing":
+        warnings.append({
+            "type": "indexing_in_progress",
+            "severity": "info",
+            "message": "Index update is in progress. Results may reflect the previous index.",
+        })
+    elif status == "error":
+        last_error = index_status.get("last_error", "Unknown error")
+        warnings.append({
+            "type": "index_update_failed",
+            "severity": "warning",
+            "message": "Last incremental index failed. Results may be outdated.",
+            "evidence": {"error": str(last_error)},
+        })
+    elif status == "stale":
         stale_entry = build_stale_index_warning(
             changed_files=index_status.get("changed_files", []),
             added_files=index_status.get("added_files", []),
             deleted_files=index_status.get("deleted_files", []),
         )
         warnings.append(stale_entry)
+
     if fuzzy_warning:
         warnings.append(build_warning(
             "fuzzy_match",
@@ -2701,14 +2738,40 @@ def repo_summary(
     )
 
 
+def _reload_store() -> None:
+    """Reload the global graph store from disk after a watch sync."""
+    global _store, _cg_dir
+    if _cg_dir is None:
+        return
+    graph_path = _cg_dir / "graph.json"
+    if not graph_path.exists():
+        return
+    try:
+        graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
+        new_store = GraphStore()
+        new_store.load_from_graph(graph)
+        _store = new_store
+    except Exception:
+        pass
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
+    global _watch_manager, _project_root
+
     parser = argparse.ArgumentParser(description="CodeGraph Explorer MCP Server")
     parser.add_argument(
         "--project-root", "-r",
         help="Project root path (auto-detected from CWD if omitted)",
+    )
+    parser.add_argument(
+        "--watch", "-w",
+        action="store_true",
+        default=os.environ.get("CODEGRAPH_WATCH", "") == "1",
+        help="Start file watcher for automatic incremental index sync "
+             "(env: CODEGRAPH_WATCH=1)",
     )
     args = parser.parse_args()
 
@@ -2720,6 +2783,25 @@ def main() -> None:
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Start watch mode if requested
+    if args.watch and _cg_dir is not None:
+        try:
+            from codegraph.indexer.watch import WatchSyncManager
+
+            def _on_sync(result: Any) -> None:
+                if result.status in ("updated", "fresh"):
+                    _reload_store()
+
+            _watch_manager = WatchSyncManager(
+                repo_root=_project_root or str(Path.cwd()),
+                on_sync=_on_sync,
+            )
+            _watch_manager.start()
+            print("Watch mode enabled — index will auto-sync on file changes.",
+                  file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Failed to start watch mode: {e}", file=sys.stderr)
 
     mcp.run(transport="stdio")
 
