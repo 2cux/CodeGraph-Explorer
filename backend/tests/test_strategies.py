@@ -166,10 +166,10 @@ class TestContextStrategy:
             assert len(s.context_focus) > 0
             assert isinstance(s.impact_required, bool)
             assert isinstance(s.tests_required, bool)
-            assert len(s.reading_plan_order) > 0
-            assert "entry" in s.reading_plan_order
+            assert len(s.selection_section_order) > 0
+            assert "entry" in s.selection_section_order
             assert len(s.relation_priority_map) > 0
-            assert len(s.agent_strategy_focus) > 0
+            assert len(s.evidence_focus) > 0
 
     # ── Strategy-specific assertions ────────────────────────────────────
 
@@ -218,37 +218,37 @@ class TestContextStrategy:
         assert s.relation_priority_map.get("caller") == "critical"
 
 
-# ── Strategy-aware reading plan ─────────────────────────────────────────────
+# ── Strategy selection section ordering ──────────────────────────────────────
 
 
-class TestStrategyAwareReadingPlan:
-    """Evidence Pack: reading plans removed. Strategy order lives in relation_priority_map."""
+class TestStrategySelectionSectionOrder:
+    """Evidence Pack: reading plans removed. Section order for context selection lives in selection_section_order."""
 
-    def test_add_feature_reading_plan_order(self):
-        """Strategy reading_plan_order still defines section ordering internally."""
+    def test_add_feature_selection_section_order(self):
+        """Strategy selection_section_order still defines section ordering internally."""
         s = get_strategy(TaskIntent.add_feature)
-        assert isinstance(s.reading_plan_order, list)
-        assert "entry" in s.reading_plan_order
-        assert "models" in s.reading_plan_order
+        assert isinstance(s.selection_section_order, list)
+        assert "entry" in s.selection_section_order
+        assert "models" in s.selection_section_order
 
-    def test_refactor_reading_plan_order(self):
+    def test_refactor_selection_section_order(self):
         """Refactor strategy prioritizes callers over callees."""
         s = get_strategy(TaskIntent.refactor)
-        caller_idx = s.reading_plan_order.index("callers")
-        callee_idx = s.reading_plan_order.index("callees")
+        caller_idx = s.selection_section_order.index("callers")
+        callee_idx = s.selection_section_order.index("callees")
         assert caller_idx < callee_idx
 
-    def test_understand_code_reading_plan_order(self):
+    def test_understand_code_selection_section_order(self):
         """Understand strategy prioritizes callees over callers."""
         s = get_strategy(TaskIntent.understand_code)
-        callee_idx = s.reading_plan_order.index("callees")
-        caller_idx = s.reading_plan_order.index("callers")
+        callee_idx = s.selection_section_order.index("callees")
+        caller_idx = s.selection_section_order.index("callers")
         assert callee_idx < caller_idx
 
-    def test_write_tests_reading_plan_order(self):
+    def test_write_tests_selection_section_order(self):
         """Write tests strategy prioritizes tests after callees."""
         s = get_strategy(TaskIntent.write_tests)
-        assert s.reading_plan_order.index("tests") < s.reading_plan_order.index("low_conf")
+        assert s.selection_section_order.index("tests") < s.selection_section_order.index("low_conf")
 
 
 # ── Intent-aware Context Pack integration ────────────────────────────────────
@@ -545,13 +545,13 @@ class TestComposeStrategy:
         s = compose_strategy(p)
         assert s.flags.needs_impact is True
 
-    def test_reading_plan_order_is_list_of_strings(self):
+    def test_selection_section_order_is_list_of_strings(self):
         from codegraph.context.strategies import analyze_task, compose_strategy
         p = analyze_task("add MFA to login flow")
         s = compose_strategy(p)
-        assert isinstance(s.reading_plan_order, list)
-        assert "entry" in s.reading_plan_order
-        assert "low_conf" in s.reading_plan_order
+        assert isinstance(s.selection_section_order, list)
+        assert "entry" in s.selection_section_order
+        assert "low_conf" in s.selection_section_order
 
     def test_relation_priority_map_is_dict(self):
         from codegraph.context.strategies import analyze_task, compose_strategy
@@ -560,12 +560,12 @@ class TestComposeStrategy:
         assert isinstance(s.relation_priority_map, dict)
         assert "entry_point" in s.relation_priority_map
 
-    def test_agent_strategy_focus_is_string(self):
+    def test_evidence_focus_is_string(self):
         from codegraph.context.strategies import analyze_task, compose_strategy
         p = analyze_task("add MFA to login flow")
         s = compose_strategy(p)
-        assert isinstance(s.agent_strategy_focus, str)
-        assert len(s.agent_strategy_focus) > 0
+        assert isinstance(s.evidence_focus, str)
+        assert len(s.evidence_focus) > 0
 
     # ── Flag-based strategy vs fixed strategy ──────────────────────────
 

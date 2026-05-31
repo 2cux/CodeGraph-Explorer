@@ -191,7 +191,7 @@ backend/codegraph/
 │   ├── models.py   # Context Pack schema
 │   ├── pack_builder.py    # Generation pipeline
 │   ├── ranking.py         # Entry point relevance scoring
-│   ├── reading_plan.py    # Ordered reading plan
+│   ├── reading_plan.py    # Stub (deprecated in Evidence Pack)
 │   └── markdown_exporter.py
 ├── api/            # FastAPI HTTP API
 │   ├── main.py

@@ -73,7 +73,7 @@ class ContextStrategy:
     When created via ``compose_strategy(profile)``, the ``flags``
     attribute carries the computed ``StrategyFlags`` so downstream
     modules can make granular decisions beyond the pre-computed
-    ``reading_plan_order`` and ``relation_priority_map``.
+    ``selection_section_order`` and ``relation_priority_map``.
     """
 
     def __init__(
@@ -84,9 +84,9 @@ class ContextStrategy:
         context_focus: str,
         impact_required: bool,
         tests_required: bool,
-        reading_plan_order: list[str],
+        selection_section_order: list[str],
         relation_priority_map: dict[str, str],
-        agent_strategy_focus: str,
+        evidence_focus: str,
         flags: StrategyFlags | None = None,
     ) -> None:
         self.intent = intent
@@ -94,19 +94,19 @@ class ContextStrategy:
         self.context_focus = context_focus
         self.impact_required = impact_required
         self.tests_required = tests_required
-        self.reading_plan_order = reading_plan_order
+        self.selection_section_order = selection_section_order
         self.relation_priority_map = relation_priority_map
-        self.agent_strategy_focus = agent_strategy_focus
+        self.evidence_focus = evidence_focus
 
         if flags is not None:
             self.flags = flags
         else:
             # Build default flags from strategy attributes for backward compat
-            callee_pos = reading_plan_order.index("callees") if "callees" in reading_plan_order else 99
-            caller_pos = reading_plan_order.index("callers") if "callers" in reading_plan_order else 99
-            model_pos = reading_plan_order.index("models") if "models" in reading_plan_order else 99
-            test_pos = reading_plan_order.index("tests") if "tests" in reading_plan_order else 99
-            low_conf_pos = reading_plan_order.index("low_conf") if "low_conf" in reading_plan_order else 99
+            callee_pos = selection_section_order.index("callees") if "callees" in selection_section_order else 99
+            caller_pos = selection_section_order.index("callers") if "callers" in selection_section_order else 99
+            model_pos = selection_section_order.index("models") if "models" in selection_section_order else 99
+            test_pos = selection_section_order.index("tests") if "tests" in selection_section_order else 99
+            low_conf_pos = selection_section_order.index("low_conf") if "low_conf" in selection_section_order else 99
 
             self.flags = StrategyFlags(
                 needs_impact=impact_required,
@@ -124,7 +124,7 @@ class ContextStrategy:
 
 
 # ── Strategy definitions ────────────────────────────────────────────────────
-# reading_plan_order keys:
+# selection_section_order keys:
 #   "entry"   — entry points (always first)
 #   "callers" — upstream callers
 #   "callees" — downstream callees
@@ -154,7 +154,7 @@ _STRATEGY_WRITE_TESTS = _register(ContextStrategy(
     context_focus="Target symbol + dependencies + existing test patterns + suggested tests",
     impact_required=False,
     tests_required=True,
-    reading_plan_order=["entry", "callees", "tests", "models", "config", "store", "callers", "low_conf"],
+    selection_section_order=["entry", "callees", "tests", "models", "config", "store", "callers", "low_conf"],
     relation_priority_map={
         "test": "critical",
         "callee": "high",
@@ -163,7 +163,7 @@ _STRATEGY_WRITE_TESTS = _register(ContextStrategy(
         "config": "medium",
         "store": "low",
     },
-    agent_strategy_focus="Prioritize test coverage. Focus on existing test patterns and suggest new tests for uncovered paths.",
+    evidence_focus="Test coverage evidence — existing test patterns, naming conventions, uncovered paths.",
 ))
 
 # ── 2. fix_bug ─────────────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ _STRATEGY_FIX_BUG = _register(ContextStrategy(
     context_focus="Suspected target + error path + callers (who triggers) + callees + tests",
     impact_required=True,
     tests_required=True,
-    reading_plan_order=["entry", "callers", "callees", "tests", "models", "config", "store", "low_conf"],
+    selection_section_order=["entry", "callers", "callees", "tests", "models", "config", "store", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "caller": "high",
@@ -185,7 +185,7 @@ _STRATEGY_FIX_BUG = _register(ContextStrategy(
         "config": "medium",
         "store": "low",
     },
-    agent_strategy_focus="Focus on the error path. Trace callers to understand triggers, then callees to find the root cause. Verify with tests.",
+    evidence_focus="Error path evidence — upstream callers (triggers), downstream callees (root cause), related tests.",
 ))
 
 # ── 3. refactor ────────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ _STRATEGY_REFACTOR = _register(ContextStrategy(
     context_focus="All callers + all callees + public API surface + tests",
     impact_required=True,
     tests_required=True,
-    reading_plan_order=["entry", "callers", "callees", "models", "config", "tests", "store", "low_conf"],
+    selection_section_order=["entry", "callers", "callees", "models", "config", "tests", "store", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "caller": "critical",
@@ -207,7 +207,7 @@ _STRATEGY_REFACTOR = _register(ContextStrategy(
         "config": "medium",
         "store": "medium",
     },
-    agent_strategy_focus="Refactoring requires full caller/callee awareness. Every upstream consumer must be checked. Tests are the safety net.",
+    evidence_focus="Full caller/callee evidence — upstream consumers, downstream dependencies, related tests as safety net.",
 ))
 
 # ── 4. analyze_impact ──────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ _STRATEGY_ANALYZE_IMPACT = _register(ContextStrategy(
     context_focus="Callers + callees + affected files + risk assessment",
     impact_required=True,
     tests_required=False,
-    reading_plan_order=["entry", "callers", "callees", "models", "config", "tests", "store", "low_conf"],
+    selection_section_order=["entry", "callers", "callees", "models", "config", "tests", "store", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "caller": "critical",
@@ -229,7 +229,7 @@ _STRATEGY_ANALYZE_IMPACT = _register(ContextStrategy(
         "test": "medium",
         "store": "medium",
     },
-    agent_strategy_focus="Map the full blast radius. Prioritize upstream callers (who breaks) and downstream callees (what breaks).",
+    evidence_focus="Blast radius evidence — upstream callers (who depends), downstream callees (what is affected).",
 ))
 
 # ── 5. review_code ─────────────────────────────────────────────────────────
@@ -241,7 +241,7 @@ _STRATEGY_REVIEW_CODE = _register(ContextStrategy(
     context_focus="Sensitive paths + risks + tests + low-confidence warnings",
     impact_required=True,
     tests_required=True,
-    reading_plan_order=["entry", "callers", "callees", "tests", "models", "config", "store", "low_conf"],
+    selection_section_order=["entry", "callers", "callees", "tests", "models", "config", "store", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "callee": "high",
@@ -251,7 +251,7 @@ _STRATEGY_REVIEW_CODE = _register(ContextStrategy(
         "config": "high",
         "store": "medium",
     },
-    agent_strategy_focus="Review with scrutiny. Highlight low-confidence edges, sensitive dependencies, and untested paths. Flag risks explicitly.",
+    evidence_focus="Code review evidence — low-confidence edges, sensitive dependencies, untested paths, risk signals.",
 ))
 
 # ── 6. understand_code ─────────────────────────────────────────────────────
@@ -263,7 +263,7 @@ _STRATEGY_UNDERSTAND_CODE = _register(ContextStrategy(
     context_focus="Call flow + summaries + entry points + downstream flow",
     impact_required=False,
     tests_required=False,
-    reading_plan_order=["entry", "callees", "models", "callers", "config", "store", "tests", "low_conf"],
+    selection_section_order=["entry", "callees", "models", "callers", "config", "store", "tests", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "callee": "high",
@@ -273,7 +273,7 @@ _STRATEGY_UNDERSTAND_CODE = _register(ContextStrategy(
         "test": "low",
         "store": "low",
     },
-    agent_strategy_focus="Explain the flow clearly. Start from entry points, trace the downstream call chain. Summarize rather than dumping all source.",
+    evidence_focus="Code flow evidence — entry points, downstream call chain, symbol summaries (not full source).",
 ))
 
 # ── 7. generate_docs ───────────────────────────────────────────────────────
@@ -285,7 +285,7 @@ _STRATEGY_GENERATE_DOCS = _register(ContextStrategy(
     context_focus="Public APIs + summaries + examples + type signatures",
     impact_required=False,
     tests_required=False,
-    reading_plan_order=["entry", "callees", "models", "config", "callers", "store", "tests", "low_conf"],
+    selection_section_order=["entry", "callees", "models", "config", "callers", "store", "tests", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "callee": "high",
@@ -295,7 +295,7 @@ _STRATEGY_GENERATE_DOCS = _register(ContextStrategy(
         "test": "low",
         "store": "low",
     },
-    agent_strategy_focus="Focus on public API surface. Collect signatures, docstrings, and type information. Generate readable documentation.",
+    evidence_focus="Public API evidence — signatures, docstrings, type information for documentation generation.",
 ))
 
 # ── 8. add_feature ─────────────────────────────────────────────────────────
@@ -307,7 +307,7 @@ _STRATEGY_ADD_FEATURE = _register(ContextStrategy(
     context_focus="Entry point + service + model/config + persistence + tests",
     impact_required=True,
     tests_required=True,
-    reading_plan_order=["entry", "callees", "models", "config", "store", "callers", "tests", "low_conf"],
+    selection_section_order=["entry", "callees", "models", "config", "store", "callers", "tests", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "callee": "high",
@@ -317,7 +317,7 @@ _STRATEGY_ADD_FEATURE = _register(ContextStrategy(
         "test": "high",
         "caller": "medium",
     },
-    agent_strategy_focus="Plan the feature addition. Understand the service layer, data models, config, and persistence. Check existing tests and write new ones.",
+    evidence_focus="Feature addition evidence — service layer, data models, config, persistence, existing tests.",
 ))
 
 # ── 9. modify_existing_behavior ────────────────────────────────────────────
@@ -329,7 +329,7 @@ _STRATEGY_MODIFY = _register(ContextStrategy(
     context_focus="Target behavior + callers + callees + affected tests",
     impact_required=True,
     tests_required=True,
-    reading_plan_order=["entry", "callers", "callees", "tests", "models", "config", "store", "low_conf"],
+    selection_section_order=["entry", "callers", "callees", "tests", "models", "config", "store", "low_conf"],
     relation_priority_map={
         "entry_point": "critical",
         "caller": "high",
@@ -339,7 +339,7 @@ _STRATEGY_MODIFY = _register(ContextStrategy(
         "config": "medium",
         "store": "medium",
     },
-    agent_strategy_focus="Understand existing behavior before changing it. Trace callers to assess impact and callees to understand dependencies.",
+    evidence_focus="Behavior modification evidence — existing behavior, upstream callers (impact), downstream callees (dependencies).",
 ))
 
 
@@ -768,36 +768,35 @@ def compose_strategy(profile: TaskProfile) -> ContextStrategy:
             flags.focus_callers = True
             flags.focus_callees = True
 
-    # ── Build reading_plan_order from flags ──
-    reading_plan_order: list[str] = ["entry"]
+    # ── Build selection_section_order from flags ──
+    selection_section_order: list[str] = ["entry"]
 
     # Determine caller/callee ordering
     if flags.focus_callers and flags.focus_callees:
-        # Both: callers first for modify-type, callees first for understand-type
         if flags.modify_allowed and not flags.is_read_only:
-            reading_plan_order.extend(["callers", "callees"])
+            selection_section_order.extend(["callers", "callees"])
         else:
-            reading_plan_order.extend(["callees", "callers"])
+            selection_section_order.extend(["callees", "callers"])
     elif flags.focus_callers:
-        reading_plan_order.extend(["callers", "callees"])
+        selection_section_order.extend(["callers", "callees"])
     elif flags.focus_callees:
-        reading_plan_order.extend(["callees", "callers"])
+        selection_section_order.extend(["callees", "callers"])
     else:
-        reading_plan_order.extend(["callers", "callees"])
+        selection_section_order.extend(["callers", "callees"])
 
     # Model/config/store
     if flags.focus_models:
-        reading_plan_order.extend(["models", "config", "store"])
+        selection_section_order.extend(["models", "config", "store"])
     else:
-        reading_plan_order.extend(["models", "config", "store"])
+        selection_section_order.extend(["models", "config", "store"])
 
     # Tests
     if flags.focus_tests or flags.needs_tests:
-        reading_plan_order.append("tests")
+        selection_section_order.append("tests")
     else:
-        reading_plan_order.append("tests")
+        selection_section_order.append("tests")
 
-    reading_plan_order.append("low_conf")
+    selection_section_order.append("low_conf")
 
     # ── Build relation_priority_map from flags ──
     priority_map: dict[str, str] = {
@@ -818,45 +817,29 @@ def compose_strategy(profile: TaskProfile) -> ContextStrategy:
         "store": "high" if flags.focus_models else "medium",
     }
 
-    # ── Build agent_strategy_focus from flags ──
+    # ── Build evidence_focus from flags ──
     focus_parts: list[str] = []
 
     if flags.is_read_only or not flags.modify_allowed:
-        focus_parts.append(
-            "IMPORTANT: This is a read-only task — do NOT modify any source code."
-        )
+        focus_parts.append("Read-only task: no source modifications permitted.")
     if flags.preserve_behavior:
-        focus_parts.append(
-            "IMPORTANT: Preserve existing behavior. All existing tests must continue to pass unchanged."
-        )
+        focus_parts.append("Behavior-preserving: all existing tests must pass unchanged.")
     if flags.needs_impact:
-        focus_parts.append(
-            "Run impact analysis and review all affected files before making changes."
-        )
+        focus_parts.append("Impact analysis: upstream callers and downstream callees.")
     if flags.focus_callers:
-        focus_parts.append(
-            "Prioritize upstream callers — understand every consumer that depends on this code."
-        )
+        focus_parts.append("Upstream callers: every consumer that depends on this code.")
     if flags.focus_callees:
-        focus_parts.append(
-            "Trace downstream callees to understand the full dependency chain."
-        )
+        focus_parts.append("Downstream callees: full dependency chain trace.")
     if flags.focus_models:
-        focus_parts.append(
-            "Review data models, configuration, and persistence layers for required changes."
-        )
+        focus_parts.append("Data layer: models, configuration, persistence evidence.")
     if flags.focus_tests:
-        focus_parts.append(
-            "Focus on test coverage — review existing test patterns and write comprehensive tests for uncovered paths."
-        )
+        focus_parts.append("Test coverage: existing test patterns and untested paths.")
     elif flags.needs_tests:
-        focus_parts.append(
-            "Update related tests to cover the changes."
-        )
+        focus_parts.append("Tests: related test coverage evidence.")
 
     # Fall back to the base strategy's focus if flags don't produce one
     base_strategy = get_strategy(intent)
-    agent_focus = " ".join(focus_parts) if focus_parts else base_strategy.agent_strategy_focus
+    evidence_focus = " ".join(focus_parts) if focus_parts else base_strategy.evidence_focus
 
     # Build context_focus string
     focus_areas: list[str] = []
@@ -876,8 +859,8 @@ def compose_strategy(profile: TaskProfile) -> ContextStrategy:
         context_focus=context_focus,
         impact_required=flags.needs_impact,
         tests_required=flags.needs_tests,
-        reading_plan_order=reading_plan_order,
+        selection_section_order=selection_section_order,
         relation_priority_map=priority_map,
-        agent_strategy_focus=agent_focus,
+        evidence_focus=evidence_focus,
         flags=flags,
     )

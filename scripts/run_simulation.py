@@ -157,18 +157,18 @@ def main() -> None:
         pack_id = ctx_result.get("pack_id", "?")
         entry_count = len(ctx_result.get("entry_points", []))
         related_count = len(ctx_result.get("related_symbols", []))
-        reading_steps = len(ctx_result.get("reading_plan", []))
+        selected_count = len(ctx_result.get("selected_context", []))
         risk_level = ctx_result.get("impact", {}).get("risk", {}).get("level", "?")
-        warnings = ctx_result.get("agent_instructions", {}).get("warnings", [])
+        warnings = ctx_result.get("warnings", [])
 
-        print(f"    Pack ID:       {pack_id}")
-        print(f"    Entry Points:  {entry_count}")
-        print(f"    Related:       {related_count}")
-        print(f"    Reading Plan:  {reading_steps} steps")
-        print(f"    Risk Level:    {risk_level}")
+        print(f"    Pack ID:         {pack_id}")
+        print(f"    Entry Points:    {entry_count}")
+        print(f"    Related:         {related_count}")
+        print(f"    Selected Context:{selected_count} items")
+        print(f"    Risk Level:      {risk_level}")
         if warnings:
             for w in warnings:
-                print(f"    Warning:       {w}")
+                print(f"    Warning:         {w}")
 
         if ctx_result.get("entry_points"):
             print()
@@ -176,11 +176,10 @@ def main() -> None:
                 print(f"      [{ep['score']:.2f}] {ep['symbol_id']}")
                 print(f"             {ep['reason']}")
 
-        if ctx_result.get("reading_plan"):
+        if ctx_result.get("selected_context"):
             print()
-            for step in ctx_result["reading_plan"][:4]:
-                print(f"      Step {step['step']}: {step['target']}")
-                print(f"             {step['reason']}")
+            for sc in ctx_result["selected_context"][:4]:
+                print(f"      [{sc.get('priority', '?')}] {sc.get('symbol_id', sc.get('context_id', '?'))} ({sc.get('relation', '?')})")
 
         # Print export paths
         exports = ctx_result.get("exports", {})

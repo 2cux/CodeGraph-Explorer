@@ -201,7 +201,7 @@ export interface ContextPackResponse {
     affected_files: { file_path: string; reason: string; priority: string }[];
     risk: { level: string; reasons: string[] };
   };
-  recommended_context: {
+  selected_context: {
     context_id: string;
     type: string;
     symbol_id: string;
@@ -209,21 +209,23 @@ export interface ContextPackResponse {
     line_start: number;
     line_end: number;
     priority: string;
-    reason: string;
+    relation: string;
+    selection_reason: string;
     content: string;
     estimated_tokens: number;
+    content_mode: string;
+    confidence: number;
+    confidence_level: string;
+    resolution: string;
+    evidence: string;
   }[];
-  reading_plan: {
-    step: number;
-    action: string;
-    target: string;
-    reason: string;
-  }[];
-  agent_instructions: {
-    summary: string;
-    recommended_strategy: string[];
-    warnings: string[];
+  tests: {
+    existing_tests: { source: string; test_file: string; test_name: string; reason: string; confidence: number }[];
+    suggested_tests: { source: string; test_file: string; test_name: string; reason: string; confidence: number }[];
   };
+  warnings: string[];
+  pack_notes: { type: string; message: string; details: Record<string, unknown> }[];
+  token_budget: Record<string, number>;
   exports: {
     markdown_path: string;
     json_path: string;

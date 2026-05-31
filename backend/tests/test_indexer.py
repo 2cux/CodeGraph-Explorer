@@ -2712,14 +2712,14 @@ class TestConfidenceLevelInContextPack:
                 )
 
     def test_low_confidence_triggers_warnings(self):
-        """Low confidence edges produce warnings in agent_instructions."""
+        """Low confidence edges produce warnings in the Evidence Pack."""
         pack = self._build_pack()
         # Check that warnings exist if low-confidence items are present
         low_conf_edges = [e for e in pack.call_graph.edges if e.confidence < 0.60]
         low_conf_symbols = [rs for rs in pack.related_symbols if rs.confidence < 0.60]
         has_low_conf = len(low_conf_edges) > 0 or len(low_conf_symbols) > 0
         if has_low_conf:
-            assert len(pack.agent_instructions.warnings) > 0, (
+            assert len(pack.warnings) > 0, (
                 "Should have warnings when low-confidence items exist"
             )
 

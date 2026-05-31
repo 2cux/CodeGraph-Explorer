@@ -740,23 +740,27 @@ def build_context_pack(
                 "total_edges": len(pack_dict.get("call_graph", {}).get("edges", [])),
             },
             "impact": pack_dict.get("impact"),
-            "recommended_context": [
+            "selected_context": [
                 {
-                    "context_id": rc.get("context_id"),
-                    "symbol_id": rc.get("symbol_id"),
-                    "priority": rc.get("priority"),
-                    "content_mode": rc.get("content_mode"),
-                    "context_score": rc.get("context_score"),
-                    "reason": rc.get("reason"),
+                    "context_id": sc.get("context_id"),
+                    "symbol_id": sc.get("symbol_id"),
+                    "type": sc.get("type"),
+                    "priority": sc.get("priority"),
+                    "content_mode": sc.get("content_mode"),
+                    "relation": sc.get("relation"),
+                    "selection_reason": sc.get("selection_reason"),
+                    "confidence": sc.get("confidence"),
+                    "confidence_level": sc.get("confidence_level"),
+                    "resolution": sc.get("resolution"),
+                    "evidence": sc.get("evidence"),
+                    "estimated_tokens": sc.get("estimated_tokens"),
+                    "context_score": sc.get("context_score"),
                 }
-                for rc in pack_dict.get("recommended_context", [])
+                for sc in pack_dict.get("selected_context", [])
             ],
             "related_tests": pack_dict.get("related_tests", []),
             "suggested_tests": pack_dict.get("suggested_tests", []),
-            "reading_plan": pack_dict.get("reading_plan"),
-            "agent_instructions": pack_dict.get("agent_instructions"),
             "token_budget": pack_dict.get("token_budget", {}),
-            "optional_context_count": len(pack_dict.get("optional_context", [])),
         }
     elif mode == "markdown":
         # Export to markdown and return the file path

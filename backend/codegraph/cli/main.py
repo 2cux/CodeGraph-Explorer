@@ -616,7 +616,7 @@ def context(
         help="Output pack JSON to stdout",
     ),
 ) -> None:
-    """Generate a Context Pack for a natural language task.
+    """Generate an Evidence Pack for a natural language task.
 
     This is the core command of CodeGraph Explorer. It analyzes the
     indexed code graph and produces a task-aware context package
@@ -642,17 +642,15 @@ def context(
         typer.echo(json.dumps(json.loads(pack.model_dump_json(exclude_none=True)), indent=2))
         return
 
-    typer.echo(f"Context Pack: {pack.pack_id}")
+    typer.echo(f"Evidence Pack: {pack.pack_id}")
     typer.echo(f"  Task:         {pack.task.raw_request[:60]}{'...' if len(pack.task.raw_request) > 60 else ''}")
     typer.echo(f"  Intent:       {pack.task.intent.value}")
     typer.echo(f"  Entry Points: {len(pack.entry_points)}")
     typer.echo(f"  Related:      {len(pack.related_symbols)}")
     typer.echo(f"  Call Graph:   {len(pack.call_graph.nodes)} nodes, {len(pack.call_graph.edges)} edges")
-    typer.echo(f"  Reading Plan: {len(pack.reading_plan)} steps")
+    typer.echo(f"  Selected Ctx: {len(pack.selected_context)} items")
     tb = pack.token_budget
     typer.echo(f"  Token Budget: {tb.get('used_tokens', 0)}/{tb.get('max_tokens', 0)} used")
-    if pack.optional_context:
-        typer.echo(f"  Optional:     {len(pack.optional_context)} low-confidence items")
     if pack.impact.changed_symbol:
         risk_level = pack.impact.risk.level.value if hasattr(pack.impact.risk.level, 'value') else pack.impact.risk.level
         typer.echo(f"  Risk Level:   {risk_level}")
@@ -669,15 +667,15 @@ def context(
             typer.echo(f"         {ep.reason}")
         typer.echo()
 
-    if pack.reading_plan:
-        typer.echo("Recommended Reading Order:")
-        for step in pack.reading_plan[:6]:
-            typer.echo(f"  {step.step}. {step.target}")
+    if pack.selected_context:
+        typer.echo("Selected Context:")
+        for sc in pack.selected_context[:6]:
+            typer.echo(f"  [{sc.priority}] {sc.symbol_id or sc.context_id} ({sc.relation})")
         typer.echo()
 
-    if pack.agent_instructions.warnings:
+    if pack.warnings:
         typer.echo("Warnings:")
-        for w in pack.agent_instructions.warnings:
+        for w in pack.warnings:
             typer.echo(f"  ! {w}")
 
 

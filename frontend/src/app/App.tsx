@@ -5,7 +5,6 @@ import { Topbar, type IndexStatus } from "./components/Topbar";
 import { GraphCanvas, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "./components/GraphCanvas";
 import { RightInspector, type InspectorTarget, type InspectorMode } from "./components/RightInspector";
 import { ContextPackOverlay, type ContextPackStatus } from "./components/ContextPackOverlay";
-import { ReadingPlan, type ReadingPlanStatus } from "./components/ReadingPlan";
 import { Library } from "./components/Library";
 import { Toast, type ToastData } from "./components/Toast";
 
@@ -20,9 +19,6 @@ export default function App() {
   const [packStatus, setPackStatus] = useState<ContextPackStatus>("empty");
   const [packData, setPackData] = useState<{} | null>(null);
   const [packTask, setPackTask] = useState("");
-  const [planOpen, setPlanOpen] = useState(false);
-  const [planStatus, setPlanStatus] = useState<ReadingPlanStatus>("ready");
-  const [activeStep, setActiveStep] = useState(0);
   const [canvasState, setCanvasState] = useState<CanvasState>("loading");
   const [indexStatus, setIndexStatus] = useState<IndexStatus>("missing");
   const [indexDetails, setIndexDetails] = useState<StatusResponse | null>(null);
@@ -49,7 +45,6 @@ export default function App() {
   }, [theme]);
 
   const showSidePanels = canvasState === "focused" || canvasState === "overview";
-  const planVisible = packStatus === "generated";
 
   // Load dashboard stats on mount
   useEffect(() => {
@@ -208,7 +203,7 @@ export default function App() {
     }
   }, [handleSelectNode, showToast]);
 
-  // Generate context pack
+  // Generate evidence pack
   const handleGeneratePack = useCallback(async (task: string) => {
     if (!task.trim()) return;
     setPackTask(task);
@@ -219,11 +214,10 @@ export default function App() {
       const result = await api.context.generate(task);
       setPackData(result);
       setPackStatus("generated");
-      setPlanStatus((result as { reading_plan?: unknown[] }).reading_plan?.length ? "ready" : "empty");
-      showToast("info", `Context pack generated: ${result.pack_id}`);
+      showToast("info", `Evidence pack generated: ${result.pack_id}`);
     } catch {
       setPackStatus("error");
-      showToast("error", "Failed to generate context pack.");
+      showToast("error", "Failed to generate evidence pack.");
     }
   }, [showToast]);
 
@@ -273,15 +267,6 @@ export default function App() {
                   task={packTask}
                   onRetry={() => handleGeneratePack(packTask)}
                 />
-                <ReadingPlan
-                  visible={planVisible}
-                  open={planOpen}
-                  onToggle={() => setPlanOpen((v) => !v)}
-                  status={planStatus}
-                  activeStep={activeStep}
-                  steps={(packData as { reading_plan?: { step?: number; action?: string; target?: string; reason?: string }[] })?.reading_plan}
-                  onStepClick={setActiveStep}
-                />
               </>
             )}
             <StateSwitcher
@@ -294,8 +279,6 @@ export default function App() {
               }}
               packStatus={packStatus}
               setPackStatus={setPackStatus}
-              planStatus={planStatus}
-              setPlanStatus={setPlanStatus}
               indexStatus={indexStatus}
               setIndexStatus={setIndexStatus}
               onToast={showToast}
@@ -320,20 +303,18 @@ export default function App() {
 
 function StateSwitcher({
   canvas, setCanvas, inspector, setInspector,
-  packStatus, setPackStatus, planStatus, setPlanStatus,
+  packStatus, setPackStatus,
   indexStatus, setIndexStatus, onToast,
 }: {
   canvas: CanvasState; setCanvas: (s: CanvasState) => void;
   inspector: InspectorMode | "auto"; setInspector: (m: InspectorMode | "auto") => void;
   packStatus: ContextPackStatus; setPackStatus: (s: ContextPackStatus) => void;
-  planStatus: ReadingPlanStatus; setPlanStatus: (s: ReadingPlanStatus) => void;
   indexStatus: IndexStatus; setIndexStatus: (s: IndexStatus) => void;
   onToast: (type: ToastData["type"], message: string, detail?: string) => void;
 }) {
   const canvasOpts: CanvasState[] = ["overview", "focused", "empty", "loading", "error"];
   const inspectorOpts: (InspectorMode | "auto")[] = ["auto", "loading", "error"];
   const packOpts: ContextPackStatus[] = ["empty", "generating", "generated", "error"];
-  const planOpts: ReadingPlanStatus[] = ["ready", "loading", "empty"];
   const indexOpts: IndexStatus[] = ["fresh", "stale", "missing", "indexing", "error"];
 
   return (
@@ -363,15 +344,10 @@ function StateSwitcher({
           <SegBtn key={o} active={packStatus === o} onClick={() => setPackStatus(o)}>{o}</SegBtn>
         ))}
       </Group>
-      <Group label="plan">
-        {planOpts.map((o) => (
-          <SegBtn key={o} active={planStatus === o} onClick={() => setPlanStatus(o)}>{o}</SegBtn>
-        ))}
-      </Group>
       <Group label="toast">
         <SegBtn active={false} onClick={() => onToast("error", "Export failed.", "EXPORT_ERROR · permission denied")}>err</SegBtn>
         <SegBtn active={false} onClick={() => onToast("warning", "Low-confidence edges detected.", "47 edges below 0.7 threshold")}>warn</SegBtn>
-        <SegBtn active={false} onClick={() => onToast("info", "Context pack copied to clipboard.")}>info</SegBtn>
+        <SegBtn active={false} onClick={() => onToast("info", "Evidence pack copied to clipboard.")}>info</SegBtn>
       </Group>
     </div>
   );

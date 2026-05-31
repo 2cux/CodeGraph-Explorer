@@ -16,8 +16,8 @@ interface PackData {
   task?: { raw_request?: string; intent?: string };
   entry_points?: unknown[];
   related_symbols?: unknown[];
-  reading_plan?: unknown[];
-  agent_instructions?: { warnings?: string[] };
+  selected_context?: unknown[];
+  warnings?: string[];
   [key: string]: unknown;
 }
 
@@ -70,7 +70,7 @@ export function ContextPackOverlay({ open, onToggle, onClose, status, onRetry, p
           {open ? <IconChevronDown size={11} /> : <IconChevronRight size={11} />}
         </span>
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--cg-text-primary)", letterSpacing: 0.1 }}>
-          Context Pack
+          Evidence Pack
         </span>
         {status === "generating" && (
           <span style={{ display: "flex", alignItems: "center" }}>
@@ -123,7 +123,7 @@ export function ContextPackOverlay({ open, onToggle, onClose, status, onRetry, p
 function EmptyBody() {
   return (
     <p style={{ margin: 0, fontSize: 11, color: "var(--cg-text-muted)", padding: "3px 0" }}>
-      No context pack generated.
+      No evidence pack generated.
     </p>
   );
 }
@@ -157,7 +157,7 @@ function GeneratedBody({ copied, onCopy, packData, task }: {
   const fileEstimate = Math.ceil((symbolCount * 3) / 5);
   const highCount = symbols.filter((s: any) => (s.confidence ?? 0) >= 0.80).length;
   const lowCount = symbols.filter((s: any) => (s.confidence ?? 0) < 0.60 && (s.confidence ?? 0) > 0).length;
-  const warnings = packData?.agent_instructions?.warnings ?? [];
+  const warnings = (packData?.warnings as string[]) ?? [];
   return (
     <>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>

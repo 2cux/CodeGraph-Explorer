@@ -59,12 +59,6 @@ from codegraph.context.models import (
 )
 from codegraph.context.selection import SelectedContext
 
-# ── Backward-compat aliases ──────────────────────────────────────────
-
-# RecommendedContext was renamed to SelectedContext in Round 4
-RecommendedContext = SelectedContext
-
-
 if TYPE_CHECKING:
     from codegraph.context.strategies import ContextStrategy
 
@@ -96,7 +90,7 @@ def build_reading_plan(
     max_steps=10,
     low_confidence_ids=None,
     strategy=None,
-    recommended_context=None,
+    selected_context=None,
     impact=None,
     related_symbols=None,
     existing_tests=None,
@@ -120,7 +114,7 @@ def build_reading_plan_debug(
     max_steps=10,
     low_confidence_ids=None,
     strategy=None,
-    recommended_context=None,
+    selected_context=None,
     impact=None,
     related_symbols=None,
     existing_tests=None,

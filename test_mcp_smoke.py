@@ -147,7 +147,7 @@ def test_all():
     data = json.loads(result["content"][0]["text"])
     print(f"  OK={data.get('ok')}, pack_id={data.get('data', {}).get('pack_id')}, "
           f"entry_points={len(data.get('data', {}).get('entry_points', []))}, "
-          f"reading_plan_steps={len(data.get('data', {}).get('reading_plan', []))}")
+          f"selected_context_items={len(data.get('data', {}).get('selected_context', []))}")
 
     # Cleanup
     proc.terminate()
