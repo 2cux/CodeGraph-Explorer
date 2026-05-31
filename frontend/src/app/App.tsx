@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, lastApiError } from "../api";
 import type { SearchResult, OverviewResponse, StatusResponse } from "../api";
 import { Topbar, type IndexStatus, type PageTab } from "./components/Topbar";
 import { RightInspector, type InspectorTarget, type InspectorMode, type NodeInspectorData, type EdgeInspectorData } from "./components/RightInspector";
@@ -52,32 +52,41 @@ export default function App() {
   // Load overview on mount
   useEffect(() => {
     async function load() {
+      let statusRes: StatusResponse;
       try {
-        const statusRes = await api.repo.status();
+        statusRes = await api.repo.status();
         setIndexDetails(statusRes);
         if (statusRes.status === "fresh") setIndexStatus("fresh");
         else if (statusRes.status === "stale") setIndexStatus("stale");
         else setIndexStatus("missing");
-      } catch {
+      } catch (e) {
+        // API unreachable or no index
+        if (e instanceof Error && e.name === "ApiConnectionError") {
+          setIndexStatus("error");
+          setCanvasState("error");
+          showToast("error", "Cannot connect to CodeGraph API.", lastApiError || undefined);
+          return;
+        }
         setIndexStatus("missing");
+        setCanvasState("empty");
+        return;
+      }
+
+      if (statusRes!.status === "missing") {
+        setCanvasState("empty");
+        return;
       }
 
       try {
-        setIndexStatus((prev) => prev === "missing" ? "indexing" : prev);
         const ov = await api.graph.overview();
         setOverviewData(ov);
         setCanvasState("overview");
-        const statusRes = await api.repo.status();
-        setIndexDetails(statusRes);
-        if (statusRes.status === "fresh") setIndexStatus("fresh");
-        else if (statusRes.status === "stale") setIndexStatus("stale");
       } catch {
-        setCanvasState("empty");
-        setIndexStatus("missing");
+        setCanvasState("error");
       }
     }
     load();
-  }, []);
+  }, [showToast]);
 
   // Re-index handlers
   const handleReindex = useCallback(async () => {

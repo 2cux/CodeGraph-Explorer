@@ -247,25 +247,65 @@ export interface DashboardStats {
 
 // ── API client ─────────────────────────────────────────────────────────
 
-const BASE = "/api";
+const BASE = (typeof import.meta !== "undefined" && import.meta.env?.VITE_CODEGRAPH_API_URL) || "http://127.0.0.1:8000";
+
+export let lastApiError: string | null = null;
+
+class ApiConnectionError extends Error {
+  constructor() {
+    super(
+      "Cannot connect to CodeGraph API.\n" +
+      "Start it with:\n" +
+      "  codegraph api --root <project_path>"
+    );
+    this.name = "ApiConnectionError";
+  }
+}
 
 async function fetchJSON<T>(path: string, params?: Record<string, string | number>): Promise<T> {
-  const url = new URL(path, window.location.origin);
+  const baseUrl = BASE.endsWith("/") ? BASE.slice(0, -1) : BASE;
+  const url = new URL(baseUrl + path);
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
   }
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`API error ${res.status}: ${res.statusText}`);
+
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    lastApiError = `Cannot connect to CodeGraph API at ${baseUrl}`;
+    throw new ApiConnectionError();
+  }
+
+  if (!res.ok) {
+    lastApiError = `API error ${res.status}: ${res.statusText}`;
+    throw new Error(`API error ${res.status}: ${res.statusText}`);
+  }
+
+  lastApiError = null;
   return res.json();
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}: ${res.statusText}`);
+  const baseUrl = BASE.endsWith("/") ? BASE.slice(0, -1) : BASE;
+  let res: Response;
+  try {
+    res = await fetch(baseUrl + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    lastApiError = `Cannot connect to CodeGraph API at ${baseUrl}`;
+    throw new ApiConnectionError();
+  }
+
+  if (!res.ok) {
+    lastApiError = `API error ${res.status}: ${res.statusText}`;
+    throw new Error(`API error ${res.status}: ${res.statusText}`);
+  }
+
+  lastApiError = null;
   return res.json();
 }
 

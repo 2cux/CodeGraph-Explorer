@@ -80,28 +80,6 @@ function parentDir(path: string): string {
   return parts.slice(0, -1).join("/");
 }
 
-const focusedNodes: Omit<GraphNodeData, "state">[] = [
-  { id: "auth",      x: 360, y: 360, kind: "function",        name: "authenticate",    path: "src/auth.py:42",        confidence: 0.95 },
-  { id: "login",     x: 180, y: 170, kind: "method",          name: "login",           path: "src/api/login.py:24",   confidence: 0.92 },
-  { id: "test_auth", x: 180, y: 540, kind: "test",            name: "test_authenticate",path: "tests/test_auth.py:31", confidence: 0.90 },
-  { id: "token",     x: 570, y: 190, kind: "function",        name: "verify_token",    path: "src/auth.py:104",       confidence: 0.78 },
-  { id: "mfa",       x: 570, y: 340, kind: "class",           name: "MFAForm",         path: "src/ui/mfa.tsx:18",    confidence: 0.70 },
-  { id: "session",   x: 570, y: 500, kind: "method",          name: "Session.create",   path: "src/session.py:67",    confidence: 0.62 },
-  { id: "db",        x: 360, y: 140, kind: "file",            name: "database.py",     path: "src/db.py",            confidence: 0.85 },
-  { id: "jwt",       x: 200, y: 370, kind: "external_symbol", name: "pyjwt.decode",    path: "pyjwt",                confidence: 0.55 },
-];
-
-const focusedEdges: GraphEdgeData[] = [
-  { from: "login",  to: "auth",    label: "calls",      state: "active_flow" },
-  { from: "auth",   to: "token",   label: "calls",      state: "default" },
-  { from: "auth",   to: "jwt",     label: "calls",      state: "low_confidence" },
-  { from: "auth",   to: "session", label: "calls",      state: "default" },
-  { from: "auth",   to: "mfa",     label: "references", state: "default" },
-  { from: "db",     to: "auth",    label: "contains",   state: "dimmed" },
-  { from: "test_auth", to: "auth", label: "tested_by",  state: "default" },
-  { from: "login",  to: "session", label: "calls",      state: "default" },
-];
-
 export interface EdgeIdentity {
   source: string;
   target: string;
@@ -134,9 +112,13 @@ export function GraphCanvas({ state, onSelectNode, onSelectFile, onSelectEdge, n
     );
   }
 
-  // focused state
-  const nodes = propNodes ?? focusedNodes.map((n) => ({ ...n, state: "normal" as NodeState }));
-  const edges = propEdges ?? focusedEdges;
+  // focused state — require real data, no mock fallback
+  const nodes = propNodes;
+  const edges = propEdges;
+
+  if (!nodes || nodes.length === 0) {
+    return <CanvasWrapper><EmptyState /></CanvasWrapper>;
+  }
 
   const getNode = (id: string) => nodes.find((n) => n.id === id);
   const edgeKey = (e: GraphEdgeData) => `${e.from}→${e.to}`;
@@ -153,7 +135,7 @@ export function GraphCanvas({ state, onSelectNode, onSelectFile, onSelectEdge, n
         <rect width={CANVAS_W} height={CANVAS_H} fill="url(#grid)" />
 
         {/* Edges */}
-        {edges.map((e) => {
+        {edges?.map((e) => {
           const from = getNode(e.from);
           const to = getNode(e.to);
           if (!from || !to) return null;
@@ -224,7 +206,7 @@ export function GraphCanvas({ state, onSelectNode, onSelectFile, onSelectEdge, n
         ))}
 
         {/* Halo on hovered node's edges */}
-        {hoveredNode && edges.filter((e) => e.from === hoveredNode || e.to === hoveredNode).map((e) => {
+        {hoveredNode && edges?.filter((e) => e.from === hoveredNode || e.to === hoveredNode).map((e) => {
           const from = getNode(e.from);
           const to = getNode(e.to);
           if (!from || !to) return null;

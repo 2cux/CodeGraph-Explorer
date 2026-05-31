@@ -751,6 +751,67 @@ def context(
 
 
 @app.command()
+def api(
+    root: str = typer.Option(
+        ..., "--root", "-r",
+        help="Project root path (required)",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Bind address",
+    ),
+    port: int = typer.Option(
+        8000, "--port", "-p",
+        help="API server port",
+    ),
+) -> None:
+    """Start the CodeGraph API server (backend only, no frontend).
+
+    Reads the .codegraph index from the specified project root.
+    Use 'codegraph dashboard' to start both API + frontend together.
+
+    Examples:
+        codegraph api --root .
+        codegraph api --root /path/to/project --port 8000
+    """
+    import subprocess
+    import sys
+
+    root_path = Path(root).resolve()
+    if not root_path.is_dir():
+        typer.echo(f"Error: {root} is not a valid directory", err=True)
+        raise typer.Exit(1)
+
+    cg_dir = root_path / ".codegraph"
+    if not (cg_dir / "graph.json").exists():
+        typer.echo("No CodeGraph index found. Run: codegraph init")
+
+    typer.echo(f"CodeGraph API starting at http://{host}:{port}")
+    typer.echo(f"Project: {root_path}")
+    typer.echo(f"API docs: http://{host}:{port}/docs")
+    typer.echo("Press Ctrl+C to stop.\n")
+
+    env = {
+        **os.environ,
+        "CODEGRAPH_PROJECT_ROOT": str(root_path),
+    }
+
+    args = [
+        sys.executable, "-m", "uvicorn", "codegraph.api.main:app",
+        "--host", host, "--port", str(port),
+        "--log-level", "warning",
+    ]
+
+    try:
+        subprocess.run(args, env=env)
+    except KeyboardInterrupt:
+        typer.echo("\nShutting down...")
+
+
+# ── dashboard command ─────────────────────────────────────────────────
+
+
+@app.command()
 def dashboard(
     root: str = typer.Option(
         None, "--root", "-r",
@@ -795,12 +856,11 @@ def dashboard(
     # ── Start server in a subprocess ─────────────────────────────────
     typer.echo(f"Starting CodeGraph Dashboard at http://{host}:{port} ...")
 
-    env = dict(
-        _ROOT_DIR=str(Path.cwd()),
-        _DEV_MODE="1" if dev else "0",
-    )
+    env: dict[str, str] = {
+        "_DEV_MODE": "1" if dev else "0",
+    }
     if root:
-        env["_PROJECT_ROOT"] = str(Path(root).resolve())
+        env["CODEGRAPH_PROJECT_ROOT"] = str(Path(root).resolve())
 
     merged_env = {**os.environ, **env}
 

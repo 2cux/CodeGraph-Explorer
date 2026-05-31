@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from codegraph.api.deps import get_store, get_commit_hash, get_codegraph_dir
+from codegraph.api.deps import get_store, get_commit_hash, get_codegraph_dir, get_project_root
 from codegraph.graph.store import GraphStore
 from codegraph.indexer.graph_builder import build_index, build_index_from_paths
 from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
@@ -69,9 +69,10 @@ async def get_repo_summary(store: GraphStore = Depends(get_store)):
     low_conf = sum(1 for e in edges if e.confidence < 0.6)
     low_conf_ratio = low_conf / len(edges) if edges else 0.0
 
+    project_root = get_project_root()
     return RepoSummaryResponse(
-        name=Path.cwd().name,
-        root_path=str(Path.cwd()),
+        name=project_root.name,
+        root_path=str(project_root),
         file_count=len({n.file_path for n in nodes}),
         symbol_count=len(nodes),
         function_count=function_count,
@@ -89,9 +90,10 @@ async def get_repo_status():
     cg_dir = get_codegraph_dir()
     metadata_path = cg_dir / "metadata.json"
     if not metadata_path.exists():
+        project_root = get_project_root()
         return StatusResponse(
             status="missing",
-            recommendation="Run codegraph init <project>",
+            recommendation=f"Run: codegraph init {project_root}",
         )
 
     store = FileStore(cg_dir)
@@ -119,7 +121,7 @@ async def trigger_indexing(body: IndexRequest | None = None):
 
     mode = body.mode if body else "force"
     cg_dir = get_codegraph_dir()
-    root_path = cg_dir.parent
+    root_path = get_project_root()
     store = FileStore(cg_dir)
 
     if mode == "incremental":

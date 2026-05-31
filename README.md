@@ -234,13 +234,68 @@ codegraph configure remove all
 
 ---
 
-## 一键运行 Demo
+## 启动 Dashboard
+
+Dashboard 需要两个进程：后端 API 服务 + 前端开发服务器。
+
+### Terminal 1：初始化项目并启动 API
 
 ```bash
-make demo
+cd your-project
+codegraph init
+codegraph api --root . --host 127.0.0.1 --port 8000
 ```
 
-如果项目还没有 `Makefile`，可以添加：
+API 启动后会显示：
+```
+CodeGraph API starting at http://127.0.0.1:8000
+Project: /path/to/your-project
+API docs: http://127.0.0.1:8000/docs
+```
+
+如果项目尚未初始化索引，API 会提示：
+```
+No CodeGraph index found. Run: codegraph init
+```
+
+### Terminal 2：启动前端开发服务器
+
+```bash
+cd CodeGraph-Explorer/frontend
+npm install
+npm run dev
+```
+
+前端启动后在浏览器打开 http://localhost:5173，Dashboard 会自动连接到 `http://127.0.0.1:8000` 的 API。
+
+如需指定不同的 API 地址，设置环境变量：
+```bash
+VITE_CODEGRAPH_API_URL=http://127.0.0.1:8000 npm run dev
+```
+
+### Dashboard 首屏行为
+
+1. 页面加载时请求 `/api/repo/status` 检查索引状态
+2. 如果 `status=fresh`：加载仓库概览和局部图谱
+3. 如果 `status=stale`：展示图谱，同时显示过期警告
+4. 如果 `status=missing`：提示运行 `codegraph init`
+5. 如果 API 连接失败：显示连接错误和启动命令
+
+### 一键启动（后端 + 前端一体）
+
+也可以使用 `codegraph dashboard` 命令在同一端口启动 API + 构建好的前端：
+
+```bash
+cd your-project
+codegraph init
+codegraph dashboard --root .
+```
+
+访问 http://localhost:8765 即可。此模式不需要单独启动前端开发服务器。
+
+---
+
+## Makefile（可选）
 
 ```makefile
 install:
@@ -265,6 +320,9 @@ status:
 dashboard:
 	cd frontend && npm install && npm run dev
 
+api:
+	codegraph api --root examples/demo_python_project --port 8000
+
 benchmark:
 	python -m tests.agent_benchmark.runner --mode baseline
 	python -m tests.agent_benchmark.runner --mode codegraph
@@ -272,12 +330,6 @@ benchmark:
 
 demo: install configure init-demo status
 	codegraph context "add MFA to login flow"
-```
-
-如果要同时体验 Dashboard：
-
-```bash
-make dashboard
 ```
 
 ---

@@ -33,7 +33,9 @@ def build_server_config(
     """Build a single MCP server config entry for codegraph.
 
     Args:
-        root: If set, adds ``env.CODEGRAPH_PROJECT_ROOT`` to the config.
+        root: If set, adds ``env.CODEGRAPH_PROJECT_ROOT`` to pin the server
+              to a specific project. When omitted, the MCP server auto-detects
+              the project by walking up from the current working directory.
         python_command: Override the Python interpreter path.
 
     Returns:
@@ -43,8 +45,8 @@ def build_server_config(
         "command": python_command or sys.executable,
         "args": ["-m", "codegraph.mcp_server"],
     }
-    project_root = root if root else str(Path.cwd().resolve())
-    entry["env"] = {"CODEGRAPH_PROJECT_ROOT": project_root}
+    if root:
+        entry["env"] = {"CODEGRAPH_PROJECT_ROOT": str(Path(root).resolve())}
     return entry
 
 
