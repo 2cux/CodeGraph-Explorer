@@ -1,11 +1,18 @@
 install:
 	pip install -e "backend[mcp,watch]"
 
+update:
+	git pull
+	pip install -e "backend[mcp,watch]"
+
+uninstall:
+	pip uninstall -y codegraph-explorer
+
 configure:
 	codegraph configure all
 
 init-demo:
-	codegraph init ./examples/demo_python_project
+	cd examples/demo_python_project && codegraph init
 
 status:
 	codegraph status

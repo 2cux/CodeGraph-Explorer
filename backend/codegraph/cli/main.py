@@ -261,6 +261,48 @@ def index_cmd(
     init(root=root, force=force, incremental=incremental, no_sqlite=no_sqlite)
 
 
+@app.command()
+def update() -> None:
+    """Update CodeGraph Explorer to the latest version.
+
+    Re-installs the 'codegraph' package from the current source directory,
+    preserving existing MCP configurations and index files.
+    """
+    import subprocess
+    import sys
+
+    # Find the package root (where pyproject.toml lives)
+    try:
+        import codegraph
+        pkg_dir = Path(__import__('codegraph').__file__).parent.parent.resolve()
+    except Exception:
+        typer.echo("Error: Could not locate codegraph package directory.", err=True)
+        raise typer.Exit(1)
+
+    if not (pkg_dir / "pyproject.toml").exists():
+        typer.echo(
+            "Error: codegraph does not appear to be installed in editable mode.\n"
+            "To update, re-clone and re-install:\n"
+            "  git clone <repo-url>\n"
+            "  cd CodeGraph-Explorer\n"
+            "  pip install -e \"backend[mcp,watch]\"",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    typer.echo(f"Updating codegraph from {pkg_dir} ...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-e", f"{pkg_dir}[mcp,watch]"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        typer.echo("CodeGraph Explorer updated successfully.")
+        typer.echo("MCP configurations and index files are preserved.")
+    else:
+        typer.echo(f"Update failed:\n{result.stderr}", err=True)
+        raise typer.Exit(1)
+
+
 def _run_incremental_index(
     root_path: Path,
     output_dir: Path,

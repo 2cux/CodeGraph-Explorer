@@ -161,60 +161,75 @@ Dashboard 不是花哨大屏，也不是 Agent 计划器。
 
 ## Quick Start
 
-### 1. 安装
+### 1. 安装（首次安装）
 
 ```bash
 git clone <repo-url>
 cd CodeGraph-Explorer
-
 pip install -e "backend[mcp,watch]"
 ```
 
-### 2. 配置 MCP Server
-
-`codegraph configure` 会将当前目录的绝对路径写入 `CODEGRAPH_PROJECT_ROOT`，Claude Code / Cursor 会自动使用该索引。
-
-首次配置：
+然后配置 MCP Server：
 
 ```bash
-codegraph configure all
+codegraph configure all        # 同时配置 Claude Code 和 Cursor
+codegraph configure claude     # 仅配置 Claude Code
+codegraph configure cursor     # 仅配置 Cursor
 ```
 
-如果只使用某一个编辑器：
-```bash
-codegraph configure claude    # 仅配置 Claude Code
-codegraph configure cursor    # 仅配置 Cursor
-```
-
-如果已有旧配置需要更新 `CODEGRAPH_PROJECT_ROOT`：
-```bash
-codegraph configure all --force
-```
-
-查看当前配置状态：
-```bash
-codegraph configure show
-```
-
-### 3. 初始化本地索引
-
-在项目根目录运行 `init` 命令，扫描代码库、解析 AST 并构建代码图谱索引。一次初始化完成本地索引，MCP Server 和 Dashboard 可直接使用。
+在项目目录中初始化本地索引：
 
 ```bash
 cd your-project
 codegraph init
 ```
 
-### 4. 查看索引状态
+查看索引状态：
 
 ```bash
 codegraph status
 ```
 
-### 5. 可选：启动 Watch Mode
+可选：启动 Watch Mode 自动同步文件变更。
 
 ```bash
 codegraph watch ./examples/demo_python_project
+```
+
+### 2. 更新（获取最新版本）
+
+GitHub 安装方式：
+
+```bash
+cd CodeGraph-Explorer
+git pull
+pip install -e "backend[mcp,watch]"
+```
+
+或使用 CLI 命令：
+
+```bash
+codegraph update
+```
+
+更新不会影响已有的 MCP 配置和索引文件。
+
+### 3. 删除/卸载（完全移除 CLI 和依赖）
+
+```bash
+pip uninstall codegraph-explorer
+```
+
+如果是 GitHub clone 安装，额外删除项目目录：
+
+```bash
+rm -rf CodeGraph-Explorer
+```
+
+MCP 配置文件（`~/.claude.json`、`~/.cursor/mcp.json`）不会被自动删除。如需移除 MCP 配置：
+
+```bash
+codegraph configure remove all
 ```
 
 ---
@@ -230,6 +245,13 @@ make demo
 ```makefile
 install:
 	pip install -e "backend[mcp,watch]"
+
+update:
+	git pull
+	pip install -e "backend[mcp,watch]"
+
+uninstall:
+	pip uninstall -y codegraph-explorer
 
 configure:
 	codegraph configure all

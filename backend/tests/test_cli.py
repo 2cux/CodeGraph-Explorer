@@ -234,3 +234,87 @@ class TestCliStatus:
         assert "codegraph init" in result.output
         # The old long-path form should no longer appear
         assert "codegraph init " + str(tmp_path) not in result.output
+
+
+# ── Update command ──────────────────────────────────────────────────────
+
+
+class TestCliUpdate:
+    def test_update_success(self, runner, monkeypatch, tmp_path):
+        """codegraph update runs pip install -e and reports success."""
+        import subprocess
+
+        # Simulate editable install: __file__ -> backend/codegraph/__init__.py
+        # parent.parent -> backend/  (where pyproject.toml lives)
+        backend_dir = tmp_path / "backend"
+        codegraph_dir = backend_dir / "codegraph"
+        codegraph_dir.mkdir(parents=True)
+        (codegraph_dir / "__init__.py").write_text("")
+        (backend_dir / "pyproject.toml").write_text("[project]\nname='codegraph'\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "codegraph.__file__",
+            str(codegraph_dir / "__init__.py"),
+        )
+
+        mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok")
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+
+        result = runner.invoke(app, ["update"])
+        assert result.exit_code == 0
+        assert "updated successfully" in result.output.lower()
+
+    def test_update_not_editable_install(self, runner, monkeypatch, tmp_path):
+        """codegraph update fails gracefully when not in editable install."""
+        # Point to a dir without pyproject.toml at parent.parent
+        codegraph_dir = tmp_path / "codegraph"
+        codegraph_dir.mkdir(parents=True)
+        (codegraph_dir / "__init__.py").write_text("")
+
+        monkeypatch.setattr(
+            "codegraph.__file__",
+            str(codegraph_dir / "__init__.py"),
+        )
+
+        result = runner.invoke(app, ["update"])
+        assert result.exit_code != 0
+        assert "editable" in result.output.lower()
+
+    def test_update_preserves_mcp_config(self, runner, monkeypatch, tmp_path):
+        """codegraph update should not modify MCP configuration files."""
+        import subprocess
+        import json
+        import codegraph.configure as cfg
+
+        # Redirect MCP config paths to tmp_path
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / ".cursor" / "mcp.json")
+
+        # Pre-configure MCP
+        from codegraph.configure import configure_target, ConfigTarget
+        configure_result = configure_target(ConfigTarget.CLAUDE)
+        assert configure_result["status"] == "configured"
+
+        # Set up simulated editable install: backend/codegraph/__init__.py
+        backend_dir = tmp_path / "backend"
+        codegraph_dir = backend_dir / "codegraph"
+        codegraph_dir.mkdir(parents=True)
+        (codegraph_dir / "__init__.py").write_text("")
+        (backend_dir / "pyproject.toml").write_text("[project]\nname='codegraph'\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "codegraph.__file__",
+            str(codegraph_dir / "__init__.py"),
+        )
+
+        mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok")
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+
+        result = runner.invoke(app, ["update"])
+        assert result.exit_code == 0
+
+        # Verify MCP config is intact
+        claude_config_after = json.loads(
+            (tmp_path / ".claude.json").read_text(encoding="utf-8")
+        )
+        assert "codegraph" in claude_config_after["mcpServers"]
