@@ -125,21 +125,36 @@ def generate_report() -> str:
     lines.append(f"| Est. tokens | {totals.get('baseline_tokens', 0):,} | {totals.get('codegraph_tokens', 0):,} | "
                  f"{_pct_str(totals.get('baseline_tokens', 0), totals.get('codegraph_tokens', 0))} |")
     lines.append("")
+    lines.append("### Phase-Aware Token Breakdown (CodeGraph)")
+    lines.append("")
+    lines.append("CodeGraph separates into discovery (MCP queries) and execution (file reads) phases.")
+    lines.append("")
+    # Compute aggregate MCP and full task tokens
+    agg_mcp = sum(c["codegraph"].get("mcp_payload_tokens", 0) for c in comparisons)
+    agg_full = sum(c["codegraph"].get("full_task_token_estimate", 0) for c in comparisons)
+    agg_followup = sum(c["codegraph"].get("required_followup_reads", 0) for c in comparisons)
+    base_tokens = totals.get("baseline_tokens", 1)
+    lines.append(f"| Metric | CodeGraph | vs Baseline |")
+    lines.append(f"|---|---|---|")
+    lines.append(f"| MCP payload tokens (discovery) | {agg_mcp:,} | {_pct_str(base_tokens, agg_mcp)} |")
+    lines.append(f"| Full task estimate (discovery + reads) | {agg_full:,} | {_pct_str(base_tokens, agg_full)} |")
+    lines.append(f"| Required followup file reads | {agg_followup} | — |")
+    lines.append("")
 
     # ── Per-task results ────────────────────────────────────────────────
     lines.append("## 2. Per-Task Results")
     lines.append("")
-    lines.append("| Task | Baseline Calls | CodeGraph Calls | grep/read Δ | Files Read Δ | Token Δ | Recall |")
+    lines.append("| Task | MCP Calls | MCP Tokens | Full Tokens | grep/read Δ | Token Δ | Recall |")
     lines.append("|---|---|---|---|---|---|---|")
     for c in comparisons:
         bids = c["task_id"]
-        b_tc = c["baseline"]["tool_calls"]
         cg_tc = c["codegraph"]["tool_calls"]
+        cg_mcp = c["codegraph"].get("mcp_payload_tokens", 0)
+        cg_full = c["codegraph"].get("full_task_token_estimate", 0)
         gr_d = f"{c['deltas']['grep_read_pct']:+.0f}%"
-        fr_d = f"{c['deltas']['files_read_pct']:+.0f}%"
         tok_d = f"{c['deltas']['tokens_pct']:+.0f}%"
         recall = f"{c['codegraph']['file_recall']:.0f}%"
-        lines.append(f"| {bids} | {b_tc} | {cg_tc} | {gr_d} | {fr_d} | {tok_d} | {recall} |")
+        lines.append(f"| {bids} | {cg_tc} | {cg_mcp:,} | {cg_full:,} | {gr_d} | {tok_d} | {recall} |")
     lines.append("")
 
     # ── Detailed comparison ─────────────────────────────────────────────
@@ -163,6 +178,14 @@ def generate_report() -> str:
         lines.append(f"| Time (s) | {c['baseline']['time_s']:.2f} | {c['codegraph']['time_s']:.2f} | "
                      f"{c['deltas']['time_pct']:+.1f}% |")
         lines.append(f"| File recall | {c['baseline']['file_recall']}% | {c['codegraph']['file_recall']}% | — |")
+        # Phase-aware metrics
+        cg_mcp = c["codegraph"].get("mcp_payload_tokens", 0)
+        cg_full = c["codegraph"].get("full_task_token_estimate", 0)
+        cg_followup = c["codegraph"].get("required_followup_reads", 0)
+        if cg_mcp or cg_full:
+            lines.append(f"| MCP payload (discovery) | — | {cg_mcp:,} tokens | — |")
+            lines.append(f"| Full task estimate | — | {cg_full:,} tokens | — |")
+            lines.append(f"| Required followup reads | — | {cg_followup} files | — |")
         lines.append("")
 
         failures = c.get("failure_cases", [])
@@ -193,7 +216,7 @@ def generate_report() -> str:
     lines.append("1. **Index quality variance** — Symbol recall depends on index completeness. Missing edges cause missed impact results.")
     lines.append("2. **Confidence thresholds** — Default `min_confidence=0.6` may filter out valid relationships in some codebases.")
     lines.append("3. **Test detection** — `tested_by` edges rely on naming heuristics; not all test files are connected.")
-    lines.append("4. **Payload size** — CodeGraph responses include metadata that increases token count for small queries but pays off for large ones.")
+    lines.append("4. **Phase split** — CodeGraph separates discovery (MCP queries) and execution (file reads). The MCP payload alone is very cheap; the full task cost adds followup reads for verification.")
     lines.append("5. **Baseline simulation accuracy** — The baseline simulation is a programmatic approximation; real-agent baseline may differ.")
     lines.append("")
 

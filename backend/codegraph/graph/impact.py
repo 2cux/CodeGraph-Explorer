@@ -5,6 +5,7 @@ upstream/downstream/test/external items clearly labeled.
 """
 
 from collections import deque
+from typing import Any
 
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
 from codegraph.graph.store import GraphStore
@@ -201,6 +202,33 @@ def analyze_impact(
     callers = transitive_callers(store, node_id, depth)
     callees = transitive_callees(store, node_id, depth)
 
+    # ── Class-level aggregation: if this is a class with no direct callers,
+    #     aggregate callers/callees from all its methods ────────────────────
+    is_class = center.type == NodeType.class_
+    if is_class and not callers and not callees:
+        # Find methods of this class (nodes whose ID starts with class_id + ".")
+        class_prefix = node_id + "."
+        method_ids = [
+            n.id for n in store.all_nodes()
+            if n.id.startswith(class_prefix) and n.type == NodeType.method
+        ]
+        for mid in method_ids:
+            for caller_id, dist, conf in transitive_callers(store, mid, depth):
+                if caller_id not in {c[0] for c in callers}:
+                    callers.append((caller_id, min(depth, dist + 1), conf))
+            for callee_id, dist, conf in transitive_callees(store, mid, depth):
+                if callee_id not in {c[0] for c in callees}:
+                    callees.append((callee_id, min(depth, dist + 1), conf))
+
+        # Also check for tested_by edges on methods
+        for mid in method_ids:
+            for edge in store.get_outgoing_edges(mid):
+                if edge.type == EdgeType.tested_by:
+                    callees.append((edge.target, 1, edge.confidence))
+            for edge in store.get_incoming_edges(mid):
+                if edge.type == EdgeType.tested_by:
+                    callers.append((edge.source, 1, edge.confidence))
+
     # Count low-confidence edges
     low_conf_count = 0
     for edge in store.get_outgoing_edges(node_id):
@@ -307,32 +335,47 @@ def analyze_impact(
 
     # ── Model / config / store dependencies via imports ─────────────────
     def _add_model_config_store_impact() -> None:
-        """Find model/config/store classes imported by the center node's file."""
+        """Find model/config/store classes imported by the center node's file
+        AND by files of direct callees (transitively)."""
         if not center.file_path:
             return
 
-        file_id = center.file_path
-        seen_imports: set[str] = set()
+        # Collect all files to check: center file + direct callee files
+        files_to_check: set[str] = {center.file_path}
+        for callee_id, _, _ in callees:
+            callee_node = store.get_node(callee_id)
+            if callee_node and callee_node.file_path:
+                files_to_check.add(callee_node.file_path)
+
+        _seen_imports: set[str] = set()
         qual_to_class: dict[str, GraphNode] = {}
         for n in store.all_nodes():
             if n.type == NodeType.class_ and n.qualified_name:
                 qual_to_class[n.qualified_name] = n
 
+        for file_id in files_to_check:
+            _process_file_imports(file_id, _seen_imports, qual_to_class)
+
+    def _process_file_imports(
+        file_id: str,
+        _seen_imports: set[str],
+        _qual_to_class: dict[str, Any],
+    ) -> None:
         for edge in store.get_outgoing_edges(file_id):
             if edge.type != EdgeType.imports:
                 continue
             import_node = store.get_node(edge.target)
             if not import_node or not import_node.qualified_name:
                 continue
-            class_node = qual_to_class.get(import_node.qualified_name)
-            if not class_node or class_node.id in seen_imports:
+            class_node = _qual_to_class.get(import_node.qualified_name)
+            if not class_node or class_node.id in _seen_imports:
                 continue
 
             tags = class_node.tags
             class_name = class_node.name
 
             if "model" in tags and "config" not in tags:
-                seen_imports.add(class_node.id)
+                _seen_imports.add(class_node.id)
                 confirmed_symbols.append(_symbol_entry(
                     class_node.id,
                     f"Data model `{class_name}` — modifying `{center.name}` may require field additions or schema changes.",
@@ -343,7 +386,7 @@ def analyze_impact(
                     _add_file(confirmed_files, class_node.file_path,
                               "Data model file — changes may require field updates.", "high")
             elif "config" in tags or "settings" in tags:
-                seen_imports.add(class_node.id)
+                _seen_imports.add(class_node.id)
                 confirmed_symbols.append(_symbol_entry(
                     class_node.id,
                     f"Configuration `{class_name}` — changes to `{center.name}` may need new config fields.",
@@ -354,7 +397,7 @@ def analyze_impact(
                     _add_file(confirmed_files, class_node.file_path,
                               "Configuration file — feature changes may need config updates.", "high")
             elif "store" in tags or "persistence" in tags:
-                seen_imports.add(class_node.id)
+                _seen_imports.add(class_node.id)
                 confirmed_symbols.append(_symbol_entry(
                     class_node.id,
                     f"Persistence `{class_name}` — behavior changes in `{center.name}` may require store updates.",

@@ -190,8 +190,9 @@ class TestReport:
         if not (results_dir / "results_codegraph.json").exists():
             pytest.skip("Results not yet generated")
         report = generate_report()
-        assert "Baseline Calls" in report
-        assert "CodeGraph Calls" in report
+        assert "MCP Calls" in report
+        assert "MCP Tokens" in report
+        assert "Full Tokens" in report
 
     def test_report_contains_failure_cases(self) -> None:
         """Report should contain failure cases section."""

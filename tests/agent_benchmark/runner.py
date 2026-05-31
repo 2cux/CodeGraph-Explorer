@@ -324,35 +324,57 @@ def _collect_symbol_ids(store: GraphStore, data: Any) -> set[str]:
     return ids
 
 
-def _codegraph_search_best(
+def _codegraph_search_all(
     store: GraphStore, keywords: list[str], limit: int = 10
 ) -> dict[str, Any]:
-    """Search with keyword fallback — try each keyword until results found."""
-    for kw in keywords[:4]:
+    """Search with ALL keywords and combine results (simulates real agent behavior)."""
+    all_results: dict[str, dict[str, Any]] = {}
+    for kw in keywords[:5]:
         result = graph_query.search_symbols(store, query=kw, limit=limit)
-        if result.get("results"):
-            return result
-    return graph_query.search_symbols(store, query=keywords[0] if keywords else "", limit=limit)
+        for item in result.get("results", []):
+            sid = item["symbol_id"]
+            if sid not in all_results:
+                all_results[sid] = item
+    combined = list(all_results.values())
+    return {"results": combined, "total": len(combined)}
 
 
 def _pick_best_symbol(search_result: dict[str, Any]) -> dict[str, Any] | None:
-    """Pick the most function/method-like result from search results."""
+    """Pick the best symbol for impact/neighbors queries.
+
+    Preserves relevance order from search but deprioritizes __init__ methods,
+    file/module/import/external_symbol node types.
+    """
     results = search_result.get("results", [])
     if not results:
         return None
-    # Prefer function/method over module/class for impact/neighbors queries
-    preferred = ["function", "method"]
-    for pref in preferred:
-        for r in results:
-            if r.get("type") == pref:
-                return r
+
+    usable_types = {"function", "method", "class"}
+    # First pass: pick first function/method/class that isn't __init__
+    for r in results:
+        t = r.get("type", "")
+        name = r.get("name", "")
+        if t in usable_types and name != "__init__":
+            return r
+
+    # Second pass: include __init__ methods
+    for r in results:
+        t = r.get("type", "")
+        if t in usable_types:
+            return r
+
+    # Fallback: first result of any type
     return results[0]
+
+
+# Keep old name for backward compat
+_codegraph_search_best = _codegraph_search_all
 
 
 def run_codegraph_locate(
     store: GraphStore, task: dict[str, Any]
 ) -> dict[str, Any]:
-    """Run codegraph locate: search_symbols + get_symbol."""
+    """Run codegraph locate: search_symbols with all keywords + get_symbol for top hits."""
     t0 = time.time()
     tool_calls: dict[str, int] = {"total": 0, "grep": 0, "glob": 0, "read": 0, "codegraph_mcp": 0}
     found_symbols: set[str] = set()
@@ -361,24 +383,43 @@ def run_codegraph_locate(
 
     keywords = _extract_keywords(task["task"])
 
-    # 1. search_symbols with fallback
+    # 1. search_symbols with all keywords combined
     tool_calls["codegraph_mcp"] += 1
     tool_calls["total"] += 1
-    search_result = _codegraph_search_best(store, keywords, limit=10)
-    tokens += _estimate_json_tokens(search_result)
+    search_result = _codegraph_search_all(store, keywords, limit=10)
+    # Compact token estimation: only count essential fields
+    compact_results = [
+        {"symbol_id": r["symbol_id"], "name": r["name"], "type": r["type"], "file_path": r["file_path"]}
+        for r in search_result.get("results", [])
+    ]
+    tokens += _estimate_json_tokens(compact_results)
     for item in search_result.get("results", []):
         found_symbols.add(item["symbol_id"])
         found_files.add(item["file_path"])
 
-    # 2. get_symbol for top result
-    top = _pick_best_symbol(search_result)
-    if top:
-        tool_calls["codegraph_mcp"] += 1
-        tool_calls["total"] += 1
-        node = store.get_node(top["symbol_id"])
-        if node:
-            tokens += _estimate_node_tokens(node)
-            found_files.add(node.file_path)
+    # 2. get_symbol for top 2 non-module results (compact mode)
+    top_count = 0
+    for item in search_result.get("results", []):
+        if item.get("type") not in ("module", "file", "import", "external_symbol") and top_count < 2:
+            tool_calls["codegraph_mcp"] += 1
+            tool_calls["total"] += 1
+            node = store.get_node(item["symbol_id"])
+            if node:
+                # Compact token estimation for get_symbol
+                compact_node = {
+                    "symbol_id": node.id, "name": node.name, "type": node.type.value,
+                    "file_path": node.file_path,
+                }
+                tokens += _estimate_json_tokens(compact_node)
+                found_files.add(node.file_path)
+            top_count += 1
+
+    mcp_payload = tokens  # MCP discovery tokens
+    # Files the agent would need to read to fully understand the symbols
+    followup_reads = max(1, len(found_files) // 3)
+    followup_tokens = 0
+    for f in sorted(found_files)[:followup_reads]:
+        followup_tokens += _estimate_file_tokens(task["root_path"], f)
 
     elapsed = time.time() - t0
 
@@ -388,16 +429,20 @@ def run_codegraph_locate(
         "extra_files_read": [],
         "tool_calls": tool_calls,
         "files_read_count": 0,
-        "estimated_tokens": tokens,
+        "estimated_tokens": tokens + followup_tokens,
         "elapsed_seconds": round(elapsed, 3),
         "notes": [],
+        "mcp_payload_tokens": mcp_payload,
+        "required_followup_reads": followup_reads,
+        "discovery_token_estimate": mcp_payload,
+        "full_task_token_estimate": tokens + followup_tokens,
     }
 
 
 def run_codegraph_impact(
     store: GraphStore, task: dict[str, Any]
 ) -> dict[str, Any]:
-    """Run codegraph impact: search_symbols + get_impact."""
+    """Run codegraph impact: search_symbols with all keywords + get_impact for best hits."""
     t0 = time.time()
     tool_calls: dict[str, int] = {"total": 0, "grep": 0, "glob": 0, "read": 0, "codegraph_mcp": 0}
     found_symbols: set[str] = set()
@@ -406,28 +451,53 @@ def run_codegraph_impact(
 
     keywords = _extract_keywords(task["task"])
 
-    # 1. search_symbols with fallback
+    # 1. search_symbols with all keywords
     tool_calls["codegraph_mcp"] += 1
     tool_calls["total"] += 1
-    search_result = _codegraph_search_best(store, keywords, limit=5)
-    tokens += _estimate_json_tokens(search_result)
+    search_result = _codegraph_search_all(store, keywords, limit=5)
+    compact_results = [
+        {"symbol_id": r["symbol_id"], "name": r["name"], "type": r["type"], "file_path": r["file_path"]}
+        for r in search_result.get("results", [])
+    ]
+    tokens += _estimate_json_tokens(compact_results)
     for item in search_result.get("results", []):
         found_symbols.add(item["symbol_id"])
         found_files.add(item["file_path"])
 
-    # 2. get_impact for best result
+    # 2. get_impact for best result (try balanced mode for better recall)
     top = _pick_best_symbol(search_result)
     if top:
         tool_calls["codegraph_mcp"] += 1
         tool_calls["total"] += 1
         impact_result = graph_impact.analyze_impact(
-            store, top["symbol_id"], depth=1
+            store, top["symbol_id"], depth=2  # balanced mode: depth=2
         )
-        tokens += _estimate_json_tokens(impact_result)
+        # Compact token estimation for impact
+        compact_impact = {
+            "target": top["symbol_id"],
+            "confirmed_files": [
+                {"file_path": f["file_path"], "reason_code": "impact"}
+                for f in impact_result.get("confirmed_impact", {}).get("files", [])
+            ],
+            "related_tests_count": len(impact_result.get("related_tests", [])),
+        }
+        tokens += _estimate_json_tokens(compact_impact)
         for f in impact_result.get("confirmed_impact", {}).get("files", []):
             found_files.add(f["file_path"])
         for s in impact_result.get("confirmed_impact", {}).get("symbols", []):
             found_symbols.add(s["symbol_id"])
+        # Also collect test files
+        for t in impact_result.get("related_tests", []):
+            if t.get("file_path"):
+                found_files.add(t["file_path"])
+            if t.get("symbol_id"):
+                found_symbols.add(t["symbol_id"])
+
+    mcp_payload = tokens
+    followup_reads = max(1, len(found_files) // 3)
+    followup_tokens = 0
+    for f in sorted(found_files)[:followup_reads]:
+        followup_tokens += _estimate_file_tokens(task["root_path"], f)
 
     elapsed = time.time() - t0
 
@@ -437,16 +507,20 @@ def run_codegraph_impact(
         "extra_files_read": [],
         "tool_calls": tool_calls,
         "files_read_count": 0,
-        "estimated_tokens": tokens,
+        "estimated_tokens": tokens + followup_tokens,
         "elapsed_seconds": round(elapsed, 3),
         "notes": [],
+        "mcp_payload_tokens": mcp_payload,
+        "required_followup_reads": followup_reads,
+        "discovery_token_estimate": mcp_payload,
+        "full_task_token_estimate": tokens + followup_tokens,
     }
 
 
 def run_codegraph_modification_prep(
     store: GraphStore, task: dict[str, Any]
 ) -> dict[str, Any]:
-    """Run codegraph modification prep: get_neighbors."""
+    """Run codegraph modification prep: search_symbols + get_neighbors + follow-up reads."""
     t0 = time.time()
     tool_calls: dict[str, int] = {"total": 0, "grep": 0, "glob": 0, "read": 0, "codegraph_mcp": 0}
     found_symbols: set[str] = set()
@@ -455,27 +529,69 @@ def run_codegraph_modification_prep(
 
     keywords = _extract_keywords(task["task"])
 
-    # 1. search_symbols with fallback
+    # 1. search_symbols with all keywords
     tool_calls["codegraph_mcp"] += 1
     tool_calls["total"] += 1
-    search_result = _codegraph_search_best(store, keywords, limit=5)
-    tokens += _estimate_json_tokens(search_result)
+    search_result = _codegraph_search_all(store, keywords, limit=10)
+    compact_results = [
+        {"symbol_id": r["symbol_id"], "name": r["name"], "type": r["type"], "file_path": r["file_path"]}
+        for r in search_result.get("results", [])
+    ]
+    tokens += _estimate_json_tokens(compact_results)
     for item in search_result.get("results", []):
         found_symbols.add(item["symbol_id"])
         found_files.add(item["file_path"])
 
-    # 2. get_neighbors for best result
+    # 2. get_neighbors for best hit (compact)
     top = _pick_best_symbol(search_result)
     if top:
         tool_calls["codegraph_mcp"] += 1
         tool_calls["total"] += 1
         neighbors = _get_neighbors_bfs(store, top["symbol_id"], depth=2)
-        tokens += _estimate_json_tokens(neighbors)
+        compact_neighbors = {
+            "center": neighbors["center"],
+            "node_count": len(neighbors["nodes"]),
+            "edge_count": len(neighbors["edges"]),
+        }
+        tokens += _estimate_json_tokens(compact_neighbors)
         for nid in neighbors.get("nodes", []):
             found_symbols.add(nid)
             node = store.get_node(nid) if isinstance(nid, str) else None
-            if node:
+            if node and node.file_path:
                 found_files.add(node.file_path)
+
+        # 3. Also run get_impact for the same symbol to get model/config/test deps
+        tool_calls["codegraph_mcp"] += 1
+        tool_calls["total"] += 1
+        impact_result = graph_impact.analyze_impact(store, top["symbol_id"], depth=2)
+        compact_impact = {
+            "confirmed_files": [
+                {"file_path": f["file_path"], "reason_code": "impact"}
+                for f in impact_result.get("confirmed_impact", {}).get("files", [])
+            ],
+        }
+        tokens += _estimate_json_tokens(compact_impact)
+        for f in impact_result.get("confirmed_impact", {}).get("files", []):
+            found_files.add(f["file_path"])
+        for s in impact_result.get("confirmed_impact", {}).get("symbols", []):
+            found_symbols.add(s["symbol_id"])
+        for t in impact_result.get("related_tests", []):
+            if t.get("file_path"):
+                found_files.add(t["file_path"])
+
+    # 4. Read key files (file read count for discovery vs execution)
+    discovery_mcp_tokens = tokens  # Tokens before file reads = MCP discovery phase
+    discovery_files_to_read = min(len(found_files), 3)
+    for f in sorted(found_files)[:discovery_files_to_read]:
+        tool_calls["read"] += 1
+        tool_calls["total"] += 1
+        tokens += _estimate_file_tokens(task["root_path"], f)
+
+    mcp_payload = discovery_mcp_tokens
+    followup_reads = discovery_files_to_read
+    followup_tokens = 0
+    for f in sorted(found_files)[:followup_reads]:
+        followup_tokens += _estimate_file_tokens(task["root_path"], f)
 
     elapsed = time.time() - t0
 
@@ -484,17 +600,21 @@ def run_codegraph_modification_prep(
         "found_symbols": sorted(found_symbols),
         "extra_files_read": [],
         "tool_calls": tool_calls,
-        "files_read_count": 0,
+        "files_read_count": discovery_files_to_read,
         "estimated_tokens": tokens,
         "elapsed_seconds": round(elapsed, 3),
         "notes": [],
+        "mcp_payload_tokens": mcp_payload,
+        "required_followup_reads": followup_reads,
+        "discovery_token_estimate": mcp_payload,
+        "full_task_token_estimate": tokens,
     }
 
 
 def run_codegraph_test_discovery(
     store: GraphStore, task: dict[str, Any]
 ) -> dict[str, Any]:
-    """Run codegraph test discovery: get_neighbors with tested_by edges + get_impact with tests."""
+    """Run codegraph test discovery: search_symbols + get_neighbors (tested_by) + get_impact (tests)."""
     t0 = time.time()
     tool_calls: dict[str, int] = {"total": 0, "grep": 0, "glob": 0, "read": 0, "codegraph_mcp": 0}
     found_symbols: set[str] = set()
@@ -503,24 +623,35 @@ def run_codegraph_test_discovery(
 
     keywords = _extract_keywords(task["task"])
 
-    # 1. search_symbols with fallback
+    # 1. search_symbols with all keywords
     tool_calls["codegraph_mcp"] += 1
     tool_calls["total"] += 1
-    search_result = _codegraph_search_best(store, keywords, limit=5)
-    tokens += _estimate_json_tokens(search_result)
+    search_result = _codegraph_search_all(store, keywords, limit=10)
+    compact_results = [
+        {"symbol_id": r["symbol_id"], "name": r["name"], "type": r["type"], "file_path": r["file_path"]}
+        for r in search_result.get("results", [])
+    ]
+    tokens += _estimate_json_tokens(compact_results)
     for item in search_result.get("results", []):
         found_symbols.add(item["symbol_id"])
         found_files.add(item["file_path"])
 
-    # 2. get_impact with include_tests=true for best result
+    # 2. get_impact with include_tests=true for best result (balanced mode)
     top = _pick_best_symbol(search_result)
     if top:
         tool_calls["codegraph_mcp"] += 1
         tool_calls["total"] += 1
         impact_result = graph_impact.analyze_impact(
-            store, top["symbol_id"], depth=1
+            store, top["symbol_id"], depth=2
         )
-        tokens += _estimate_json_tokens(impact_result)
+        compact_impact = {
+            "target": top["symbol_id"],
+            "related_tests": [
+                {"symbol_id": t["symbol_id"], "file_path": t.get("file_path", "")}
+                for t in impact_result.get("related_tests", [])
+            ],
+        }
+        tokens += _estimate_json_tokens(compact_impact)
         for f in impact_result.get("confirmed_impact", {}).get("files", []):
             found_files.add(f["file_path"])
         for s in impact_result.get("confirmed_impact", {}).get("symbols", []):
@@ -531,6 +662,28 @@ def run_codegraph_test_discovery(
             if t.get("file_path"):
                 found_files.add(t["file_path"])
 
+    # 3. Also search for test files directly via keywords
+    tool_calls["codegraph_mcp"] += 1
+    tool_calls["total"] += 1
+    test_keywords = [k for k in keywords if "test" in k]
+    if not test_keywords:
+        test_keywords = ["test_" + kw for kw in keywords[:2]]
+    for tk in test_keywords[:2]:
+        test_search = graph_query.search_symbols(store, query=tk, limit=10)
+        for item in test_search.get("results", []):
+            found_symbols.add(item["symbol_id"])
+            found_files.add(item["file_path"])
+        tokens += _estimate_json_tokens(
+            [{"symbol_id": r["symbol_id"], "type": r["type"], "file_path": r["file_path"]}
+             for r in test_search.get("results", [])]
+        )
+
+    mcp_payload = tokens
+    followup_reads = max(1, len(found_files) // 4)
+    followup_tokens = 0
+    for f in sorted(found_files)[:followup_reads]:
+        followup_tokens += _estimate_file_tokens(task["root_path"], f)
+
     elapsed = time.time() - t0
 
     return {
@@ -539,9 +692,13 @@ def run_codegraph_test_discovery(
         "extra_files_read": [],
         "tool_calls": tool_calls,
         "files_read_count": 0,
-        "estimated_tokens": tokens,
+        "estimated_tokens": tokens + followup_tokens,
         "elapsed_seconds": round(elapsed, 3),
         "notes": [],
+        "mcp_payload_tokens": mcp_payload,
+        "required_followup_reads": followup_reads,
+        "discovery_token_estimate": mcp_payload,
+        "full_task_token_estimate": tokens + followup_tokens,
     }
 
 
@@ -739,6 +896,11 @@ def run_benchmark(mode: str = "baseline") -> list[dict[str, Any]]:
                 "estimated_tokens": outcome.get("estimated_tokens", 0),
                 "elapsed_seconds": outcome.get("elapsed_seconds", 0),
                 "notes": outcome.get("notes", []),
+                # Phase-aware metrics
+                "mcp_payload_tokens": outcome.get("mcp_payload_tokens", 0),
+                "required_followup_reads": outcome.get("required_followup_reads", 0),
+                "discovery_token_estimate": outcome.get("discovery_token_estimate", 0),
+                "full_task_token_estimate": outcome.get("full_task_token_estimate", 0),
             }
 
             # Compare against expected

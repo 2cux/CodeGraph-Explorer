@@ -58,6 +58,26 @@ def estimated_tokens(result: dict[str, Any]) -> int:
     return result.get("estimated_tokens", 0)
 
 
+def mcp_payload_tokens(result: dict[str, Any]) -> int:
+    """Tokens from MCP tool responses (compact mode)."""
+    return result.get("mcp_payload_tokens", 0)
+
+
+def required_followup_reads(result: dict[str, Any]) -> int:
+    """Number of files the agent needs to read after MCP discovery."""
+    return result.get("required_followup_reads", 0)
+
+
+def discovery_token_estimate(result: dict[str, Any]) -> int:
+    """Tokens used in the discovery/search phase."""
+    return result.get("discovery_token_estimate", 0)
+
+
+def full_task_token_estimate(result: dict[str, Any]) -> int:
+    """Total estimated tokens for the full task (discovery + execution)."""
+    return result.get("full_task_token_estimate", 0)
+
+
 def elapsed_seconds(result: dict[str, Any]) -> float:
     """Elapsed time in seconds."""
     return result.get("elapsed_seconds", 0.0)
@@ -81,6 +101,11 @@ def compare_results(
     cg_recall = file_recall(codegraph)
     b_time = elapsed_seconds(baseline)
     cg_time = elapsed_seconds(codegraph)
+    # New phase-aware metrics
+    cg_mcp_tokens = mcp_payload_tokens(codegraph)
+    cg_followup = required_followup_reads(codegraph)
+    cg_discovery = discovery_token_estimate(codegraph)
+    cg_full = full_task_token_estimate(codegraph)
 
     def pct_change(old: float, new: float) -> float:
         if old == 0:
@@ -118,6 +143,10 @@ def compare_results(
             "tokens": cg_tokens,
             "time_s": cg_time,
             "file_recall": round(cg_recall * 100, 1),
+            "mcp_payload_tokens": cg_mcp_tokens,
+            "required_followup_reads": cg_followup,
+            "discovery_token_estimate": cg_discovery,
+            "full_task_token_estimate": cg_full,
         },
         "deltas": {
             "tool_calls_pct": tool_reduction,
@@ -125,6 +154,8 @@ def compare_results(
             "files_read_pct": files_reduction,
             "tokens_pct": token_reduction,
             "time_pct": time_reduction,
+            "mcp_payload_pct": pct_change(b_tokens, cg_mcp_tokens),
+            "full_task_pct": pct_change(b_tokens, cg_full) if cg_full else 0.0,
         },
         "quality": {
             "recall_ok": recall_ok,
