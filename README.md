@@ -482,6 +482,18 @@ MCP 配置在编辑器启动时加载。修改 `~/.claude.json` 或 `~/.cursor/m
 codegraph init --force
 ```
 
+### 6. 看到 "No .codegraph directory found (searched from: C:\Users\Lenovo)"
+
+说明 MCP 配置中的 `CODEGRAPH_PROJECT_ROOT` 没有指向正确的项目路径（通常是配置时不在项目目录下运行 `codegraph configure`）。解决：
+
+```bash
+cd your-project
+codegraph init
+codegraph configure cursor --force   # 或 codegraph configure all --force
+```
+
+重启 Cursor / Claude Code 后生效。
+
 ### 快速自检命令
 
 ```bash

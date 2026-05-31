@@ -44,30 +44,39 @@ class TestBuildServerConfig:
         cfg = build_server_config()
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
+        # Always writes CODEGRAPH_PROJECT_ROOT (defaults to CWD)
+        assert "env" in cfg
+        assert "CODEGRAPH_PROJECT_ROOT" in cfg["env"]
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
     def test_with_root_adds_env(self):
-        """When root is provided, adds CODEGRAPH_PROJECT_ROOT to env."""
+        """When root is provided, uses that path in CODEGRAPH_PROJECT_ROOT."""
         cfg = build_server_config(root="/tmp/myproject")
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/tmp/myproject").resolve())}
 
-    def test_without_root_has_no_env(self):
-        """Without root, no env is set (auto-detection from CWD)."""
+    def test_without_root_uses_cwd_as_root(self):
+        """Without root, uses CWD as CODEGRAPH_PROJECT_ROOT."""
         cfg = build_server_config()
-        assert "env" not in cfg
+        assert "env" in cfg
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
     def test_command_override_codegraph_uses_legacy_serve_mcp(self):
         """command_override='codegraph' writes legacy CLI entry point."""
         cfg = build_server_config(command_override="codegraph")
         assert cfg["command"] == "codegraph"
         assert cfg["args"] == ["serve", "--mcp"]
+        # Still writes env with CWD
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
     def test_command_override_custom_python_uses_m_module(self):
         """Custom python path uses -m codegraph.mcp_server args."""
         cfg = build_server_config(command_override="/usr/bin/python3.12")
         assert cfg["command"] == "/usr/bin/python3.12"
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
+        # Still writes env with CWD
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
 
 # ── read_config ───────────────────────────────────────────────────────────
@@ -308,15 +317,16 @@ class TestCliConfigureAll:
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path("/new/path").resolve())
 
-    def test_configure_all_defaults_no_env_without_root(self, runner, home_tmp):
-        """configure all without --root does not set CODEGRAPH_PROJECT_ROOT (auto-detect from CWD)."""
+    def test_configure_all_defaults_to_cwd_root(self, runner, home_tmp):
+        """configure all without --root writes CODEGRAPH_PROJECT_ROOT from CWD."""
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cfg = claude_data["mcpServers"]["codegraph"]
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
-        assert "env" not in cfg  # No root → auto-detect from CWD
+        assert "env" in cfg
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
     def test_configure_all_with_command_codegraph_legacy(self, runner, home_tmp):
         """--command codegraph writes legacy CLI entry point."""
@@ -333,6 +343,27 @@ class TestCliConfigureAll:
         assert result.exit_code == 0
         assert "Command:" in result.stdout
         assert "codegraph.mcp_server" in result.stdout
+
+    def test_configure_all_shows_project_root_in_output(self, runner, home_tmp):
+        """After configure, output shows the project root path."""
+        result = runner.invoke(app, ["configure", "all"])
+        assert result.exit_code == 0
+        assert "Project root:" in result.stdout
+
+    def test_configure_all_shows_index_status_in_output(self, runner, home_tmp):
+        """After configure, output shows the index status."""
+        result = runner.invoke(app, ["configure", "all"])
+        assert result.exit_code == 0
+        assert "Index:" in result.stdout
+
+    def test_configure_all_writes_env_without_root(self, runner, home_tmp):
+        """configure all always writes CODEGRAPH_PROJECT_ROOT, even without --root."""
+        result = runner.invoke(app, ["configure", "all"])
+        assert result.exit_code == 0
+        claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
+        cfg = claude_data["mcpServers"]["codegraph"]
+        assert "env" in cfg
+        assert "CODEGRAPH_PROJECT_ROOT" in cfg["env"]
 
 
 class TestCliConfigureClaude:

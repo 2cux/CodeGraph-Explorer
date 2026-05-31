@@ -307,6 +307,61 @@ class TestDoctor:
         assert result.exit_code == 0
         assert "MCP server launch check" in result.stdout
 
+    def test_doctor_detects_mcp_root_without_index(self, runner, tmp_path, monkeypatch):
+        """doctor FAILs when CODEGRAPH_PROJECT_ROOT points to dir without .codegraph."""
+        import codegraph.configure as cfg
+
+        # Create a directory without .codegraph
+        empty_dir = tmp_path / "empty_project"
+        empty_dir.mkdir()
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(empty_dir))
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+
+        # Configure with the empty directory as root
+        configure_target(cfg.ConfigTarget.CLAUDE, root=str(empty_dir))
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP project root validation" in result.stdout
+        # Should report that .codegraph is missing
+        assert "no .codegraph" in result.stdout.lower() or "FAIL" in result.stdout
+
+    def test_doctor_validates_mcp_root_path_exists(self, runner, tmp_path, monkeypatch):
+        """doctor FAILs when CODEGRAPH_PROJECT_ROOT path does not exist."""
+        import codegraph.configure as cfg
+
+        nonexistent = tmp_path / "ghost_dir"
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+
+        # Configure with nonexistent path
+        configure_target(cfg.ConfigTarget.CLAUDE, root=str(nonexistent))
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP project root validation" in result.stdout
+        # Should report path does not exist
+        output_lower = result.stdout.lower()
+        assert "does not exist" in output_lower or "fail" in output_lower
+
+    def test_doctor_validates_mcp_root_has_index(self, runner, tmp_path, monkeypatch):
+        """doctor OK when CODEGRAPH_PROJECT_ROOT has valid .codegraph."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "valid_proj"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+
+        configure_target(cfg.ConfigTarget.CLAUDE, root=str(project))
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP project root validation" in result.stdout
+        assert ".codegraph found" in result.stdout
+
 
 # ── configure writes serve --mcp ─────────────────────────────────────────
 
@@ -315,7 +370,7 @@ class TestConfigureWritesServeMcp:
     """Verify configure writes Python interpreter with -m codegraph.mcp_server."""
 
     def test_configure_writes_sys_executable(self, tmp_path, monkeypatch):
-        """configure should write sys.executable with -m codegraph.mcp_server."""
+        """configure should write sys.executable with -m codegraph.mcp_server and env."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
         monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / ".cursor" / "mcp.json")
@@ -324,15 +379,27 @@ class TestConfigureWritesServeMcp:
         assert result["status"] == "configured"
         assert result["config"]["command"] == sys.executable
         assert result["config"]["args"] == ["-m", "codegraph.mcp_server"]
+        # Always writes CODEGRAPH_PROJECT_ROOT
+        assert "env" in result["config"]
+        assert "CODEGRAPH_PROJECT_ROOT" in result["config"]["env"]
 
     def test_configure_with_root_writes_env(self, tmp_path, monkeypatch):
-        """configure --root should set CODEGRAPH_PROJECT_ROOT."""
+        """configure --root should set CODEGRAPH_PROJECT_ROOT to that path."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
 
         result = configure_target(cfg.ConfigTarget.CLAUDE, root="/abs/path")
         assert result["config"]["command"] == sys.executable
         assert result["config"]["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/abs/path").resolve())}
+
+    def test_configure_without_root_writes_cwd_env(self, tmp_path, monkeypatch):
+        """configure without --root writes CODEGRAPH_PROJECT_ROOT from CWD."""
+        import codegraph.configure as cfg
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
+
+        result = configure_target(cfg.ConfigTarget.CLAUDE)
+        assert "env" in result["config"]
+        assert result["config"]["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
 
     def test_configure_force_updates_old_config(self, tmp_path, monkeypatch):
         """--force should update old codegraph CLI config to sys.executable format."""
@@ -386,8 +453,8 @@ class TestConfigureOutputMessages:
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
         assert "Configured CodeGraph MCP" in result.stdout
+        assert "Project root:" in result.stdout
         assert "Next:" in result.stdout
-        assert "codegraph init" in result.stdout
         assert "codegraph doctor" in result.stdout
 
     def test_configure_all_already_configured_shows_hint(self, runner, tmp_path, monkeypatch):

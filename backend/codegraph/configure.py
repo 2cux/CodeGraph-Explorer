@@ -40,17 +40,20 @@ def build_server_config(
     legacy ``codegraph serve --mcp`` command instead — this is opt-in for
     users who prefer the CLI entry point.
 
+    Always writes ``env.CODEGRAPH_PROJECT_ROOT`` to pin the server to a
+    specific project. When ``root`` is omitted, defaults to the current
+    working directory resolved as an absolute path.
+
     Args:
-        root: If set, adds ``env.CODEGRAPH_PROJECT_ROOT`` to pin the server
-              to a specific project. When omitted, the MCP server auto-detects
-              the project by walking up from the current working directory.
+        root: Optional project root path. When omitted, ``Path.cwd().resolve()``
+              is used so the MCP server always knows where the index lives.
         command_override: Override the MCP server command.
             - ``None`` (default): use ``sys.executable`` + ``["-m", "codegraph.mcp_server"]``
             - ``"codegraph"``: use ``"codegraph"`` + ``["serve", "--mcp"]`` (legacy CLI mode)
             - any other string: use that as the command + ``["-m", "codegraph.mcp_server"]``
 
     Returns:
-        A dict with ``command``, ``args``, and optionally ``env``.
+        A dict with ``command``, ``args``, and ``env``.
     """
     if command_override is None:
         # Default: current Python interpreter absolute path (reliable on Windows)
@@ -70,8 +73,8 @@ def build_server_config(
             "command": command_override,
             "args": ["-m", "codegraph.mcp_server"],
         }
-    if root:
-        entry["env"] = {"CODEGRAPH_PROJECT_ROOT": str(Path(root).resolve())}
+    resolved_root = str(Path(root).resolve()) if root else str(Path.cwd().resolve())
+    entry["env"] = {"CODEGRAPH_PROJECT_ROOT": resolved_root}
     return entry
 
 

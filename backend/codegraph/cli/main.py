@@ -1139,8 +1139,9 @@ def doctor(
     """Diagnose CodeGraph setup and report any issues.
 
     Checks: CLI availability, Python version, package path, project root,
-    .codegraph presence, index status, MCP config paths, serve --mcp
-    readiness, MCP command existence, and MCP server launch check.
+    .codegraph presence, index status, MCP config paths, MCP project root
+    validation, serve --mcp readiness, MCP command existence, and MCP
+    server launch check.
     """
     import sys
     import platform
@@ -1284,8 +1285,40 @@ def doctor(
         typer.echo("     Run: codegraph configure all")
     typer.echo()
 
-    # 7. serve --mcp readiness
-    typer.echo("7. serve --mcp readiness")
+    # 7. MCP project root validation
+    typer.echo("7. MCP project root validation")
+    for label, cfg_path in config_paths:
+        data = read_config(cfg_path)
+        server_cfg = data.get("mcpServers", {}).get(MCP_SERVER_NAME)
+        if not server_cfg:
+            continue
+        env_root = server_cfg.get("env", {}).get("CODEGRAPH_PROJECT_ROOT")
+        if not env_root:
+            fail(f"{label}: CODEGRAPH_PROJECT_ROOT is not set in config")
+            typer.echo(f"       Run: codegraph configure {'cursor' if 'Cursor' in label else 'claude'} --force")
+            continue
+        root_path = Path(env_root)
+        if not root_path.exists():
+            fail(f"{label}: {env_root} — path does not exist")
+            typer.echo(f"       Run: codegraph configure {'cursor' if 'Cursor' in label else 'claude'} --force")
+            continue
+        if not root_path.is_dir():
+            fail(f"{label}: {env_root} — is not a directory")
+            continue
+        cg_subdir = root_path / ".codegraph"
+        if not cg_subdir.exists():
+            fail(f"{label}: {env_root} — no .codegraph directory")
+            typer.echo(f"       Run: cd {env_root} && codegraph init")
+            continue
+        if not (cg_subdir / "graph.json").exists():
+            fail(f"{label}: {env_root} — .codegraph is incomplete (missing graph.json)")
+            typer.echo(f"       Run: cd {env_root} && codegraph init --force")
+            continue
+        ok(f"{label}: {env_root} — .codegraph found")
+    typer.echo()
+
+    # 8. serve --mcp readiness
+    typer.echo("8. serve --mcp readiness")
     try:
         _validate_serve_env(str(project_root))
         ok("serve --mcp can start")
@@ -1293,8 +1326,8 @@ def doctor(
         fail("serve --mcp would fail — see errors above")
     typer.echo()
 
-    # 8. MCP command existence
-    typer.echo("8. MCP command existence")
+    # 9. MCP command existence
+    typer.echo("9. MCP command existence")
     import shutil
     for label, cfg_path in config_paths:
         data = read_config(cfg_path)
@@ -1324,8 +1357,8 @@ def doctor(
                 fail(f"{label}: {cmd} — not found on PATH")
     typer.echo()
 
-    # 9. MCP server launch check
-    typer.echo("9. MCP server launch check")
+    # 10. MCP server launch check
+    typer.echo("10. MCP server launch check")
     import subprocess
     for label, cfg_path in config_paths:
         data = read_config(cfg_path)
@@ -1382,6 +1415,43 @@ configure_app = typer.Typer(
     help="Configure MCP server integration for AI coding agents (Claude Code, Cursor)",
 )
 app.add_typer(configure_app)
+
+
+def _show_configure_success(root: str) -> None:
+    """Show project root and index status after a successful configure."""
+    from pathlib import Path as _Path
+
+    root_path = _Path(root).resolve()
+    cg_dir = root_path / ".codegraph"
+
+    typer.echo(f"Project root:")
+    typer.echo(f"  {root_path}")
+    typer.echo()
+
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        # Check freshness
+        try:
+            from codegraph.indexer.status import detect_status
+            from codegraph.storage.file_store import FileStore
+            store = FileStore(cg_dir)
+            metadata = store.load_metadata()
+            if metadata:
+                result = detect_status(root_path, metadata)
+                typer.echo(f"Index:")
+                typer.echo(f"  {result.status}")
+            else:
+                typer.echo(f"Index:")
+                typer.echo(f"  present")
+        except Exception:
+            typer.echo(f"Index:")
+            typer.echo(f"  present")
+    else:
+        typer.echo(f"Index:")
+        typer.echo(f"  not found — run: codegraph init")
+    typer.echo()
+    typer.echo("If you move projects, run:")
+    typer.echo("  codegraph configure all --force")
+    typer.echo()
 
 
 def _print_configure_result(result: dict) -> None:
@@ -1465,9 +1535,8 @@ def configure_all(
         typer.echo(f"Command:")
         typer.echo(f"  {cmd_str}")
         typer.echo()
+        _show_configure_success(server_cfg["env"]["CODEGRAPH_PROJECT_ROOT"])
         typer.echo("Next:")
-        typer.echo("  cd your-project")
-        typer.echo("  codegraph init")
         typer.echo("  codegraph doctor")
         typer.echo("  Restart Claude Code / Cursor.")
         typer.echo()
@@ -1499,7 +1568,7 @@ def configure_claude(
         codegraph configure claude --project
         codegraph configure claude --root /path/to/project
     """
-    from codegraph.configure import configure_target, ConfigTarget
+    from codegraph.configure import configure_target, ConfigTarget, build_server_config
 
     result = configure_target(
         ConfigTarget.CLAUDE,
@@ -1509,6 +1578,9 @@ def configure_claude(
         force=force,
     )
     _print_configure_result(result)
+    if result["status"] in ("configured", "overwritten"):
+        server_cfg = build_server_config(root=root, command_override=command_override)
+        _show_configure_success(server_cfg["env"]["CODEGRAPH_PROJECT_ROOT"])
 
 
 @configure_app.command(name="cursor")
@@ -1537,7 +1609,7 @@ def configure_cursor(
         codegraph configure cursor --project
         codegraph configure cursor --root /path/to/project
     """
-    from codegraph.configure import configure_target, ConfigTarget
+    from codegraph.configure import configure_target, ConfigTarget, build_server_config
 
     result = configure_target(
         ConfigTarget.CURSOR,
@@ -1547,6 +1619,9 @@ def configure_cursor(
         force=force,
     )
     _print_configure_result(result)
+    if result["status"] in ("configured", "overwritten"):
+        server_cfg = build_server_config(root=root, command_override=command_override)
+        _show_configure_success(server_cfg["env"]["CODEGRAPH_PROJECT_ROOT"])
 
 
 @configure_app.command(name="show")

@@ -670,10 +670,22 @@ def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
     cg_dir = _find_codegraph_dir(project_root)
     if cg_dir is None:
         searched = project_root or str(Path.cwd())
-        raise RuntimeError(
-            f"No .codegraph directory found (searched from: {searched}). "
-            "Run 'codegraph init' first, or set CODEGRAPH_PROJECT_ROOT."
-        )
+        env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT")
+        lines = [
+            "No .codegraph directory found.",
+            f"Searched from: {searched}",
+        ]
+        if env_root:
+            lines.append(f"CODEGRAPH_PROJECT_ROOT is set to: {env_root}")
+        lines.extend([
+            "",
+            "Fix:",
+            "  cd <your-project>",
+            "  codegraph init",
+            "  codegraph configure cursor --force",
+            "  Restart Cursor",
+        ])
+        raise RuntimeError("\n".join(lines))
 
     graph_path = cg_dir / "graph.json"
     graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
