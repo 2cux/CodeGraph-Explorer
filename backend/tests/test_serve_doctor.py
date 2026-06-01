@@ -362,6 +362,23 @@ class TestDoctor:
         assert "MCP project root validation" in result.stdout
         assert ".codegraph found" in result.stdout
 
+    def test_doctor_reports_mcp_protocol_compliance(self, runner, tmp_path, monkeypatch):
+        """doctor should report MCP protocol compliance (check 11)."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "proto_proj"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP protocol compliance" in result.stdout
+        assert "structured dicts" in result.stdout
+        assert "Zero telemetry" in result.stdout
+
 
 # ── configure writes serve --mcp ─────────────────────────────────────────
 

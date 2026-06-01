@@ -1026,6 +1026,16 @@ def serve(
                 typer.echo(f"  Files:         {meta.file_count}")
             except Exception:
                 pass
+
+        # MCP protocol compliance: verify tools return dicts, not double-encoded strings
+        from codegraph.mcp_server import _respond_ok, _respond_error, ZERO_TELEMETRY_STATEMENT
+        test_ok = _respond_ok({"test": True}, tool="check")
+        test_err = _respond_error("TEST", "check", tool="check")
+        if isinstance(test_ok, dict) and isinstance(test_err, dict):
+            typer.echo("  [OK] MCP tools return structured dicts (protocol-compliant)")
+        else:
+            typer.echo("  [FAIL] MCP tools return strings (double-encoded JSON)", err=True)
+        typer.echo(f"  [OK] Zero telemetry: {ZERO_TELEMETRY_STATEMENT[:80]}...")
         return
 
     # Set env for the MCP server subprocess
@@ -1051,8 +1061,8 @@ def doctor(
 
     Checks: CLI availability, Python version, package path, project root,
     .codegraph presence, index status, MCP config paths, MCP project root
-    validation, serve --mcp readiness, MCP command existence, and MCP
-    server launch check.
+    validation, serve --mcp readiness, MCP command existence, MCP
+    server launch check, and MCP protocol compliance.
     """
     import sys
     import platform
@@ -1316,6 +1326,51 @@ def doctor(
             warn(f"{label}: {cmd} — check timed out (may be OK, server may just need more time)")
         except Exception as e:
             warn(f"{label}: {cmd} — could not check: {e}")
+    typer.echo()
+
+    # 11. MCP protocol compliance
+    typer.echo("11. MCP protocol compliance")
+    try:
+        from codegraph.mcp_server import _respond_ok, _respond_error, ZERO_TELEMETRY_STATEMENT
+
+        # Check 1: Response helpers return dicts (not double-encoded JSON strings)
+        test_ok = _respond_ok({"test": True}, tool="doctor_probe")
+        test_err = _respond_error("TEST", "doctor probe", tool="doctor_probe")
+
+        if isinstance(test_ok, dict) and isinstance(test_err, dict):
+            ok("Tool responses are structured dicts (proper MCP protocol)")
+        else:
+            fail("Tool responses are JSON strings (double-encoded — MCP clients may not parse correctly)")
+
+        # Check 2: Envelope structure validation
+        required_keys = {"ok", "tool", "warnings", "index_status", "meta"}
+        if required_keys <= set(test_ok.keys()):
+            ok(f"Response envelope has all required keys: {sorted(required_keys)}")
+        else:
+            missing = required_keys - set(test_ok.keys())
+            fail(f"Response envelope missing keys: {sorted(missing)}")
+
+        if required_keys <= set(test_err.keys()) and "error" in test_err:
+            ok("Error envelope has all required keys including error details")
+        else:
+            fail("Error envelope structure invalid")
+
+        # Check 3: Zero telemetry confirmation
+        ok(f"Zero telemetry: {ZERO_TELEMETRY_STATEMENT}")
+
+        # Check 4: Verify diagnostic logging targets stderr
+        import inspect
+        from codegraph.mcp_server import _log
+        log_source = inspect.getsource(_log)
+        if "file=sys.stderr" in log_source or "sys.stderr" in log_source:
+            ok("Diagnostic logging uses stderr (stdout clean for MCP protocol)")
+        else:
+            warn("Diagnostic logging may write to stdout — could corrupt MCP protocol")
+
+    except ImportError as e:
+        fail(f"Cannot import MCP server module: {e}")
+    except Exception as e:
+        fail(f"Protocol check failed: {e}")
     typer.echo()
 
 

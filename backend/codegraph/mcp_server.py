@@ -44,6 +44,15 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+# ── Zero-Telemetry ───────────────────────────────────────────────────────
+# CodeGraph Explorer is a local-only tool. It never uploads code, file paths,
+# index data, error details, or any usage information to any remote service.
+# All processing happens on the local machine.
+ZERO_TELEMETRY_STATEMENT = (
+    "CodeGraph Explorer is local-only. No code, file paths, index data, "
+    "error details, or usage information are ever uploaded to any remote service."
+)
+
 from codegraph.graph import impact as graph_impact
 from codegraph.graph import query as graph_query
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
@@ -65,6 +74,12 @@ _project_root: str | None = None
 _watch_manager: Any | None = None  # WatchSyncManager when watch mode is active
 
 SCHEMA_VERSION = "1.0.0"
+
+
+def _log(message: str) -> None:
+    """Write diagnostic/log output to stderr, keeping stdout clean for MCP protocol."""
+    print(message, file=sys.stderr)
+
 
 # ── Error codes ───────────────────────────────────────────────────────────
 
@@ -501,20 +516,16 @@ def _respond_ok(
     data: Any,
     tool: str = "",
     warnings: list[dict[str, Any]] | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Wrap a successful tool result in the standard envelope."""
-    return json.dumps(
-        {
-            "ok": True,
-            "tool": tool,
-            "data": data,
-            "warnings": warnings or [],
-            "index_status": _build_index_status(),
-            "meta": {"schema_version": SCHEMA_VERSION},
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
+    return {
+        "ok": True,
+        "tool": tool,
+        "data": data,
+        "warnings": warnings or [],
+        "index_status": _build_index_status(),
+        "meta": {"schema_version": SCHEMA_VERSION},
+    }
 
 
 def _respond_error(
@@ -523,24 +534,20 @@ def _respond_error(
     tool: str = "",
     details: dict[str, Any] | None = None,
     warnings: list[dict[str, Any]] | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Wrap a failed tool result in the standard envelope."""
-    return json.dumps(
-        {
-            "ok": False,
-            "tool": tool,
-            "error": {
-                "code": code,
-                "message": message,
-                "details": details or {},
-            },
-            "warnings": warnings or [],
-            "index_status": _build_index_status(),
-            "meta": {"schema_version": SCHEMA_VERSION},
+    return {
+        "ok": False,
+        "tool": tool,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or {},
         },
-        indent=2,
-        ensure_ascii=False,
-    )
+        "warnings": warnings or [],
+        "index_status": _build_index_status(),
+        "meta": {"schema_version": SCHEMA_VERSION},
+    }
 
 
 # ── Result shaping ────────────────────────────────────────────────────────
@@ -1110,7 +1117,7 @@ def search_symbols(
     type_filter: str | None = None,
     file_filter: str | None = None,
     max_results: int | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Search for code symbols by name, file path, type, tags, or path glob.
 
     Args:
@@ -1248,7 +1255,7 @@ def get_symbol(
     include_relations: bool = True,
     response_mode: str = "compact",
     include_explanations: bool = False,
-) -> str:
+) -> dict[str, Any]:
     """Get detailed information about a specific code symbol.
 
     Supports fuzzy lookup with resolve mode. Returns AMBIGUOUS_SYMBOL
@@ -1468,7 +1475,7 @@ def get_callers(
     exclude_types: str | None = None,
     include_paths: str | None = None,
     exclude_paths: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Get all callers of a symbol — functions that call it.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
@@ -1700,7 +1707,7 @@ def get_callees(
     exclude_types: str | None = None,
     include_paths: str | None = None,
     exclude_paths: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Get all callees of a symbol — functions it calls.
 
     External/unresolved symbols are separated into ``external_calls``.
@@ -1869,7 +1876,7 @@ def get_neighbors(
     group_by_role: bool = True,
     response_mode: str = "compact",
     include_explanations: bool = False,
-) -> str:
+) -> dict[str, Any]:
     """Get neighbors of a symbol in the code graph — the primary local-graph tool.
 
     Compact mode returns neighbors grouped by role. Standard mode returns
@@ -2172,7 +2179,7 @@ def get_impact(
     impact_mode: str = "conservative",
     response_mode: str = "compact",
     include_explanations: bool = False,
-) -> str:
+) -> dict[str, Any]:
     """Analyze the impact of modifying a symbol.
 
     Returns confirmed impact, possible impact, risk level with reason codes,
@@ -2426,7 +2433,7 @@ def build_context_pack(
     include_code: bool = True,
     mode: str = "summary",
     response_mode: str = "standard",
-) -> str:
+) -> dict[str, Any]:
     """Build a Context Pack for a natural language task.
 
     Provides task-aware code evidence: entry points, related symbols,
@@ -2557,7 +2564,7 @@ def build_context_pack(
 def repo_status(
     root: str | None = None,
     response_mode: str = "compact",
-) -> str:
+) -> dict[str, Any]:
     """Check index freshness and report changed/added/deleted files.
 
     Args:
@@ -2613,7 +2620,7 @@ def repo_status(
 def repo_summary(
     response_mode: str = "compact",
     include_explanations: bool = False,
-) -> str:
+) -> dict[str, Any]:
     """Get a summary of the indexed repository.
 
     Returns file count, symbol count, type breakdown, edge count,
@@ -2808,14 +2815,14 @@ def main() -> None:
     try:
         _load_store(project_root)
     except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _log(f"Error: {e}")
         sys.exit(1)
 
     # --check mode: validate and exit
     if args.check:
-        print(f"CodeGraph MCP check passed")
-        print(f"Project root: {project_root}")
-        print(f"Index dir:   {_cg_dir}")
+        _log(f"CodeGraph MCP check passed")
+        _log(f"Project root: {project_root}")
+        _log(f"Index dir:   {_cg_dir}")
         sys.exit(0)
 
     # Start watch mode if requested
@@ -2832,10 +2839,9 @@ def main() -> None:
                 on_sync=_on_sync,
             )
             _watch_manager.start()
-            print("Watch mode enabled — index will auto-sync on file changes.",
-                  file=sys.stderr)
+            _log("Watch mode enabled — index will auto-sync on file changes.")
         except Exception as e:
-            print(f"Warning: Failed to start watch mode: {e}", file=sys.stderr)
+            _log(f"Warning: Failed to start watch mode: {e}")
 
     mcp.run(transport="stdio")
 

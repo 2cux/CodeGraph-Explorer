@@ -223,7 +223,7 @@ class TestUnifiedEnvelope:
 
     def test_respond_ok_format(self):
         from codegraph.mcp_server import _respond_ok
-        result = json.loads(_respond_ok({"key": "value"}, tool="test_tool"))
+        result = _respond_ok({"key": "value"}, tool="test_tool")
         assert result["ok"] is True
         assert result["tool"] == "test_tool"
         assert result["data"] == {"key": "value"}
@@ -234,12 +234,12 @@ class TestUnifiedEnvelope:
 
     def test_respond_error_format(self):
         from codegraph.mcp_server import _respond_error, ERROR_CODES
-        result = json.loads(_respond_error(
+        result = _respond_error(
             ERROR_CODES["SYMBOL_NOT_FOUND"],
             "No symbol found",
             tool="test_tool",
             details={"query": "x"},
-        ))
+        )
         assert result["ok"] is False
         assert result["tool"] == "test_tool"
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
@@ -251,7 +251,7 @@ class TestUnifiedEnvelope:
 
     def test_search_symbols_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("login"))
+        result = search_symbols("login")
         assert result["ok"] is True
         assert result["tool"] == "codegraph_search_symbols"
         assert "data" in result
@@ -262,7 +262,7 @@ class TestUnifiedEnvelope:
 
     def test_get_symbol_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login"))
+        result = get_symbol("app/api/auth.py::login")
         assert result["ok"] is True
         assert result["tool"] == "codegraph_get_symbol"
         assert "data" in result
@@ -272,14 +272,14 @@ class TestUnifiedEnvelope:
 
     def test_get_symbol_include_source_adds_source_key(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", include_source=True))
+        result = get_symbol("app/api/auth.py::login", include_source=True)
         assert result["ok"] is True
         assert "source" in result["data"]
         # included may be False in unit tests (files don't exist on disk)
 
     def test_get_callers_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login"))
+        result = get_callers("app/api/auth.py::login")
         assert result["ok"] is True
         assert result["tool"] == "codegraph_get_callers"
         assert "target" in result["data"]
@@ -287,14 +287,14 @@ class TestUnifiedEnvelope:
 
     def test_get_callees_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login"))
+        result = get_callees("app/api/auth.py::login")
         assert result["ok"] is True
         assert result["tool"] == "codegraph_get_callees"
         assert "callees" in result["data"]
 
     def test_get_neighbors_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login"))
+        result = get_neighbors("app/api/auth.py::login")
         assert result["ok"] is True
         assert result["tool"] == "codegraph_get_neighbors"
         assert "center" in result["data"]
@@ -303,14 +303,14 @@ class TestUnifiedEnvelope:
 
     def test_get_neighbors_standard_has_nodes_edges(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False)
         assert result["ok"] is True
         assert "nodes" in result["data"]
         assert "edges" in result["data"]
 
     def test_get_impact_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         assert result["ok"] is True
         assert result["tool"] == "codegraph_get_impact"
         assert "target" in result["data"]
@@ -320,7 +320,7 @@ class TestUnifiedEnvelope:
 
     def test_get_impact_standard_has_full_structure(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         assert result["ok"] is True
         assert "confirmed_impact" in result["data"]
         assert "possible_impact" in result["data"]
@@ -330,7 +330,7 @@ class TestUnifiedEnvelope:
 
     def test_repo_status_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = json.loads(repo_status())
+        result = repo_status()
         assert result["ok"] is True
         assert result["tool"] == "codegraph_repo_status"
         assert "status" in result["data"]
@@ -339,7 +339,7 @@ class TestUnifiedEnvelope:
 
     def test_repo_summary_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert result["ok"] is True
         assert result["tool"] == "codegraph_repo_summary"
         assert "stats" in result["data"]
@@ -347,15 +347,15 @@ class TestUnifiedEnvelope:
 
     def test_error_has_no_data_field(self):
         from codegraph.mcp_server import _respond_error, ERROR_CODES
-        result = json.loads(_respond_error(
+        result = _respond_error(
             ERROR_CODES["SYMBOL_NOT_FOUND"], "Not found", tool="x"
-        ))
+        )
         assert "data" not in result
         assert "error" in result
 
     def test_success_has_no_error_field(self):
         from codegraph.mcp_server import _respond_ok
-        result = json.loads(_respond_ok({}, tool="x"))
+        result = _respond_ok({}, tool="x")
         assert "error" not in result
         assert "data" in result
 
@@ -368,20 +368,20 @@ class TestGetSymbol:
 
     def test_default_no_source(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login"))
+        result = get_symbol("app/api/auth.py::login")
         # source key is only present when include_source=True
         assert "source" not in result["data"]
 
     def test_include_source_true(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", include_source=True))
+        result = get_symbol("app/api/auth.py::login", include_source=True)
         # Source snippet may be None if file doesn't actually exist on disk
         # but the included flag should reflect whether we asked for it
         assert "source" in result["data"]
 
     def test_relations_summary(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login"))
+        result = get_symbol("app/api/auth.py::login")
         rel = result["data"]["relations_summary"]
         assert "callers_count" in rel
         assert "callees_count" in rel
@@ -391,14 +391,14 @@ class TestGetSymbol:
 
     def test_exact_match(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login"))
+        result = get_symbol("app/api/auth.py::login")
         symbol = result["data"]["symbol"]
         assert symbol["exact_match"] is True
         assert symbol["match_reason"] == "exact_id"
 
     def test_fuzzy_name_match(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("login"))
+        result = get_symbol("login")
         assert result["ok"] is True
         symbol = result["data"]["symbol"]
         assert symbol["exact_match"] is False
@@ -406,14 +406,14 @@ class TestGetSymbol:
 
     def test_not_found(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("nonexistent::xyz"))
+        result = get_symbol("nonexistent::xyz")
         assert result["ok"] is False
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
 
     def test_ambiguous_candidates(self, mcp_setup):
         """When multiple candidates match, return AMBIGUOUS_SYMBOL error."""
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("auth"))
+        result = get_symbol("auth")
         # "auth" matches both login and logout in app/api/auth.py
         # plus maybe the file node itself
         if not result["ok"]:
@@ -422,12 +422,12 @@ class TestGetSymbol:
 
     def test_symbol_has_tags(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login"))
+        result = get_symbol("app/api/auth.py::login")
         assert "route" in result["data"]["symbol"]["tags"]
 
     def test_symbol_has_confidence_standard_mode(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", response_mode="standard"))
+        result = get_symbol("app/api/auth.py::login", response_mode="standard")
         assert "confidence" not in result["data"]["symbol"]  # standard doesn't add confidence
 
 
@@ -439,7 +439,7 @@ class TestGetCallers:
 
     def test_callers_have_edge_evidence_standard(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", response_mode="standard"))
+        result = get_callers("app/api/auth.py::login", response_mode="standard")
         callers = result["data"]["callers"]
         assert len(callers) >= 1
         for c in callers:
@@ -452,7 +452,7 @@ class TestGetCallers:
     def test_callers_compact_has_confidence_flat(self, mcp_setup):
         """In compact mode, confidence/resolution are at the caller level (not nested edge)."""
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", response_mode="compact"))
+        result = get_callers("app/api/auth.py::login", response_mode="compact")
         callers = result["data"]["callers"]
         assert len(callers) >= 1
         for c in callers:
@@ -462,51 +462,51 @@ class TestGetCallers:
 
     def test_default_filters_low_confidence(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::logout"))
+        result = get_callers("app/api/auth.py::logout")
         callers = result["data"]["callers"]
         caller_ids = [c["symbol_id"] for c in callers]
         assert "main.py::main" not in caller_ids
 
     def test_low_min_confidence_includes_low(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::logout", min_confidence=0.3))
+        result = get_callers("app/api/auth.py::logout", min_confidence=0.3)
         callers = result["data"]["callers"]
         caller_ids = [c["symbol_id"] for c in callers]
         assert "main.py::main" in caller_ids
 
     def test_default_excludes_tests(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login"))
+        result = get_callers("app/api/auth.py::login")
         caller_ids = [c["symbol_id"] for c in result["data"]["callers"]]
         for cid in caller_ids:
             assert "test" not in cid.lower()
 
     def test_include_tests_true(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", include_tests=True))
+        result = get_callers("app/api/auth.py::login", include_tests=True)
         caller_ids = [c["symbol_id"] for c in result["data"]["callers"]]
         pass
 
     def test_has_distance(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", depth=1))
+        result = get_callers("app/api/auth.py::login", depth=1)
         for c in result["data"]["callers"]:
             assert "distance" in c
             assert c["distance"] == 1
 
     def test_has_more_false_when_under_limit(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", max_results=50))
+        result = get_callers("app/api/auth.py::login", max_results=50)
         assert result["data"]["has_more"] is False
 
     def test_total_matches_actual_count(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login"))
+        result = get_callers("app/api/auth.py::login")
         assert result["data"]["total"] == len(result["data"]["callers"])
 
     def test_edge_confidence_level_is_valid_standard(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", response_mode="standard"))
+        result = get_callers("app/api/auth.py::login", response_mode="standard")
         for c in result["data"]["callers"]:
             assert c["edge"]["confidence_level"] in ("high", "medium", "low", "unknown")
 
@@ -519,7 +519,7 @@ class TestGetCallees:
 
     def test_callees_have_edge_evidence_standard(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login", response_mode="standard"))
+        result = get_callees("app/api/auth.py::login", response_mode="standard")
         for c in result["data"]["callees"]:
             assert "edge" in c
             edge = c["edge"]
@@ -528,7 +528,7 @@ class TestGetCallees:
 
     def test_callees_compact_has_confidence_flat(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login", response_mode="compact"))
+        result = get_callees("app/api/auth.py::login", response_mode="compact")
         for c in result["data"]["callees"]:
             assert "confidence" in c
             assert "resolution" in c
@@ -536,7 +536,7 @@ class TestGetCallees:
 
     def test_external_callees_separated(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login"))
+        result = get_callees("app/api/auth.py::login")
         external = result["data"].get("external_calls", [])
         callee_ids = [c["symbol_id"] for c in result["data"]["callees"]]
         for ext in external:
@@ -544,14 +544,14 @@ class TestGetCallees:
 
     def test_default_edge_types_calls(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login", response_mode="standard"))
+        result = get_callees("app/api/auth.py::login", response_mode="standard")
         edge_types = {c["edge"]["type"] for c in result["data"]["callees"]}
         assert edge_types <= {"calls"}
 
     def test_symmetric_structure_to_callers(self, mcp_setup):
         from codegraph.mcp_server import get_callers, get_callees
-        callers_result = json.loads(get_callers("app/api/auth.py::login"))
-        callees_result = json.loads(get_callees("app/api/auth.py::login"))
+        callers_result = get_callers("app/api/auth.py::login")
+        callees_result = get_callees("app/api/auth.py::login")
         for key in ("target", "has_more", "total"):
             assert key in callers_result["data"]
             assert key in callees_result["data"]
@@ -567,14 +567,14 @@ class TestGetNeighbors:
     def test_compact_has_groups_not_nodes(self, mcp_setup):
         """Compact mode with group_by_role returns groups + counts, not nodes + edges."""
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login"))
+        result = get_neighbors("app/api/auth.py::login")
         assert "groups" in result["data"]
         assert "counts" in result["data"]
         assert "callers" in result["data"]["groups"]
 
     def test_standard_has_nodes_and_edges(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False)
         assert "nodes" in result["data"]
         assert "edges" in result["data"]
         roles = {n.get("role") for n in result["data"]["nodes"]}
@@ -582,14 +582,14 @@ class TestGetNeighbors:
 
     def test_nodes_have_role_labels_standard(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False)
         roles = {n.get("role") for n in result["data"]["nodes"]}
         assert "center" in roles
         assert "caller" in roles or "callee" in roles
 
     def test_edges_have_full_evidence_standard(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False)
         for e in result["data"]["edges"]:
             assert "source" in e
             assert "target" in e
@@ -600,48 +600,48 @@ class TestGetNeighbors:
 
     def test_edge_types_filter(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", edge_types="calls", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", edge_types="calls", response_mode="standard", group_by_role=False)
         edge_types = {e["type"] for e in result["data"]["edges"]}
         assert edge_types == {"calls"}
 
     def test_direction_upstream(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", direction="upstream", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", direction="upstream", response_mode="standard", group_by_role=False)
         node_ids = {n["symbol_id"] for n in result["data"]["nodes"]}
         assert "main.py::main" in node_ids
 
     def test_direction_downstream(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", direction="downstream", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", direction="downstream", response_mode="standard", group_by_role=False)
         node_ids = {n["symbol_id"] for n in result["data"]["nodes"]}
         assert "app/store/token_store.py::save_token" in node_ids
 
     def test_min_confidence_filters_low(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("main.py::main", min_confidence=0.7, response_mode="standard", group_by_role=False))
+        result = get_neighbors("main.py::main", min_confidence=0.7, response_mode="standard", group_by_role=False)
         for e in result["data"]["edges"]:
             assert e["confidence"] >= 0.7
 
     def test_max_nodes_limit(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", max_nodes=1, response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", max_nodes=1, response_mode="standard", group_by_role=False)
         assert len(result["data"]["nodes"]) <= 1
 
     def test_invalid_direction_error(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", direction="sideways"))
+        result = get_neighbors("app/api/auth.py::login", direction="sideways")
         assert result["ok"] is False
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
     def test_invalid_edge_type_error(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", edge_types="bogus_type"))
+        result = get_neighbors("app/api/auth.py::login", edge_types="bogus_type")
         assert result["ok"] is False
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
     def test_has_limits_info_standard(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", depth=2, max_nodes=15, min_confidence=0.6, response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", depth=2, max_nodes=15, min_confidence=0.6, response_mode="standard", group_by_role=False)
         limits = result["data"]["limits"]
         assert limits["depth"] == 2
         assert limits["max_nodes"] == 15
@@ -649,12 +649,12 @@ class TestGetNeighbors:
 
     def test_center_in_groups(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login"))
+        result = get_neighbors("app/api/auth.py::login")
         assert result["data"]["center"] == "app/api/auth.py::login"
 
     def test_external_grouped_separately(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login"))
+        result = get_neighbors("app/api/auth.py::login")
         if "external_or_unresolved" in result["data"]["groups"]:
             ext_group = result["data"]["groups"]["external_or_unresolved"]
             for n in ext_group:
@@ -669,14 +669,14 @@ class TestGetImpact:
 
     def test_compact_has_confirmed_files(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         assert "confirmed_files" in result["data"]
         assert "possible_files" in result["data"]
         assert "related_tests_count" in result["data"]
 
     def test_standard_has_full_structure(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         assert "confirmed_impact" in result["data"]
         assert "possible_impact" in result["data"]
         assert "upstream_callers" in result["data"]
@@ -686,43 +686,43 @@ class TestGetImpact:
 
     def test_low_confidence_not_in_confirmed(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::logout", min_confidence=0.6, response_mode="standard"))
+        result = get_impact("app/api/auth.py::logout", min_confidence=0.6, response_mode="standard")
         confirmed_ids = {s["symbol_id"] for s in result["data"]["confirmed_impact"]["symbols"]}
         for sid in confirmed_ids:
             assert sid != "main.py::main"
 
     def test_has_risk_level(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         assert result["data"]["risk"]["level"] in ("low", "medium", "high", "critical", "unknown")
         assert "reason_codes" in result["data"]["risk"]  # compact uses reason_codes
 
     def test_risk_reasons_factual_only(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         for reason in result["data"]["risk"].get("reasons", []):
             assert "should" not in reason.lower()
             assert "must" not in reason.lower()
 
     def test_has_upstream_downstream_standard(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         assert "upstream_callers" in result["data"]
         assert "downstream_callees" in result["data"]
 
     def test_has_related_tests_standard(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", include_tests=True, response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", include_tests=True, response_mode="standard")
         assert "related_tests" in result["data"]
 
     def test_has_external_or_unresolved_standard(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         assert "external_or_unresolved" in result["data"]
 
     def test_confirmed_files_have_fields(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         files = result["data"]["confirmed_files"]
         for f in files:
             assert "file_path" in f
@@ -731,7 +731,7 @@ class TestGetImpact:
 
     def test_external_not_in_confirmed_standard(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         confirmed_ids = {s["symbol_id"] for s in result["data"]["confirmed_impact"]["symbols"]}
         external_ids = {e["symbol_id"] for e in result["data"]["external_or_unresolved"]}
         assert confirmed_ids.isdisjoint(external_ids)
@@ -739,13 +739,13 @@ class TestGetImpact:
     def test_impact_mode_conservative_default(self, mcp_setup):
         """Default impact_mode is conservative — no possible impact."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         # conservative mode doesn't include possible by default
         assert "possible_files" in result["data"]
 
     def test_impact_mode_balanced_includes_possible(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True))
+        result = get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True)
         assert "possible_files" in result["data"]
 
 
@@ -757,12 +757,12 @@ class TestRepoStatus:
 
     def test_reports_status(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = json.loads(repo_status())
+        result = repo_status()
         assert result["data"]["status"] in ("fresh", "stale", "missing", "error")
 
     def test_has_index_files(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = json.loads(repo_status())
+        result = repo_status()
         index_files = result["data"]["index_files"]
         assert "graph_json" in index_files
         assert "symbols_json" in index_files
@@ -771,7 +771,7 @@ class TestRepoStatus:
 
     def test_has_stats(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = json.loads(repo_status())
+        result = repo_status()
         stats = result["data"]["stats"]
         assert "files" in stats
         assert "symbols" in stats
@@ -779,7 +779,7 @@ class TestRepoStatus:
 
     def test_stale_has_warning(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = json.loads(repo_status())
+        result = repo_status()
         if result["data"]["status"] == "stale":
             stale_warnings = [w for w in result["warnings"] if w.get("type") == "stale_index"]
             assert len(stale_warnings) > 0
@@ -793,7 +793,7 @@ class TestRepoSummary:
 
     def test_has_stats_breakdown(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         stats = result["data"]["stats"]
         assert "functions" in stats
         assert "classes" in stats
@@ -802,24 +802,24 @@ class TestRepoSummary:
 
     def test_has_top_modules(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert "top_modules" in result["data"]
 
     def test_has_entry_point_candidates(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert "entry_point_candidates" in result["data"]
 
     def test_has_test_coverage_signal(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         tcs = result["data"]["test_coverage_signal"]
         assert "test_files" in tcs
         assert "tested_symbols" in tcs
 
     def test_has_index_status(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert "index_status" in result["data"]
 
 
@@ -841,7 +841,7 @@ class TestErrorHandling:
     def test_error_structure_consistent(self):
         from codegraph.mcp_server import _respond_error, ERROR_CODES
         for code in ERROR_CODES.values():
-            result = json.loads(_respond_error(code, f"Test {code}", tool="test"))
+            result = _respond_error(code, f"Test {code}", tool="test")
             assert result["ok"] is False
             assert result["error"]["code"] == code
             assert result["error"]["message"] == f"Test {code}"
@@ -852,7 +852,7 @@ class TestErrorHandling:
 
     def test_no_traceback_in_response(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("nonexistent::xyz"))
+        result = get_symbol("nonexistent::xyz")
         assert result["ok"] is False
         # Error responses should not contain raw Python tracebacks
         error_msg = result["error"]["message"]
@@ -861,7 +861,7 @@ class TestErrorHandling:
 
     def test_symbol_not_found_details(self, mcp_setup):
         from codegraph.mcp_server import get_symbol, _get_project_info
-        result = json.loads(get_symbol("nonexistent::xyz"))
+        result = get_symbol("nonexistent::xyz")
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
         # Details should contain project info
         assert isinstance(result["error"]["details"], dict)
@@ -875,31 +875,31 @@ class TestBuildContextPack:
 
     def test_no_reading_plan(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = json.loads(build_context_pack("add MFA", mode="summary"))
+        result = build_context_pack("add MFA", mode="summary")
         if result["ok"]:
             assert "reading_plan" not in result["data"]
 
     def test_no_agent_instructions(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = json.loads(build_context_pack("add MFA", mode="summary"))
+        result = build_context_pack("add MFA", mode="summary")
         if result["ok"]:
             assert "agent_instructions" not in result["data"]
 
     def test_no_recommended_context(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = json.loads(build_context_pack("add MFA", mode="summary"))
+        result = build_context_pack("add MFA", mode="summary")
         if result["ok"]:
             assert "recommended_context" not in result["data"]
 
     def test_summary_mode_has_selected_context(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = json.loads(build_context_pack("add MFA", mode="summary"))
+        result = build_context_pack("add MFA", mode="summary")
         if result["ok"]:
             assert "selected_context" in result["data"]
 
     def test_selected_context_items_have_evidence(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = json.loads(build_context_pack("add MFA", mode="summary"))
+        result = build_context_pack("add MFA", mode="summary")
         if result["ok"] and result["data"].get("selected_context"):
             for sc in result["data"]["selected_context"]:
                 assert "confidence" in sc
@@ -930,7 +930,7 @@ class TestIndexStatusIntegration:
             lambda: repo_summary(),
         ]
         for tool_fn in tools:
-            result = json.loads(tool_fn())
+            result = tool_fn()
             assert "warnings" in result, f"Missing warnings in tool response"
             assert isinstance(result["warnings"], list)
 
@@ -950,7 +950,7 @@ class TestIndexStatusIntegration:
             lambda: repo_summary(),
         ]
         for tool_fn in tools:
-            result = json.loads(tool_fn())
+            result = tool_fn()
             assert "index_status" in result, f"Missing index_status in tool response"
             assert "status" in result["index_status"]
 
@@ -963,7 +963,7 @@ class TestResponseMode:
 
     def test_search_symbols_defaults_compact(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("login"))
+        result = search_symbols("login")
         items = result["data"]["results"]
         assert len(items) > 0
         # compact: has reason_code but no long reason
@@ -972,27 +972,27 @@ class TestResponseMode:
 
     def test_search_symbols_standard_has_more_fields(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("login", response_mode="standard"))
+        result = search_symbols("login", response_mode="standard")
         items = result["data"]["results"]
         assert len(items) > 0
         assert "line_start" in items[0]
 
     def test_get_symbol_defaults_compact(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login"))
+        result = get_symbol("app/api/auth.py::login")
         # compact: no source, no long docstring
         assert "source" not in result["data"]
         assert "docstring" not in result["data"]["symbol"]
 
     def test_get_symbol_standard_has_docstring(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", response_mode="standard"))
+        result = get_symbol("app/api/auth.py::login", response_mode="standard")
         # standard mode has full fields including signature (docstring only in verbose which was removed)
         assert "signature" in result["data"]["symbol"]
 
     def test_get_callers_compact_no_edge_nesting(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login"))
+        result = get_callers("app/api/auth.py::login")
         for c in result["data"]["callers"]:
             assert "edge" not in c  # flat in compact mode
             assert "confidence" in c
@@ -1000,32 +1000,32 @@ class TestResponseMode:
 
     def test_get_callers_standard_has_edge_nesting(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", response_mode="standard", include_explanations=True))
+        result = get_callers("app/api/auth.py::login", response_mode="standard", include_explanations=True)
         for c in result["data"]["callers"]:
             assert "edge" in c
             assert "reason" in c["edge"]
 
     def test_get_neighbors_compact_has_groups(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login"))
+        result = get_neighbors("app/api/auth.py::login")
         assert "groups" in result["data"]
         assert "nodes" not in result["data"]
 
     def test_get_neighbors_standard_has_nodes(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False))
+        result = get_neighbors("app/api/auth.py::login", response_mode="standard", group_by_role=False)
         assert "nodes" in result["data"]
         assert "edges" in result["data"]
 
     def test_get_impact_compact_has_reason_codes(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         assert "reason_codes" in result["data"]["risk"]
         assert "reasons" not in result["data"]["risk"]
 
     def test_get_impact_standard_has_reasons(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", response_mode="standard"))
+        result = get_impact("app/api/auth.py::login", response_mode="standard")
         risk = result["data"]["risk"]
         assert "reasons" in risk
 
@@ -1038,26 +1038,26 @@ class TestIncludeExplanations:
 
     def test_callers_compact_no_reason_by_default(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login"))
+        result = get_callers("app/api/auth.py::login")
         for c in result["data"]["callers"]:
             assert "reason" not in c
 
     def test_callers_standard_with_explanations(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", response_mode="standard", include_explanations=True))
+        result = get_callers("app/api/auth.py::login", response_mode="standard", include_explanations=True)
         for c in result["data"]["callers"]:
             assert "reason" in c["edge"]
             assert "evidence" in c["edge"]
 
     def test_callees_compact_no_reason_by_default(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login"))
+        result = get_callees("app/api/auth.py::login")
         for c in result["data"]["callees"]:
             assert "reason" not in c
 
     def test_callees_standard_with_explanations(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login", response_mode="standard", include_explanations=True))
+        result = get_callees("app/api/auth.py::login", response_mode="standard", include_explanations=True)
         for c in result["data"]["callees"]:
             assert "reason" in c["edge"]
 
@@ -1070,39 +1070,39 @@ class TestSearchSymbolsEnhanced:
 
     def test_exact_true_filters_by_name(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("login", exact=True))
+        result = search_symbols("login", exact=True)
         for r in result["data"]["results"]:
             assert r["name"] == "login"
 
     def test_tags_filter(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("", tags="route"))
+        result = search_symbols("", tags="route")
         for r in result["data"]["results"]:
             tags_lower = [t.lower() for t in r.get("tags", [])]
             assert "route" in tags_lower
 
     def test_paths_filter(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("", paths="app/api/**"))
+        result = search_symbols("", paths="app/api/**")
         for r in result["data"]["results"]:
             assert "app/api" in r["file_path"]
 
     def test_exclude_tests_default(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols(""))
+        result = search_symbols("")
         for r in result["data"]["results"]:
             assert r.get("type") != "test"
 
     def test_has_match_sources(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("login"))
+        result = search_symbols("login")
         for r in result["data"]["results"]:
             assert "match_sources" in r
             assert len(r["match_sources"]) > 0
 
     def test_has_pagination_fields(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("login", limit=5, offset=0))
+        result = search_symbols("login", limit=5, offset=0)
         assert "total" in result["data"]
         assert "offset" in result["data"]
         assert "limit" in result["data"]
@@ -1117,13 +1117,13 @@ class TestGetSymbolResolve:
 
     def test_resolve_exact_name_returns_match(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("login", resolve=True))
+        result = get_symbol("login", resolve=True)
         assert result["ok"] is True
         assert result["data"]["symbol"]["name"] == "login"
 
     def test_resolve_multiple_candidates_ambiguous(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("auth", resolve=True))
+        result = get_symbol("auth", resolve=True)
         if not result["ok"]:
             assert result["error"]["code"] == "AMBIGUOUS_SYMBOL"
             assert "candidates" in result["error"]["details"]
@@ -1131,19 +1131,19 @@ class TestGetSymbolResolve:
 
     def test_resolve_with_expected_type_narrows(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("save_token", resolve=True, expected_type="function"))
+        result = get_symbol("save_token", resolve=True, expected_type="function")
         assert result["ok"] is True
         assert result["data"]["symbol"]["type"] == "function"
 
     def test_resolve_with_path_hint_narrows(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("save_token", resolve=True, path_hint="app/store"))
+        result = get_symbol("save_token", resolve=True, path_hint="app/store")
         assert result["ok"] is True
         assert "store" in result["data"]["symbol"]["file_path"]
 
     def test_resolve_false_requires_exact_id(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("login", resolve=False))
+        result = get_symbol("login", resolve=False)
         # Without resolve, "login" is not an exact ID, so it won't be found
         assert result["ok"] is False
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
@@ -1157,7 +1157,7 @@ class TestSourceSnippetControl:
 
     def test_include_source_true_has_source_key(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", include_source=True))
+        result = get_symbol("app/api/auth.py::login", include_source=True)
         assert "source" in result["data"]
         src = result["data"]["source"]
         assert "included" in src
@@ -1165,19 +1165,19 @@ class TestSourceSnippetControl:
 
     def test_source_mode_signature(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", include_source=True, source_mode="signature"))
+        result = get_symbol("app/api/auth.py::login", include_source=True, source_mode="signature")
         src = result["data"]["source"]
         assert src["source_mode"] == "signature"
 
     def test_source_mode_body(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", include_source=True, source_mode="body"))
+        result = get_symbol("app/api/auth.py::login", include_source=True, source_mode="body")
         src = result["data"]["source"]
         assert src["source_mode"] == "body"
 
     def test_max_source_lines_respected(self, mcp_setup):
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", include_source=True, max_source_lines=3))
+        result = get_symbol("app/api/auth.py::login", include_source=True, max_source_lines=3)
         src = result["data"]["source"]
         if src["included"]:
             assert src["lines"] <= 3
@@ -1191,7 +1191,7 @@ class TestCapabilitiesMetadata:
 
     def test_repo_summary_has_capabilities(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert "capabilities" in result["data"]
         caps = result["data"]["capabilities"]
         assert "languages" in caps
@@ -1200,12 +1200,12 @@ class TestCapabilitiesMetadata:
 
     def test_capabilities_include_python(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert "python" in result["data"]["capabilities"]["languages"]
 
     def test_limitations_are_list(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
-        result = json.loads(repo_summary())
+        result = repo_summary()
         assert isinstance(result["data"]["capabilities"]["limitations"], list)
         assert len(result["data"]["capabilities"]["limitations"]) > 0
 
@@ -1218,7 +1218,7 @@ class TestOutputSizeGuard:
 
     def test_search_symbols_has_more_when_results_exceed_limit(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = json.loads(search_symbols("", limit=2, offset=0, exclude_tests=False))
+        result = search_symbols("", limit=2, offset=0, exclude_tests=False)
         total = result["data"]["total"]
         if total > 2:
             assert result["data"]["has_more"] is True
@@ -1227,7 +1227,7 @@ class TestOutputSizeGuard:
 
     def test_callers_has_pagination(self, mcp_setup):
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers("app/api/auth.py::login", limit=5))
+        result = get_callers("app/api/auth.py::login", limit=5)
         assert "has_more" in result["data"]
         assert "total" in result["data"]
         assert "offset" in result["data"]
@@ -1235,7 +1235,7 @@ class TestOutputSizeGuard:
 
     def test_callees_has_pagination(self, mcp_setup):
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees("app/api/auth.py::login", limit=5))
+        result = get_callees("app/api/auth.py::login", limit=5)
         assert "has_more" in result["data"]
         assert "total" in result["data"]
         assert "offset" in result["data"]
@@ -1243,12 +1243,12 @@ class TestOutputSizeGuard:
 
     def test_neighbors_has_truncated_flag(self, mcp_setup):
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors("app/api/auth.py::login"))
+        result = get_neighbors("app/api/auth.py::login")
         assert "truncated" in result["data"]
 
     def test_impact_has_truncated_flag(self, mcp_setup):
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         assert "truncated" in result["data"]
 
 
@@ -1258,8 +1258,7 @@ class TestOutputSizeGuard:
 class TestNoActionAdviceAnywhere:
     """All tools: never include reading_plan, agent_instructions, or action advice."""
 
-    def _check_no_reading_plan(self, result_text: str) -> None:
-        result = json.loads(result_text)
+    def _check_no_reading_plan(self, result: dict) -> None:
         if result["ok"] and "data" in result:
             data_str = json.dumps(result["data"])
             assert "reading_plan" not in data_str.lower()
@@ -1312,7 +1311,7 @@ class TestSymbolResolveInQueryTools:
     def test_get_callers_symbol_resolve_unique(self, mcp_setup):
         """resolve=true with unique match executes query normally."""
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers(symbol="login", resolve=True, path_hint="app/api/auth.py"))
+        result = get_callers(symbol="login", resolve=True, path_hint="app/api/auth.py")
         assert result["ok"]
         assert result["data"]["target"] == "app/api/auth.py::login"
         assert "callers" in result["data"]
@@ -1320,7 +1319,7 @@ class TestSymbolResolveInQueryTools:
     def test_get_callees_symbol_resolve_unique(self, mcp_setup):
         """resolve=true with unique match executes query normally."""
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees(symbol="login", resolve=True, path_hint="app/api/auth.py"))
+        result = get_callees(symbol="login", resolve=True, path_hint="app/api/auth.py")
         assert result["ok"]
         assert result["data"]["target"] == "app/api/auth.py::login"
         assert "callees" in result["data"]
@@ -1328,7 +1327,7 @@ class TestSymbolResolveInQueryTools:
     def test_get_neighbors_symbol_resolve_unique(self, mcp_setup):
         """resolve=true with unique match executes query normally."""
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors(symbol="login", resolve=True, path_hint="app/api/auth.py"))
+        result = get_neighbors(symbol="login", resolve=True, path_hint="app/api/auth.py")
         assert result["ok"]
         assert result["data"]["center"] == "app/api/auth.py::login"
         assert "groups" in result["data"]
@@ -1336,7 +1335,7 @@ class TestSymbolResolveInQueryTools:
     def test_get_impact_symbol_resolve_unique(self, mcp_setup):
         """resolve=true with unique match executes query normally."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact(symbol="login", resolve=True, path_hint="app/api/auth.py"))
+        result = get_impact(symbol="login", resolve=True, path_hint="app/api/auth.py")
         assert result["ok"]
         assert result["data"]["target"] == "app/api/auth.py::login"
 
@@ -1344,7 +1343,7 @@ class TestSymbolResolveInQueryTools:
         """Multiple candidates return AMBIGUOUS_SYMBOL error."""
         from codegraph.mcp_server import get_callers
         # "log" matches both "login" and "logout" in the fixture — ambiguous
-        result = json.loads(get_callers(symbol="log", resolve=True))
+        result = get_callers(symbol="log", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "AMBIGUOUS_SYMBOL"
         assert "candidates" in result["error"]["details"]
@@ -1353,7 +1352,7 @@ class TestSymbolResolveInQueryTools:
         """Multiple candidates return AMBIGUOUS_SYMBOL error."""
         from codegraph.mcp_server import get_callees
         # "login" appears in multiple node IDs in the fixture — ambiguous without hints
-        result = json.loads(get_callees(symbol="log", resolve=True))
+        result = get_callees(symbol="log", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "AMBIGUOUS_SYMBOL"
         assert "candidates" in result["error"]["details"]
@@ -1361,7 +1360,7 @@ class TestSymbolResolveInQueryTools:
     def test_get_neighbors_symbol_resolve_ambiguous(self, mcp_setup):
         """Multiple candidates return AMBIGUOUS_SYMBOL error."""
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors(symbol="log", resolve=True))
+        result = get_neighbors(symbol="log", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "AMBIGUOUS_SYMBOL"
         assert "candidates" in result["error"]["details"]
@@ -1369,7 +1368,7 @@ class TestSymbolResolveInQueryTools:
     def test_get_impact_symbol_resolve_ambiguous(self, mcp_setup):
         """Multiple candidates return AMBIGUOUS_SYMBOL error."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact(symbol="log", resolve=True))
+        result = get_impact(symbol="log", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "AMBIGUOUS_SYMBOL"
         assert "candidates" in result["error"]["details"]
@@ -1377,56 +1376,56 @@ class TestSymbolResolveInQueryTools:
     def test_get_callers_symbol_resolve_not_found(self, mcp_setup):
         """No candidates return SYMBOL_NOT_FOUND."""
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers(symbol="nonexistent_func", resolve=True))
+        result = get_callers(symbol="nonexistent_func", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
 
     def test_get_callees_symbol_resolve_not_found(self, mcp_setup):
         """No candidates return SYMBOL_NOT_FOUND."""
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees(symbol="nonexistent_func", resolve=True))
+        result = get_callees(symbol="nonexistent_func", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
 
     def test_get_neighbors_symbol_resolve_not_found(self, mcp_setup):
         """No candidates return SYMBOL_NOT_FOUND."""
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors(symbol="nonexistent_func", resolve=True))
+        result = get_neighbors(symbol="nonexistent_func", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
 
     def test_get_impact_symbol_resolve_not_found(self, mcp_setup):
         """No candidates return SYMBOL_NOT_FOUND."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact(symbol="nonexistent_func", resolve=True))
+        result = get_impact(symbol="nonexistent_func", resolve=True)
         assert not result["ok"]
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
 
     def test_get_callers_without_symbol_or_id(self, mcp_setup):
         """Neither symbol_id nor symbol returns INVALID_ARGUMENT."""
         from codegraph.mcp_server import get_callers
-        result = json.loads(get_callers())
+        result = get_callers()
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
     def test_get_callees_without_symbol_or_id(self, mcp_setup):
         """Neither symbol_id nor symbol returns INVALID_ARGUMENT."""
         from codegraph.mcp_server import get_callees
-        result = json.loads(get_callees())
+        result = get_callees()
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
     def test_get_neighbors_without_symbol_or_id(self, mcp_setup):
         """Neither symbol_id nor symbol returns INVALID_ARGUMENT."""
         from codegraph.mcp_server import get_neighbors
-        result = json.loads(get_neighbors())
+        result = get_neighbors()
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
     def test_get_impact_without_symbol_or_id(self, mcp_setup):
         """Neither symbol_id nor symbol returns INVALID_ARGUMENT."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact())
+        result = get_impact()
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
@@ -1441,7 +1440,7 @@ class TestImpactSeparation:
         """Sibling symbols (same file, same type) should NOT be in confirmed_files."""
         from codegraph.mcp_server import get_impact
         # logout is a sibling of login in the same file
-        result = json.loads(get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True))
+        result = get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True)
         confirmed_files = [f["file_path"] for f in result["data"]["confirmed_files"]]
         # All confirmed files should be from call chain, not sibling heuristic
         for cf in confirmed_files:
@@ -1453,7 +1452,7 @@ class TestImpactSeparation:
     def test_low_confidence_not_in_confirmed(self, mcp_setup):
         """Low confidence edges (< 0.6) should not appear in confirmed."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", min_confidence=0.6))
+        result = get_impact("app/api/auth.py::login", min_confidence=0.6)
         confirmed = result["data"]["confirmed_files"]
         for f in confirmed:
             conf = f.get("confidence", 1.0)
@@ -1462,7 +1461,7 @@ class TestImpactSeparation:
     def test_possible_files_not_in_confirmed(self, mcp_setup):
         """possible_files and confirmed_files should be disjoint sets."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True))
+        result = get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True)
         confirmed_paths = {f["file_path"] for f in result["data"]["confirmed_files"]}
         possible_paths = {f["file_path"] for f in result["data"].get("possible_files", [])}
         overlap = confirmed_paths & possible_paths
@@ -1471,20 +1470,20 @@ class TestImpactSeparation:
     def test_conservative_is_default(self, mcp_setup):
         """Default impact_mode is conservative — only direct impact."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login"))
+        result = get_impact("app/api/auth.py::login")
         # conservative has depth=1, so callers at depth > 1 won't be included
         assert result["data"]["risk"]["level"] in ("low", "medium", "high", "critical", "unknown")
 
     def test_no_broad_mode(self, mcp_setup):
         """Broad impact_mode should be rejected."""
         from codegraph.mcp_server import get_impact
-        result = json.loads(get_impact("app/api/auth.py::login", impact_mode="broad"))
+        result = get_impact("app/api/auth.py::login", impact_mode="broad")
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
 
     def test_no_verbose_mode(self, mcp_setup):
         """Verbose response_mode should be rejected."""
         from codegraph.mcp_server import get_symbol
-        result = json.loads(get_symbol("app/api/auth.py::login", response_mode="verbose"))
+        result = get_symbol("app/api/auth.py::login", response_mode="verbose")
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
