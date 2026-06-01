@@ -211,28 +211,31 @@ add MFA to login flow
 
 ---
 
-## 6. Dashboard
+## 6. Doctor
 
 ```bash
-$ codegraph dashboard
+$ codegraph doctor
 
-Starting CodeGraph Dashboard at http://127.0.0.1:8765 ...
-
-  Dashboard: http://127.0.0.1:8765
-  API:       http://127.0.0.1:8765/api/repo/summary
-  Press Ctrl+C to stop.
+CodeGraph Doctor — Environment Check
+=====================================
+✓ Python:     3.11.9
+✓ CodeGraph:  0.1.0 (installed)
+✓ MCP config: Claude Code (user)
+✓ Index:      fresh (34 symbols, 52 edges)
+✓ Status:     All checks passed.
 ```
 
-Open `http://localhost:8765` in a browser. The Dashboard provides:
+```bash
+$ codegraph serve --mcp --check
 
-| Page | URL | Description |
-|------|-----|-------------|
-| Overview | `/` | Index stats, file/symbol counts, confidence ratios |
-| Search | `/search` | Search and filter symbols |
-| Detail | `/symbol/:id` | Full symbol info with callers/callees |
-| Graph | `/graph` | Interactive subgraph (React Flow) |
-| Impact | `/impact` | Impact analysis with risk assessment |
-| Context | `/context` | Generate and view Evidence Packs |
+CodeGraph MCP check passed.
+  Project root:  D:\project\CodeGraph-Explorer\examples\demo_python_project
+  Index path:    D:\project\CodeGraph-Explorer\examples\demo_python_project\.codegraph
+  Indexed at:    2026-05-27T07:16:30
+  Symbols:       34
+  Edges:         52
+  Files:         9
+```
 
 ---
 
@@ -266,10 +269,4 @@ codegraph context "refactor auth" --json
 
 ```bash
 codegraph context "refactor user authentication" --max-tokens 8000
-```
-
-### Dashboard in dev mode (with Vite HMR)
-
-```bash
-codegraph dashboard --dev
 ```

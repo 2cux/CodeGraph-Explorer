@@ -203,10 +203,10 @@ def init(
         help="Skip SQLite output",
     ),
 ) -> None:
-    """Initialize local code graph index. One-time setup, then MCP Server and Dashboard work directly.
+    """Initialize local code graph index. One-time setup, then MCP Server works directly.
 
     This scans the codebase, parses AST, and builds the code graph index.
-    Once initialized, MCP Server and Dashboard can consume the index immediately.
+    Once initialized, MCP Server can consume the index immediately.
     """
     root_path = Path(root).resolve()
     if not root_path.is_dir():
@@ -747,7 +747,7 @@ def context(
             typer.echo(f"  ! {w}")
 
 
-# ── dashboard command ─────────────────────────────────────────────────
+# ── api command ───────────────────────────────────────────────────────
 
 
 @app.command()
@@ -765,10 +765,9 @@ def api(
         help="API server port",
     ),
 ) -> None:
-    """Start the CodeGraph API server (backend only, no frontend).
+    """Start the CodeGraph API server.
 
     Reads the .codegraph index from the specified project root.
-    Use 'codegraph dashboard' to start both API + frontend together.
 
     Examples:
         codegraph api --root .
@@ -806,104 +805,6 @@ def api(
         subprocess.run(args, env=env)
     except KeyboardInterrupt:
         typer.echo("\nShutting down...")
-
-
-# ── dashboard command ─────────────────────────────────────────────────
-
-
-@app.command()
-def dashboard(
-    root: str = typer.Option(
-        None, "--root", "-r",
-        help="Project root (optional, auto-detected from cwd)",
-    ),
-    port: int = typer.Option(
-        8765, "--port", "-p",
-        help="Dashboard server port",
-    ),
-    host: str = typer.Option(
-        "127.0.0.1", "--host",
-        help="Bind address",
-    ),
-    open_browser: bool = typer.Option(
-        True, "--open/--no-open",
-        help="Auto-open browser on startup",
-    ),
-    dev: bool = typer.Option(
-        False, "--dev",
-        help="Start in dev mode (no frontend build required, uses Vite proxy)",
-    ),
-) -> None:
-    """Start the local Dashboard (FastAPI backend + React frontend).
-
-    Launches the FastAPI server with the built frontend or in dev mode.
-    Default address: http://localhost:8765
-    """
-    import subprocess
-    import sys
-    import time
-    import webbrowser
-
-    # Check whether .codegraph exists
-    cg_dir = _find_codegraph_dir(root)
-    if cg_dir is None:
-        typer.echo(
-            "Warning: No .codegraph directory found. "
-            "Run 'codegraph init <project>' first to enable full functionality.",
-            err=True,
-        )
-
-    # ── Start server in a subprocess ─────────────────────────────────
-    typer.echo(f"Starting CodeGraph Dashboard at http://{host}:{port} ...")
-
-    env: dict[str, str] = {
-        "_DEV_MODE": "1" if dev else "0",
-    }
-    if root:
-        env["CODEGRAPH_PROJECT_ROOT"] = str(Path(root).resolve())
-
-    merged_env = {**os.environ, **env}
-
-    server_process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "codegraph.api.main:app",
-         "--host", host, "--port", str(port),
-         "--log-level", "info"],
-        env=merged_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-
-    # Give the server a moment to start
-    time.sleep(1.5)
-
-    url = f"http://{host}:{port}"
-
-    if open_browser:
-        webbrowser.open(url)
-
-    typer.echo(f"\n  Dashboard: {url}")
-    typer.echo(f"  API:       {url}/api/repo/summary")
-    typer.echo("  Press Ctrl+C to stop.\n")
-
-    # Stream server output until interrupted
-    try:
-        for line in server_process.stdout or []:
-            text = line.decode("utf-8", errors="replace")
-            # Use buffer write when available (avoids GBK encode errors on Windows),
-            # fall back to print() for test environments where buffer is not a real tty.
-            try:
-                sys.stdout.buffer.write(
-                    text.encode(sys.stdout.encoding or "utf-8", errors="replace")
-                )
-                sys.stdout.buffer.flush()
-            except (AttributeError, OSError):
-                print(text, end="")
-                sys.stdout.flush()
-    except KeyboardInterrupt:
-        typer.echo("\nShutting down...")
-    finally:
-        server_process.terminate()
-        server_process.wait()
 
 
 # ── watch command ────────────────────────────────────────────────────────

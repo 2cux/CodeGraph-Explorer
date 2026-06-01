@@ -10,11 +10,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from codegraph.api.deps import init_store
 from codegraph.api.routes_context import router as context_router
-from codegraph.api.routes_dashboard import router as dashboard_router
 from codegraph.api.routes_graph import router as graph_router
 from codegraph.api.routes_repo import router as repo_router
 from codegraph.api.routes_symbols import router as symbols_router
@@ -99,11 +97,3 @@ app.include_router(repo_router)
 app.include_router(symbols_router)
 app.include_router(graph_router)
 app.include_router(context_router)
-app.include_router(dashboard_router)
-
-# ── Frontend static files (production mode) ──────────────────────────
-_dev = os.environ.get("_DEV_MODE", "0") == "1"
-if not _dev:
-    _frontend_dist = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "dist"
-    if _frontend_dist.exists() and (_frontend_dist / "index.html").exists():
-        app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")

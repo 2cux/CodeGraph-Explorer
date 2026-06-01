@@ -141,13 +141,6 @@ class TestCliContext:
         assert "No .codegraph directory found" in result.output
 
 
-class TestCliDashboard:
-    def test_dashboard_no_index_warning(self, runner, tmp_path):
-        # Dashboard should warn but still start
-        result = runner.invoke(app, ["dashboard", "--root", str(tmp_path),
-                                     "--port", "18765", "--no-open"])
-        # It may start a server process — check that the warning appears
-        assert "No .codegraph directory found" in result.output or result.exit_code == 0
 
 
 # ── Index → Search integration ───────────────────────────────────────────

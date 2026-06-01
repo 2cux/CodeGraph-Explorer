@@ -21,11 +21,6 @@ venv/
 env/
 .virtualenv/
 
-# --- Node / Frontend ---
-node_modules/
-dist/
-build/
-
 # --- IDE / Editor ---
 .vscode/
 .idea/
