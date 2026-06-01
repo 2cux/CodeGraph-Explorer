@@ -40,7 +40,7 @@ def _find_codegraph_dir(root: str | None = None) -> Path | None:
 
 
 def _load_store(root: str | None = None) -> tuple[GraphStore, Path]:
-    """Load the graph from .codegraph/graph.json into a GraphStore.
+    """Load the graph into a GraphStore, preferring SQLite over JSON.
 
     Returns (store, codegraph_dir).
     """
@@ -52,6 +52,23 @@ def _load_store(root: str | None = None) -> tuple[GraphStore, Path]:
         )
         raise typer.Exit(1)
 
+    sqlite_path = cg_dir / "index.sqlite"
+    store = GraphStore()
+    if sqlite_path.exists():
+        try:
+            sql_store = SqliteStore(sqlite_path)
+            sql_store.initialize()
+            node_adapter = TypeAdapter(list[GraphNode])
+            edge_adapter = TypeAdapter(list[GraphEdge])
+            store.load_from_lists(
+                node_adapter.validate_python(sql_store.load_all_nodes()),
+                edge_adapter.validate_python(sql_store.load_all_edges()),
+            )
+            sql_store.close()
+            return store, cg_dir
+        except Exception:
+            pass
+
     graph_path = cg_dir / "graph.json"
     try:
         graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
@@ -59,7 +76,6 @@ def _load_store(root: str | None = None) -> tuple[GraphStore, Path]:
         typer.echo(f"Error: Failed to load {graph_path}: {e}", err=True)
         raise typer.Exit(1)
 
-    store = GraphStore()
     store.load_from_graph(graph)
     return store, cg_dir
 
@@ -462,8 +478,17 @@ def search(
     ),
 ) -> None:
     """Search for code symbols across the indexed codebase."""
-    store, _ = _load_store(root)
-    result_dict = graph_query.search_symbols(store, query)
+    store, cg_dir = _load_store(root)
+    sqlite_path = cg_dir / "index.sqlite"
+    if sqlite_path.exists():
+        sql_store = SqliteStore(sqlite_path)
+        try:
+            sql_store.initialize()
+            result_dict = graph_query.search_symbols(sql_store, query)
+        finally:
+            sql_store.close()
+    else:
+        result_dict = graph_query.search_symbols(store, query)
     items = result_dict.get("results", []) if isinstance(result_dict, dict) else result_dict
     total = result_dict.get("total", len(items)) if isinstance(result_dict, dict) else len(items)
 
@@ -1143,10 +1168,13 @@ def doctor(
             "metadata.json": (cg_dir / "metadata.json").exists(),
             "index.sqlite": (cg_dir / "index.sqlite").exists(),
         }
-        all_present = all(index_files.values())
-        missing = [k for k, v in index_files.items() if not v]
-        if all_present:
+        required_present = all(v for k, v in index_files.items() if k != "index.sqlite")
+        missing = [k for k, v in index_files.items() if not v and k != "index.sqlite"]
+        if required_present and index_files["index.sqlite"]:
             ok("All index files present")
+        elif required_present:
+            warn("index.sqlite missing; JSON fallback will be used")
+            typer.echo(f"     Run: cd {project_root} && codegraph init --force")
         else:
             fail(f"Missing index files: {', '.join(missing)}")
             typer.echo(f"     Run: cd {project_root} && codegraph init --force")
@@ -1177,6 +1205,27 @@ def doctor(
                     warn(f"Index is stale — {result.total_changes} file(s) changed")
                     typer.echo(f"     Run: codegraph init --incremental")
         typer.echo()
+
+    # 5b. Storage integrity
+    typer.echo("5b. Storage integrity")
+    if cg_dir.exists():
+        try:
+            from codegraph.storage.integrity import check_storage_integrity
+            integrity = check_storage_integrity(cg_dir)
+            for check in integrity["checks"]:
+                status = check["status"]
+                message = check["message"]
+                if status == "ok":
+                    ok(message)
+                elif status == "warning":
+                    warn(message)
+                else:
+                    fail(message)
+        except Exception as e:
+            fail(f"Storage integrity check failed: {e}")
+    else:
+        warn("Skipped because .codegraph is missing")
+    typer.echo()
 
     # 6. MCP config paths
     typer.echo("6. MCP configuration")

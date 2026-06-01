@@ -42,6 +42,15 @@ def search_symbols(
       ``id``, ``symbol_id``, ``name``, ``type``, ``file_path``,
       ``score``, ``match_sources``.
     """
+    if hasattr(store, "search_symbols"):
+        return store.search_symbols(
+            query=query,
+            type_filter=type_filter,
+            file_filter=file_filter,
+            limit=limit,
+            offset=offset,
+        )
+
     nodes = store.search_nodes(query)
     q = query.lower() if query else ""
     results: list[dict] = []

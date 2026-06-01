@@ -17,8 +17,11 @@ from codegraph.api.routes_graph import router as graph_router
 from codegraph.api.routes_repo import router as repo_router
 from codegraph.api.routes_symbols import router as symbols_router
 from codegraph.graph.models import CodeGraph
+from codegraph.graph.models import GraphEdge, GraphNode
 from codegraph.graph.store import GraphStore
 from codegraph.storage.file_store import FileStore
+from codegraph.storage.sqlite_store import SqliteStore
+from pydantic import TypeAdapter
 
 
 def _resolve_project_root() -> Path:
@@ -30,7 +33,22 @@ def _resolve_project_root() -> Path:
 
 
 def _load_graph_from_disk(codegraph_dir: Path, store: GraphStore) -> None:
-    """Try to load a previously saved graph into the store."""
+    """Try to load a previously saved graph into the store, preferring SQLite."""
+    sqlite_path = codegraph_dir / "index.sqlite"
+    if sqlite_path.exists():
+        try:
+            sql_store = SqliteStore(sqlite_path)
+            sql_store.initialize()
+            node_adapter = TypeAdapter(list[GraphNode])
+            edge_adapter = TypeAdapter(list[GraphEdge])
+            store.load_from_lists(
+                node_adapter.validate_python(sql_store.load_all_nodes()),
+                edge_adapter.validate_python(sql_store.load_all_edges()),
+            )
+            sql_store.close()
+            return
+        except Exception:
+            pass
     graph_path = codegraph_dir / "graph.json"
     if not graph_path.exists():
         return

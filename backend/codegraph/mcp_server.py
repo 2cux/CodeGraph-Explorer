@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import TypeAdapter
 
 # ── Zero-Telemetry ───────────────────────────────────────────────────────
 # CodeGraph Explorer is a local-only tool. It never uploads code, file paths,
@@ -62,6 +63,7 @@ from codegraph.graph.warnings import build_warning, build_stale_index_warning
 from codegraph.indexer.scanner import _is_safe_path
 from codegraph.indexer.status import detect_status
 from codegraph.storage.file_store import FileStore
+from codegraph.storage.sqlite_store import SqliteStore
 from codegraph.storage.state_store import IndexStateStore
 
 # ── MCP Server ────────────────────────────────────────────────────────────
@@ -668,7 +670,7 @@ def _resolve_project_root(cli_root: str | None) -> str | None:
 
 
 def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
-    """Load graph into memory (cached after first call)."""
+    """Load graph into memory (cached after first call), preferring SQLite."""
     global _store, _cg_dir, _project_root
 
     if _store is not None and _cg_dir is not None:
@@ -694,11 +696,27 @@ def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
         ])
         raise RuntimeError("\n".join(lines))
 
-    graph_path = cg_dir / "graph.json"
-    graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
-
     store = GraphStore()
-    store.load_from_graph(graph)
+    sqlite_path = cg_dir / "index.sqlite"
+    if sqlite_path.exists():
+        try:
+            sql_store = SqliteStore(sqlite_path)
+            sql_store.initialize()
+            node_adapter = TypeAdapter(list[GraphNode])
+            edge_adapter = TypeAdapter(list[GraphEdge])
+            store.load_from_lists(
+                node_adapter.validate_python(sql_store.load_all_nodes()),
+                edge_adapter.validate_python(sql_store.load_all_edges()),
+            )
+            sql_store.close()
+        except Exception:
+            graph_path = cg_dir / "graph.json"
+            graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
+            store.load_from_graph(graph)
+    else:
+        graph_path = cg_dir / "graph.json"
+        graph = CodeGraph.model_validate_json(graph_path.read_text(encoding="utf-8"))
+        store.load_from_graph(graph)
 
     _store = store
     _cg_dir = cg_dir
@@ -1143,14 +1161,23 @@ def search_symbols(
         )
 
     try:
-        store, _ = _load_store()
-        result = graph_query.search_symbols(
-            store,
-            query=query,
-            type_filter=type_filter,
-            file_filter=file_filter,
-            limit=9999,  # Fetch all, then shape
-        )
+        store, cg_dir = _load_store()
+        sqlite_path = cg_dir / "index.sqlite"
+        query_store: Any = store
+        try:
+            if sqlite_path.exists():
+                query_store = SqliteStore(sqlite_path)
+                query_store.initialize()
+            result = graph_query.search_symbols(
+                query_store,
+                query=query,
+                type_filter=type_filter,
+                file_filter=file_filter,
+                limit=effective_limit + offset,
+            )
+        finally:
+            if isinstance(query_store, SqliteStore):
+                query_store.close()
     except RuntimeError as e:
         return _respond_error(
             code=ERROR_CODES["INDEX_MISSING"],
