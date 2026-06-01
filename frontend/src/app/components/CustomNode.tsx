@@ -27,36 +27,48 @@ const nodeKindStyles = (kind: NodeKind) => {
 
 const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps) {
   const [hovered, setHovered] = useState(false);
-  const { symbolId, name, kind, filePath, isCenter, isSelected } = data;
+  const { symbolId, name, kind, filePath, isCenter, isSelected, hierarchyLevel, hierarchyGroup } = data;
   const fpShort = filePathShort(filePath);
   const styles = nodeKindStyles(kind);
+  const isExternal = kind === "external_symbol";
 
   // Compute border / background based on state
   let borderColor = "var(--cg-border)";
   let bgColor = "var(--cg-bg-panel)";
   let borderWidth = 1;
+  let borderStyle = "solid";
+  let nodeOpacity = 1;
+
+  if (isExternal) {
+    borderStyle = "dashed";
+    borderColor = "var(--cg-text-muted)";
+    nodeOpacity = 0.55;
+  }
 
   if (isCenter) {
-    borderColor = KIND_COLOR[kind];
+    borderColor = isExternal ? "var(--cg-warning)" : KIND_COLOR[kind];
     borderWidth = 2;
+    borderStyle = "solid";
     bgColor = "color-mix(in srgb, var(--cg-accent) 6%, var(--cg-bg-panel))";
   } else if (isSelected || selected) {
     borderColor = "var(--cg-accent)";
     borderWidth = 2;
+    borderStyle = "solid";
     bgColor = "color-mix(in srgb, var(--cg-accent) 4%, var(--cg-bg-panel))";
   }
 
   return (
     <div
-      className="cg-rf-node"
+      className={`cg-rf-node${isExternal ? " cg-node-external" : ""}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         minWidth: NODE_MIN_WIDTH,
         borderRadius: 6,
         overflow: "hidden",
-        border: `${borderWidth}px solid ${borderColor}`,
+        border: `${borderWidth}px ${borderStyle} ${borderColor}`,
         background: bgColor,
+        opacity: nodeOpacity,
         boxShadow: isCenter
           ? "0 0 0 2px color-mix(in srgb, var(--cg-accent) 20%, transparent)"
           : selected
@@ -68,7 +80,10 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
     >
       <div style={{ display: "flex", height: "100%", minHeight: 44 }}>
         {/* Left color bar */}
-        <div style={styles.colorBar} />
+        <div style={{
+          ...styles.colorBar,
+          opacity: isExternal ? 0.5 : 1,
+        }} />
 
         {/* Content */}
         <div
@@ -82,10 +97,23 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
             justifyContent: "center",
           }}
         >
-          {/* Type label */}
-          <span style={styles.typeLabel}>
-            {KIND_LABEL[kind]}
-          </span>
+          {/* Type label with hierarchy depth indicator */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={styles.typeLabel}>
+              {KIND_LABEL[kind]}
+            </span>
+            {hierarchyLevel !== undefined && hierarchyLevel > 1 && (
+              <span
+                style={{
+                  width: 4, height: 4, borderRadius: "50%",
+                  background: KIND_COLOR[kind],
+                  opacity: 0.5,
+                  flexShrink: 0,
+                }}
+                title={`Nested ${hierarchyLevel} levels deep`}
+              />
+            )}
+          </div>
 
           {/* Name */}
           <span
@@ -170,6 +198,11 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
           }}
         >
           {symbolId}
+          {hierarchyGroup && (
+            <span style={{ display: "block", color: "var(--cg-text-muted)", fontSize: 9 }}>
+              Group: {hierarchyGroup}
+            </span>
+          )}
         </div>
       )}
     </div>

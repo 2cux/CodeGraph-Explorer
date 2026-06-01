@@ -20,11 +20,12 @@ import "@xyflow/react/dist/style.css";
 
 import CustomNode from "./CustomNode";
 import CustomEdge from "./CustomEdge";
+import HierarchyGroupNode from "./HierarchyGroupNode";
 import type { RFNodeData, RFEdgeData } from "./graphTransforms";
 
 // ── Node / Edge types (stable references) ─────────────────────────────
 
-const nodeTypes = { customNode: CustomNode };
+const nodeTypes = { customNode: CustomNode, hierarchyGroup: HierarchyGroupNode };
 const edgeTypes = { customEdge: CustomEdge };
 
 // ── Public types ──────────────────────────────────────────────────────
@@ -41,6 +42,10 @@ interface ReactFlowGraphProps {
   selectedNodeId?: string | null;
   onSelectNode?: (nodeId: string) => void;
   onSelectEdge?: (edge: EdgeIdentity) => void;
+  /** Called when a hierarchy group parent is clicked (expand/collapse toggle) */
+  onToggleGroup?: (groupId: string) => void;
+  /** Non-null when node capping has limited the display */
+  cappingWarning?: { visibleNodes: number; totalNodes: number } | null;
 }
 
 // ── Outer wrapper (provides ReactFlow context) ────────────────────────
@@ -61,6 +66,8 @@ function ReactFlowGraphInner({
   selectedNodeId,
   onSelectNode,
   onSelectEdge,
+  onToggleGroup,
+  cappingWarning,
 }: ReactFlowGraphProps) {
   const { fitView } = useReactFlow();
 
@@ -129,9 +136,15 @@ function ReactFlowGraphInner({
   // Handlers
   const handleNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
+      const data = node.data as RFNodeData;
+      // If clicking a group parent, toggle expand/collapse
+      if (data.isGroupParent && onToggleGroup) {
+        onToggleGroup(node.id);
+        return;
+      }
       onSelectNode?.(node.id);
     },
-    [onSelectNode],
+    [onSelectNode, onToggleGroup],
   );
 
   const handleEdgeClick: EdgeMouseHandler = useCallback(
@@ -153,6 +166,19 @@ function ReactFlowGraphInner({
   // Don't persist internal layout changes (we control positions)
   const handleNodesChange: OnNodesChange = useCallback(() => {}, []);
   const handleEdgesChange: OnEdgesChange = useCallback(() => {}, []);
+
+  // Handle MiniMap node click to navigate
+  const handleMiniMapNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      const data = node.data as RFNodeData;
+      if (data.isGroupParent && onToggleGroup) {
+        onToggleGroup(node.id);
+        return;
+      }
+      onSelectNode?.(node.id);
+    },
+    [onSelectNode, onToggleGroup],
+  );
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
@@ -195,6 +221,7 @@ function ReactFlowGraphInner({
         />
         <MiniMap
           position="bottom-left"
+          onNodeClick={handleMiniMapNodeClick}
           style={{
             background: "var(--cg-bg-panel)",
             border: "1px solid var(--cg-border)",
@@ -203,9 +230,12 @@ function ReactFlowGraphInner({
           maskColor="var(--cg-bg-canvas, #111)CC"
           nodeColor={(n) => {
             const kind = (n.data as RFNodeData)?.kind;
-            if (kind === "class") return "#34d399";
+            if (kind === "class" || kind === "class_group") return "#34d399";
             if (kind === "function" || kind === "method") return "#6366f1";
             if (kind === "test") return "#4ADE80";
+            if (kind === "file_group") return "#a78bfa";
+            if (kind === "module_group") return "#818cf8";
+            if (kind === "external_symbol") return "#f59e0b";
             return "#888";
           }}
         />
@@ -227,6 +257,29 @@ function ReactFlowGraphInner({
             Fit View
           </button>
         </Panel>
+
+        {/* Cap warning banner */}
+        {cappingWarning && (
+          <Panel position="top-center">
+            <div
+              className="cg-cap-warning"
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                background: "var(--cg-warning-alpha)",
+                border: "1px solid color-mix(in srgb, var(--cg-warning) 30%, transparent)",
+                fontSize: 11,
+                color: "var(--cg-text-primary)",
+                textAlign: "center" as const,
+                whiteSpace: "nowrap" as const,
+              }}
+            >
+              Showing top {cappingWarning.visibleNodes} of{" "}
+              {cappingWarning.totalNodes} nodes. Use search to explore
+              more or expand groups.
+            </div>
+          </Panel>
+        )}
       </ReactFlow>
     </div>
   );

@@ -1,6 +1,6 @@
 import type { Node, Edge } from "@xyflow/react";
 import { GraphCanvas, type CanvasState, type GraphNodeData, type GraphEdgeData, type NodeKind } from "../app/components/GraphCanvas";
-import type { RFNodeData, RFEdgeData } from "../app/components/graphTransforms";
+import type { RFNodeData, RFEdgeData, CappingWarning } from "../app/components/graphTransforms";
 import type { EdgeIdentity } from "../app/components/ReactFlowGraph";
 
 interface Props {
@@ -18,6 +18,12 @@ interface Props {
   onSelectFile?: (filePath: string) => void;
   onSelectEdge?: (edge: EdgeIdentity) => void;
   onSearchSelect?: (symbolId: string) => void;
+  /** Callback when a hierarchy group parent is toggled */
+  onToggleGroup?: (groupId: string) => void;
+  /** Non-null when node capping has limited the display */
+  cappingWarning?: CappingWarning | null;
+  /** Whether hierarchy folding is enabled */
+  hierarchyEnabled?: boolean;
   /** @deprecated kept for tests */
   nodes?: GraphNodeData[];
   /** @deprecated kept for tests */
@@ -35,6 +41,9 @@ export default function GraphExplorer({
   onSelectFile,
   onSelectEdge,
   onSearchSelect,
+  onToggleGroup,
+  cappingWarning,
+  hierarchyEnabled,
   nodes,
   edges,
 }: Props) {
@@ -105,6 +114,9 @@ export default function GraphExplorer({
         onSelectFile={onSelectFile}
         onSelectEdge={onSelectEdge}
         onSearchSelect={onSearchSelect}
+        onToggleGroup={onToggleGroup}
+        cappingWarning={cappingWarning}
+        hierarchyEnabled={hierarchyEnabled}
         nodes={nodes}
         edges={edges}
       />

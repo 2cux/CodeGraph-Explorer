@@ -19,6 +19,10 @@
   --cg-error: #DC2626;
   --cg-error-alpha: rgba(220, 38, 38, 0.10);
   --cg-grid: rgba(17,24,39,0.05);
+  /* Hierarchy colors */
+  --cg-hierarchy-module: #818cf8;
+  --cg-hierarchy-file: #a78bfa;
+  --cg-hierarchy-class: #34d399;
 }
 
 .cg-dark {
@@ -40,6 +44,10 @@
   --cg-error: #F87171;
   --cg-error-alpha: rgba(248, 113, 113, 0.12);
   --cg-grid: rgba(255,255,255,0.035);
+  /* Hierarchy colors (dark variants) */
+  --cg-hierarchy-module: #a5b4fc;
+  --cg-hierarchy-file: #c4b5fd;
+  --cg-hierarchy-class: #6ee7b7;
 }
 
 .cg-root {
@@ -195,6 +203,21 @@
 /* React Flow attribution hide */
 .react-flow__attribution {
   display: none !important;
+}
+
+/* External node styling */
+.cg-node-external {
+  opacity: 0.55;
+}
+
+/* Group parent nodes */
+.cg-group-parent {
+  border-radius: 8px;
+}
+
+/* Cap warning banner */
+.cg-cap-warning {
+  transition: opacity 200ms ease;
 }
 
 /* Spin animation (for loading spinners) */

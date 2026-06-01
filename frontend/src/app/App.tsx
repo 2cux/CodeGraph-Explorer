@@ -6,7 +6,7 @@ import { Topbar, type IndexStatus, type PageTab } from "./components/Topbar";
 import { RightInspector, type InspectorTarget, type InspectorMode, type NodeInspectorData, type EdgeInspectorData } from "./components/RightInspector";
 import { Library } from "./components/Library";
 import { Toast, type ToastData } from "./components/Toast";
-import { toReactFlowGraph, type RFNodeData, type RFEdgeData } from "./components/graphTransforms";
+import { toReactFlowGraph, type RFNodeData, type RFEdgeData, type CappingWarning } from "./components/graphTransforms";
 import type { EdgeIdentity } from "./components/ReactFlowGraph";
 import GraphExplorer, { type CanvasState } from "../pages/GraphExplorer";
 import SymbolSearch from "../pages/SymbolSearch";
@@ -33,6 +33,12 @@ export default function App() {
   const [rfEdges, setRfEdges] = useState<Edge<RFEdgeData>[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [overviewData, setOverviewData] = useState<OverviewResponse | null>(null);
+
+  // ── Hierarchy folding state ─────────────────────────────────────────
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  const expandedGroupIdsRef = useRef(expandedGroupIds);
+  expandedGroupIdsRef.current = expandedGroupIds;
+  const [cappingWarning, setCappingWarning] = useState<CappingWarning | null>(null);
 
   // Inspector data
   const [nodeInspectorData, setNodeInspectorData] = useState<NodeInspectorData | null>(null);
@@ -197,16 +203,30 @@ export default function App() {
         tests_count: 0,
       });
 
-      // Transform to React Flow format
-      const { nodes, edges } = toReactFlowGraph(subgraph, {
+      // Auto-expand the group containing this symbol
+      if (detail.file_path) {
+        const fileGroupId = `file:${detail.file_path.replace(/\\/g, "/")}`;
+        setExpandedGroupIds((prev) => {
+          if (prev.has(fileGroupId)) return prev;
+          const next = new Set(prev);
+          next.add(fileGroupId);
+          return next;
+        });
+      }
+
+      // Transform to React Flow format with hierarchy + capping
+      const { nodes, edges, cappingWarning: capWarn } = toReactFlowGraph(subgraph, {
         centerNodeId: nodeId,
         centerName: detail.name,
         centerFilePath: detail.file_path,
         selectedNodeId: nodeId,
+        expandedGroupIds: expandedGroupIdsRef.current,
+        nodeCap: 150,
       });
 
       setRfNodes(nodes);
       setRfEdges(edges);
+      setCappingWarning(capWarn);
       setCanvasState("focused");
       setInspectorMode("node");
     } catch (e) {
@@ -278,6 +298,40 @@ export default function App() {
     }
   }, [showToast]);
 
+  // ── Hierarchy group toggle ─────────────────────────────────────────
+  const handleToggleGroup = useCallback((groupId: string) => {
+    setExpandedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
+
+    // Show group info in inspector
+    setInspectorOpen(true);
+    setInspectorTarget("node");
+    setSelectedNodeId(groupId);
+
+    // Find the group node in current rfNodes to get its data
+    const groupNode = rfNodes.find((n) => n.id === groupId && n.data.isGroupParent);
+    if (groupNode) {
+      const d = groupNode.data;
+      setNodeInspectorData({
+        symbol_id: groupId,
+        name: d.name,
+        type: d.kind,
+        file_path: d.filePath || groupId,
+        is_group_parent: true,
+        child_count: d.childCount,
+        child_kind_summary: d.childKindSummary,
+      });
+      setInspectorMode("node");
+    }
+  }, [rfNodes]);
+
   return (
     <>
       <div
@@ -311,6 +365,9 @@ export default function App() {
                 selectedNodeId={selectedNodeId}
                 overviewData={overviewData}
                 indexStatus={indexStatus}
+                onToggleGroup={handleToggleGroup}
+                cappingWarning={cappingWarning}
+                hierarchyEnabled={true}
                 onSelectNode={(nodeId) => {
                   if (nodeId === selectedNodeId) {
                     // Re-click same node: reload center
@@ -383,6 +440,8 @@ export default function App() {
               onRetry={() => setInspectorMode("auto")}
               nodeData={inspectorTarget === "node" ? nodeInspectorData : null}
               edgeData={inspectorTarget === "edge" ? edgeInspectorData : null}
+              onSelectSymbol={handleSelectSymbol}
+              onToggleGroup={handleToggleGroup}
             />
           )}
         </div>

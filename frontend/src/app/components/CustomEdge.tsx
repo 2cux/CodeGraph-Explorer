@@ -26,12 +26,21 @@ function getEdgeStyle(data: RFEdgeData | undefined): {
   const edgeType = data?.edgeType || "calls";
   const confidence = data?.confidence ?? 0.5;
   const isLowConf = confidence < 0.6;
+  const isExternal = data?.isExternal === true;
 
-  // Default: solid calls edge
   let stroke = "var(--cg-text-muted)";
   let strokeDasharray = "none";
   let opacity = 0.7;
   let strokeWidth = 1.5;
+
+  // External/unresolved edges: heavily dimmed
+  if (isExternal) {
+    stroke = "var(--cg-text-muted)";
+    strokeDasharray = "2 6";
+    opacity = 0.25;
+    strokeWidth = 1;
+    return { stroke, strokeDasharray, opacity, strokeWidth };
+  }
 
   if (edgeType === "calls") {
     stroke = "var(--cg-text-secondary)";
@@ -55,7 +64,7 @@ function getEdgeStyle(data: RFEdgeData | undefined): {
     strokeWidth = 1;
   }
 
-  // Low confidence overrides
+  // Low confidence overrides (order matters: applied after type defaults)
   if (isLowConf) {
     stroke = "var(--cg-warning)";
     strokeDasharray = "4 4";
@@ -91,6 +100,7 @@ const CustomEdge = memo(function CustomEdge({
   const edgeType = data?.edgeType || "calls";
   const labelColor = EDGE_LABEL_COLORS[edgeType] || "var(--cg-text-muted)";
   const isLowConf = (data?.confidence ?? 0.5) < 0.6;
+  const isExternal = data?.isExternal === true;
 
   // Selected edge gets a glow
   const glowFilter = selected ? "drop-shadow(0 0 3px var(--cg-accent))" : undefined;
@@ -141,6 +151,11 @@ const CustomEdge = memo(function CustomEdge({
           className="nodrag nopan"
         >
           {edgeType}
+          {isExternal && (
+            <span style={{ marginLeft: 3, color: "var(--cg-text-muted)", fontStyle: "italic" }}>
+              {" "}ext
+            </span>
+          )}
           {isLowConf && (
             <span style={{ marginLeft: 3, color: "var(--cg-warning)" }}>
               {" "}{data?.confidence?.toFixed(2)}

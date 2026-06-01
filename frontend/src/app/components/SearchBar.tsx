@@ -6,11 +6,14 @@ interface SearchBarProps {
   onSelectResult: (symbolId: string) => void;
   /** Optional placeholder text */
   placeholder?: string;
+  /** Optional type filter for search results */
+  typeFilter?: string;
 }
 
 export default function SearchBar({
   onSelectResult,
   placeholder = "Search symbols...",
+  typeFilter,
 }: SearchBarProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -49,7 +52,7 @@ export default function SearchBar({
     setLoading(true);
     setError(null);
     try {
-      const res = await api.symbols.search(q, undefined, undefined, 5, 0);
+      const res = await api.symbols.search(q, typeFilter || undefined, undefined, 5, 0);
       setResults(res.results.slice(0, 5));
       setOpen(res.results.length > 0);
       setHighlightIndex(-1);

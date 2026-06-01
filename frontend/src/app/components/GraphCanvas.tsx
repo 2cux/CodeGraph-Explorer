@@ -4,7 +4,7 @@ import dagre from "@dagrejs/dagre";
 import { Spinner } from "./Spinner";
 import SearchBar from "./SearchBar";
 import ReactFlowGraph, { type EdgeIdentity } from "./ReactFlowGraph";
-import type { RFNodeData, RFEdgeData } from "./graphTransforms";
+import type { RFNodeData, RFEdgeData, CappingWarning } from "./graphTransforms";
 import type { OverviewResponse } from "../../api";
 
 // ── Re-exported types (backward compatibility) ────────────────────────
@@ -107,6 +107,12 @@ interface Props {
   /** Legacy node/edge props (kept for tests/transition) */
   nodes?: GraphNodeData[];
   edges?: GraphEdgeData[];
+  /** Callback when a hierarchy group parent is toggled (expand/collapse) */
+  onToggleGroup?: (groupId: string) => void;
+  /** Non-null when node capping has limited the display */
+  cappingWarning?: CappingWarning | null;
+  /** Whether hierarchy folding is enabled */
+  hierarchyEnabled?: boolean;
 }
 
 // ── Component ─────────────────────────────────────────────────────────
@@ -121,6 +127,8 @@ export function GraphCanvas({
   selectedNodeId,
   overviewData,
   onSearchSelect,
+  onToggleGroup,
+  cappingWarning,
   nodes: _legacyNodes,
   edges: _legacyEdges,
 }: Props) {
@@ -214,6 +222,8 @@ export function GraphCanvas({
         selectedNodeId={selectedNodeId}
         onSelectNode={onSelectNode}
         onSelectEdge={onSelectEdge}
+        onToggleGroup={onToggleGroup}
+        cappingWarning={cappingWarning}
       />
     </div>
   );

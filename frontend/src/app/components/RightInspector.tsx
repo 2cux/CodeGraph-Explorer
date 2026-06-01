@@ -21,6 +21,16 @@ export interface NodeInspectorData {
   callees_count?: number;
   tests_count?: number;
   impact_files_count?: number;
+  /** Count of edges incident to this node */
+  edge_count?: number;
+  /** Count of distinct neighbor nodes */
+  neighbor_count?: number;
+  /** True if this is a synthetic group parent node */
+  is_group_parent?: boolean;
+  /** For group parents: count of child symbols */
+  child_count?: number;
+  /** For group parents: kind breakdown string */
+  child_kind_summary?: string;
 }
 
 export interface EdgeInspectorData {
@@ -44,6 +54,10 @@ interface Props {
   onRetry?: () => void;
   nodeData?: NodeInspectorData | null;
   edgeData?: EdgeInspectorData | null;
+  /** Called when user clicks "Re-center" to navigate to this symbol */
+  onSelectSymbol?: (symbolId: string) => void;
+  /** Called when user clicks expand/collapse on a group parent node */
+  onToggleGroup?: (groupId: string) => void;
 }
 
 export function RightInspector({
@@ -54,6 +68,8 @@ export function RightInspector({
   onRetry,
   nodeData,
   edgeData,
+  onSelectSymbol,
+  onToggleGroup,
 }: Props) {
   const effective: InspectorMode = mode ?? target;
   return (
@@ -68,7 +84,7 @@ export function RightInspector({
       }}
     >
       <InspectorHeader target={target} onClose={onClose} onSwitch={onSwitch} />
-      {effective === "node" && <NodeInspector data={nodeData} />}
+      {effective === "node" && <NodeInspector data={nodeData} onSelectSymbol={onSelectSymbol} onToggleGroup={onToggleGroup} />}
       {effective === "edge" && <EdgeInspector data={edgeData} />}
       {effective === "loading" && <LoadingBody />}
       {effective === "error" && <ErrorBody onRetry={onRetry} />}
@@ -146,7 +162,15 @@ function InspectorSection({ title, children, first = false }: { title: string; c
   );
 }
 
-function NodeInspector({ data }: { data?: NodeInspectorData | null }) {
+function NodeInspector({
+  data,
+  onSelectSymbol,
+  onToggleGroup,
+}: {
+  data?: NodeInspectorData | null;
+  onSelectSymbol?: (symbolId: string) => void;
+  onToggleGroup?: (groupId: string) => void;
+}) {
   if (!data) {
     return (
       <div style={{ padding: "14px", fontSize: 11, color: "var(--cg-text-muted)" }}>
@@ -164,6 +188,45 @@ function NodeInspector({ data }: { data?: NodeInspectorData | null }) {
   return (
     <div style={{ padding: "12px 14px 16px", display: "flex", flexDirection: "column" }}>
       <NodeIdentity kind={kind} name={data.name} location={location} />
+
+      {/* Group parent summary */}
+      {data.is_group_parent && (
+        <InspectorSection title="Group Summary">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <KV label="Group type" value={data.type} mono />
+            {data.child_count != null && (
+              <KV label="Child symbols" value={String(data.child_count)} mono />
+            )}
+            {data.child_kind_summary && (
+              <KV label="Breakdown" value={data.child_kind_summary} />
+            )}
+            {onToggleGroup && (
+              <div style={{ marginTop: 4 }}>
+                <button
+                  onClick={() => onToggleGroup(data.symbol_id)}
+                  style={{
+                    gap: 6, height: 26, padding: "0 10px",
+                    background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
+                    color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
+                    justifyContent: "flex-start", width: "100%",
+                    fontFamily: "inherit",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                    e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.borderColor = "var(--cg-border)";
+                  }}
+                >
+                  Expand / Collapse
+                </button>
+              </div>
+            )}
+          </div>
+        </InspectorSection>
+      )}
 
       {data.signature && (
         <InspectorSection title="Signature">
@@ -189,6 +252,74 @@ function NodeInspector({ data }: { data?: NodeInspectorData | null }) {
         )}
         {data.visibility && <KV label="visibility" value={data.visibility} mono />}
       </InspectorSection>
+
+      {/* Quick action: neighbors */}
+      {!data.is_group_parent && onSelectSymbol && (
+        <InspectorSection title="Explore">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <button
+              onClick={() => onSelectSymbol(data.symbol_id)}
+              style={{
+                gap: 6, height: 26, padding: "0 10px",
+                background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
+                color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
+                justifyContent: "flex-start", width: "100%",
+                fontFamily: "inherit",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.borderColor = "var(--cg-border)";
+              }}
+            >
+              Re-center on this symbol
+            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={() => onSelectSymbol(data.symbol_id)}
+                style={{
+                  gap: 6, height: 26, padding: "0 10px", flex: 1,
+                  background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
+                  color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                  e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "var(--cg-border)";
+                }}
+              >
+                View Callers
+              </button>
+              <button
+                onClick={() => onSelectSymbol(data.symbol_id)}
+                style={{
+                  gap: 6, height: 26, padding: "0 10px", flex: 1,
+                  background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
+                  color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                  e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "var(--cg-border)";
+                }}
+              >
+                View Callees
+              </button>
+            </div>
+          </div>
+        </InspectorSection>
+      )}
 
       {data.tags && data.tags.length > 0 && (
         <InspectorSection title="Tags">
