@@ -38,6 +38,12 @@ interface Props {
   nodes?: GraphNodeData[];
   /** @deprecated kept for tests */
   edges?: GraphEdgeData[];
+  /** Called when user presses Esc or clicks pane to clear selection */
+  onClearSelection?: () => void;
+  /** Layout preset */
+  layoutPreset?: import("../app/components/nodeStyles").LayoutPreset;
+  /** Called when preset is changed */
+  onPresetChange?: (preset: import("../app/components/nodeStyles").LayoutPreset) => void;
 }
 
 export default function GraphExplorer({
@@ -61,6 +67,9 @@ export default function GraphExplorer({
   impactMode,
   impactConfirmedIds,
   impactPossibleIds,
+  onClearSelection,
+  layoutPreset,
+  onPresetChange,
 }: Props) {
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
@@ -139,6 +148,9 @@ export default function GraphExplorer({
         impactMode={impactMode}
         impactConfirmedIds={impactConfirmedIds}
         impactPossibleIds={impactPossibleIds}
+        onClearSelection={onClearSelection}
+        layoutPreset={layoutPreset}
+        onPresetChange={onPresetChange}
       />
     </div>
   );

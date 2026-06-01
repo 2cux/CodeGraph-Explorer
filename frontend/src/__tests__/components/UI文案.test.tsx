@@ -3,6 +3,7 @@ import { render } from "@testing-library/react";
 import { RightInspector } from "../../app/components/RightInspector";
 import type { NodeInspectorData, EdgeInspectorData } from "../../app/components/RightInspector";
 import NavBar from "../../app/components/NavBar";
+import { EmptyState } from "../../app/components/EmptyState";
 import EvidencePackViewer from "../../pages/EvidencePackViewer";
 import ImpactView from "../../pages/ImpactView";
 import Settings from "../../pages/Settings";
@@ -85,6 +86,21 @@ describe("UI文案 neutrality — all components", () => {
     const text = (document.body.textContent || "").toLowerCase();
     for (const term of FORBIDDEN) {
       expect(text).not.toContain(term.toLowerCase());
+    }
+  });
+
+  it("EmptyState (all variants) has no action directives", () => {
+    const icons: Array<"no-index" | "api-error" | "no-results" | "no-neighbors" | "no-impact" | "no-callers"> = [
+      "no-index", "api-error", "no-results", "no-neighbors", "no-impact", "no-callers",
+    ];
+    for (const icon of icons) {
+      const { container } = render(
+        <EmptyState icon={icon} title="Test title" description="Test description" command="test command" />
+      );
+      const text = (container.textContent || "").toLowerCase();
+      for (const term of FORBIDDEN) {
+        expect(text).not.toContain(term.toLowerCase());
+      }
     }
   });
 

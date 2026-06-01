@@ -465,6 +465,87 @@ describe("RightInspector - Edge: Unresolved/External markers", () => {
   });
 });
 
+describe("RightInspector - Confidence bar", () => {
+  it("renders confidence bar when confidence is provided", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, confidence: 0.85 }}
+      />
+    );
+    expect(container.querySelector(".cg-confidence-bar")).toBeTruthy();
+  });
+
+  it("uses high fill for confidence >= 0.8", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, confidence: 0.90 }}
+      />
+    );
+    expect(container.querySelector(".cg-confidence-bar-fill--high")).toBeTruthy();
+  });
+
+  it("uses medium fill for confidence 0.6-0.79", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, confidence: 0.70 }}
+      />
+    );
+    expect(container.querySelector(".cg-confidence-bar-fill--medium")).toBeTruthy();
+  });
+
+  it("uses low fill for confidence < 0.6", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, confidence: 0.45 }}
+      />
+    );
+    expect(container.querySelector(".cg-confidence-bar-fill--low")).toBeTruthy();
+  });
+});
+
+describe("RightInspector - Stat cards", () => {
+  it("renders stat cards for callers/callees/tests counts", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, callers_count: 5, callees_count: 8, tests_count: 2 }}
+      />
+    );
+    expect(container.querySelector(".cg-stat-card")).toBeTruthy();
+    // Check values are rendered
+    expect(container.textContent).toContain("5");
+    expect(container.textContent).toContain("8");
+    expect(container.textContent).toContain("2");
+  });
+
+  it("shows stat cards with callers, callees, tests labels", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, callers_count: 3, callees_count: 4 }}
+      />
+    );
+    expect(container.textContent).toContain("callers");
+    expect(container.textContent).toContain("callees");
+  });
+});
+
 describe("RightInspector - Error state", () => {
   it("shows error state when mode is error", () => {
     render(

@@ -289,7 +289,9 @@ function NodeInspector({
         )}
         {data.visibility && <KV label="visibility" value={data.visibility} mono />}
         {data.confidence != null && (
-          <KV label="confidence" value={`${data.confidence.toFixed(2)} (${confLabel?.label || "Unknown"})`} tone={confLabel?.tone} mono />
+          <KV label="confidence" value={`${data.confidence.toFixed(2)} (${confLabel?.label || "Unknown"})`} tone={confLabel?.tone} mono>
+            <ConfidenceBar confidence={data.confidence} />
+          </KV>
         )}
         {/* Copy buttons */}
         {onCopyToClipboard && (
@@ -515,29 +517,23 @@ function NodeInspector({
 
       {(data.callers_count != null || data.callees_count != null || data.tests_count != null) && (
         <InspectorSection title="Relations">
-          <div style={{ display: "flex", gap: 16 }}>
+          <div style={{ display: "flex", gap: 8 }}>
             {data.callers_count != null && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                <span className="cg-mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--cg-text-primary)" }}>
-                  {data.callers_count}
-                </span>
-                <span style={{ fontSize: 9, color: "var(--cg-text-muted)" }}>callers</span>
+              <div className="cg-stat-card">
+                <span className="cg-stat-card-value">{data.callers_count}</span>
+                <span className="cg-stat-card-label">callers</span>
               </div>
             )}
             {data.callees_count != null && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                <span className="cg-mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--cg-text-primary)" }}>
-                  {data.callees_count}
-                </span>
-                <span style={{ fontSize: 9, color: "var(--cg-text-muted)" }}>callees</span>
+              <div className="cg-stat-card">
+                <span className="cg-stat-card-value">{data.callees_count}</span>
+                <span className="cg-stat-card-label">callees</span>
               </div>
             )}
             {data.tests_count != null && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                <span className="cg-mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--cg-text-primary)" }}>
-                  {data.tests_count}
-                </span>
-                <span style={{ fontSize: 9, color: "var(--cg-text-muted)" }}>tests</span>
+              <div className="cg-stat-card">
+                <span className="cg-stat-card-value">{data.tests_count}</span>
+                <span className="cg-stat-card-label">tests</span>
               </div>
             )}
           </div>
@@ -808,16 +804,34 @@ function colorize(line: string) {
   });
 }
 
-function KV({ label, value, tone, mono }: { label: string; value: string; tone?: "success" | "warning" | "muted"; mono?: boolean }) {
+function KV({ label, value, tone, mono, children }: { label: string; value: string; tone?: "success" | "warning" | "muted"; mono?: boolean; children?: React.ReactNode }) {
   const color =
     tone === "success" ? "var(--cg-success)" :
     tone === "warning" ? "var(--cg-warning)" :
     tone === "muted" ? "var(--cg-text-muted)" :
     "var(--cg-text-primary)";
   return (
-    <div className="flex items-center" style={{ gap: 8, fontSize: 11 }}>
-      <span style={{ width: 100, color: "var(--cg-text-muted)", flexShrink: 0 }}>{label}</span>
-      <span className={mono ? "cg-mono" : ""} style={{ color, wordBreak: "break-all" }}>{value}</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <div className="flex items-center" style={{ gap: 8, fontSize: 11 }}>
+        <span style={{ width: 100, color: "var(--cg-text-muted)", flexShrink: 0 }}>{label}</span>
+        <span className={mono ? "cg-mono" : ""} style={{ color, wordBreak: "break-all" }}>{value}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ConfidenceBar({ confidence }: { confidence: number }) {
+  const pct = Math.round(confidence * 100);
+  const level = confidence >= 0.8 ? "high" : confidence >= 0.6 ? "medium" : "low";
+  return (
+    <div style={{ marginLeft: 108, marginTop: 2 }}>
+      <div className="cg-confidence-bar" style={{ width: 120 }}>
+        <div
+          className={`cg-confidence-bar-fill cg-confidence-bar-fill--${level}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import dagre from "@dagrejs/dagre";
 import { Spinner } from "./Spinner";
 import SearchBar from "./SearchBar";
 import ReactFlowGraph, { type EdgeIdentity } from "./ReactFlowGraph";
+import { EmptyState } from "./EmptyState";
 import type { RFNodeData, RFEdgeData, CappingWarning } from "./graphTransforms";
 import type { OverviewResponse } from "../../api";
 
@@ -123,6 +124,12 @@ interface Props {
   impactConfirmedIds?: Set<string>;
   /** Possible impact node IDs */
   impactPossibleIds?: Set<string>;
+  /** Called when user presses Esc or clicks pane to clear selection */
+  onClearSelection?: () => void;
+  /** Layout preset for dagre configuration */
+  layoutPreset?: import("./nodeStyles").LayoutPreset;
+  /** Called when preset is changed */
+  onPresetChange?: (preset: import("./nodeStyles").LayoutPreset) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────
@@ -146,6 +153,9 @@ export function GraphCanvas({
   impactMode,
   impactConfirmedIds,
   impactPossibleIds,
+  onClearSelection,
+  layoutPreset,
+  onPresetChange,
 }: Props) {
   // ── Loading ─────────────────────────────────────────────────────────
   if (state === "loading") {
@@ -169,7 +179,7 @@ export function GraphCanvas({
   if (state === "empty") {
     return (
       <CanvasWrapper>
-        <EmptyState />
+        <EmptyStateView />
       </CanvasWrapper>
     );
   }
@@ -200,7 +210,7 @@ export function GraphCanvas({
   if (!hasData) {
     return (
       <CanvasWrapper>
-        <EmptyState />
+        <EmptyStateView />
       </CanvasWrapper>
     );
   }
@@ -244,6 +254,9 @@ export function GraphCanvas({
         impactMode={impactMode}
         impactConfirmedIds={impactConfirmedIds}
         impactPossibleIds={impactPossibleIds}
+        onClearSelection={onClearSelection}
+        layoutPreset={layoutPreset}
+        onPresetChange={onPresetChange}
       />
     </div>
   );
@@ -368,85 +381,23 @@ function LoadingState() {
 
 function ErrorState() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 12,
-        color: "var(--cg-text-muted)",
-        maxWidth: 360,
-        textAlign: "center",
-      }}
-    >
-      <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="var(--cg-error)" strokeWidth="1.4" strokeLinecap="round">
-        <circle cx="8" cy="8" r="5.5" />
-        <path d="M8 4.5v4M8 11.2v.1" />
-      </svg>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontSize: 12, color: "var(--cg-text-secondary)", fontWeight: 500 }}>
-          Cannot connect to CodeGraph API.
-        </span>
-        <span style={{ fontSize: 11, color: "var(--cg-text-muted)" }}>
-          Start the API server with:
-        </span>
-        <code
-          style={{
-            fontSize: 11,
-            padding: "4px 8px",
-            borderRadius: 4,
-            background: "var(--cg-bg-subtle)",
-            border: "1px solid var(--cg-border)",
-            color: "var(--cg-text-secondary)",
-            fontFamily: "'JetBrains Mono', monospace",
-          }}
-        >
-          codegraph api --root &lt;project_path&gt;
-        </code>
-      </div>
-    </div>
+    <EmptyState
+      icon="api-error"
+      title="Cannot connect to CodeGraph API."
+      description="The Dashboard is unable to reach the CodeGraph backend."
+      command="codegraph api --root <project_path>"
+    />
   );
 }
 
-function EmptyState() {
+function EmptyStateView() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 12,
-        color: "var(--cg-text-muted)",
-        maxWidth: 360,
-        textAlign: "center",
-      }}
-    >
-      <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
-        <circle cx="8" cy="8" r="5.5" />
-        <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" />
-      </svg>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontSize: 12, color: "var(--cg-text-secondary)", fontWeight: 500 }}>
-          No graph data available.
-        </span>
-        <span style={{ fontSize: 11 }}>
-          Run{" "}
-          <code
-            style={{
-              fontSize: 11,
-              padding: "1px 4px",
-              borderRadius: 2,
-              background: "var(--cg-bg-subtle)",
-              color: "var(--cg-text-secondary)",
-              fontFamily: "'JetBrains Mono', monospace",
-            }}
-          >
-            codegraph index &lt;project_path&gt;
-          </code>
-          {" "}to build the code graph, then refresh the Dashboard.
-        </span>
-      </div>
-    </div>
+    <EmptyState
+      icon="no-index"
+      title="No code graph index found."
+      description="Index your project to start exploring the code graph."
+      command="codegraph index <project_path>"
+    />
   );
 }
 

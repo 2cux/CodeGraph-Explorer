@@ -1,52 +1,45 @@
 import { memo, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import type { RFNodeData, NodeKind } from "./graphTransforms";
-import { KIND_LABEL, KIND_COLOR, filePathShort } from "./graphTransforms";
-
-const NODE_MIN_WIDTH = 160;
+import type { RFNodeData } from "./graphTransforms";
+import { KIND_COLOR, filePathShort } from "./graphTransforms";
+import { NODE_DIMS, NODE_TYPE_LABEL } from "./nodeStyles";
 
 type CustomNodeProps = NodeProps & { data: RFNodeData };
 
-const nodeKindStyles = (kind: NodeKind) => {
-  const color = KIND_COLOR[kind];
-  return {
-    colorBar: {
-      width: 4,
-      flexShrink: 0 as const,
-      background: color,
-      borderRadius: "3px 0 0 3px",
-    },
-    typeLabel: {
-      fontSize: 9,
-      fontWeight: 600 as const,
-      color,
-      letterSpacing: "0.5px",
-    },
-  };
-};
+/** Build className string for node state CSS classes */
+function stateClass(data: RFNodeData, selected: boolean): string {
+  const parts: string[] = ["cg-rf-node"];
+  const isExternal = data.kind === "external_symbol";
+  const isLowConf = data.confidence < 0.6 && !data.isCenter;
+
+  if (data.isCenter) parts.push("cg-node--center");
+  else if (data.isSelected || selected) parts.push("cg-node--selected");
+  else if (isExternal) parts.push("cg-node--external");
+  else if (isLowConf) parts.push("cg-node--low-confidence");
+
+  return parts.join(" ");
+}
 
 const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps) {
   const [hovered, setHovered] = useState(false);
-  const { symbolId, name, kind, filePath, isCenter, isSelected, hierarchyLevel, hierarchyGroup } = data;
+  const {
+    symbolId, name, kind, filePath, isCenter, isSelected,
+    hierarchyLevel, hierarchyGroup,
+  } = data;
   const fpShort = filePathShort(filePath);
-  const styles = nodeKindStyles(kind);
   const isExternal = kind === "external_symbol";
+  const isLowConf = data.confidence < 0.6 && !isCenter;
+  const color = KIND_COLOR[kind];
+  const label = NODE_TYPE_LABEL[kind];
 
-  // Compute border / background based on state
+  // Compute border style
   let borderColor = "var(--cg-border)";
-  let bgColor = "var(--cg-bg-panel)";
   let borderWidth = 1;
-  let borderStyle = "solid";
-  let nodeOpacity = 1;
-
-  if (isExternal) {
-    borderStyle = "dashed";
-    borderColor = "var(--cg-text-muted)";
-    nodeOpacity = 0.55;
-  }
+  let borderStyle: string = isExternal ? "dashed" : "solid";
+  let bgColor = "var(--cg-bg-panel)";
 
   if (isCenter) {
-    borderColor = isExternal ? "var(--cg-warning)" : KIND_COLOR[kind];
+    borderColor = isExternal ? "var(--cg-warning)" : color;
     borderWidth = 2;
     borderStyle = "solid";
     bgColor = "color-mix(in srgb, var(--cg-accent) 6%, var(--cg-bg-panel))";
@@ -55,34 +48,41 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
     borderWidth = 2;
     borderStyle = "solid";
     bgColor = "color-mix(in srgb, var(--cg-accent) 4%, var(--cg-bg-panel))";
+  } else if (isLowConf) {
+    borderColor = "color-mix(in srgb, var(--cg-warning) 35%, var(--cg-border))";
   }
+
+  const boxShadow = isCenter
+    ? "0 0 0 2px color-mix(in srgb, var(--cg-accent) 20%, transparent)"
+    : selected || isSelected
+      ? "0 0 0 2px color-mix(in srgb, var(--cg-accent) 14%, transparent)"
+      : "0 1px 3px rgba(0,0,0,0.08)";
 
   return (
     <div
-      className={`cg-rf-node${isExternal ? " cg-node-external" : ""}`}
+      className={stateClass(data, selected)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        minWidth: NODE_MIN_WIDTH,
+        minWidth: NODE_DIMS.minWidth,
+        maxWidth: NODE_DIMS.maxWidth,
         borderRadius: 6,
         overflow: "hidden",
         border: `${borderWidth}px ${borderStyle} ${borderColor}`,
         background: bgColor,
-        opacity: nodeOpacity,
-        boxShadow: isCenter
-          ? "0 0 0 2px color-mix(in srgb, var(--cg-accent) 20%, transparent)"
-          : selected
-          ? "0 0 0 2px color-mix(in srgb, var(--cg-accent) 14%, transparent)"
-          : "0 1px 3px rgba(0,0,0,0.08)",
-        transition: "border-color 120ms ease, box-shadow 120ms ease",
+        boxShadow,
+        transition: "border-color 120ms ease, box-shadow 120ms ease, opacity 200ms ease",
         cursor: "pointer",
       }}
     >
-      <div style={{ display: "flex", height: "100%", minHeight: 44 }}>
+      <div style={{ display: "flex", height: "100%", minHeight: NODE_DIMS.minHeight }}>
         {/* Left color bar */}
         <div style={{
-          ...styles.colorBar,
+          width: 4,
+          flexShrink: 0,
+          background: color,
           opacity: isExternal ? 0.5 : 1,
+          borderRadius: "3px 0 0 3px",
         }} />
 
         {/* Content */}
@@ -93,48 +93,58 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
             padding: "6px 10px",
             display: "flex",
             flexDirection: "column",
-            gap: 2,
+            gap: 3,
             justifyContent: "center",
           }}
         >
-          {/* Type label with hierarchy depth indicator */}
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={styles.typeLabel}>
-              {KIND_LABEL[kind]}
+          {/* Row 1: Type badge + name */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span
+              style={{
+                fontSize: 9,
+                fontWeight: 600,
+                color,
+                letterSpacing: "0.5px",
+                padding: "1px 4px",
+                borderRadius: 2,
+                background: `color-mix(in srgb, ${color} 14%, transparent)`,
+                flexShrink: 0,
+                lineHeight: 1.2,
+              }}
+            >
+              {label}
             </span>
             {hierarchyLevel !== undefined && hierarchyLevel > 1 && (
               <span
                 style={{
                   width: 4, height: 4, borderRadius: "50%",
-                  background: KIND_COLOR[kind],
+                  background: color,
                   opacity: 0.5,
                   flexShrink: 0,
                 }}
                 title={`Nested ${hierarchyLevel} levels deep`}
               />
             )}
-          </div>
-
-          {/* Name */}
-          <span
-            className="cg-mono"
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--cg-text-primary)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              lineHeight: 1.2,
-            }}
-          >
-            {name}
-          </span>
-
-          {/* File path */}
-          {fpShort && (
             <span
               className="cg-mono"
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--cg-text-primary)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                lineHeight: 1.2,
+              }}
+            >
+              {name}
+            </span>
+          </div>
+
+          {/* Row 2: File path short */}
+          {fpShort && (
+            <span
+              className="cg-mono cg-node-filepath"
               style={{
                 fontSize: 10,
                 color: "var(--cg-text-muted)",
@@ -155,8 +165,7 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
         type="target"
         position={Position.Left}
         style={{
-          width: 8,
-          height: 8,
+          width: 8, height: 8,
           background: "var(--cg-accent)",
           border: "2px solid var(--cg-bg-panel)",
           opacity: 0.7,
@@ -166,8 +175,7 @@ const CustomNode = memo(function CustomNode({ data, selected }: CustomNodeProps)
         type="source"
         position={Position.Right}
         style={{
-          width: 8,
-          height: 8,
+          width: 8, height: 8,
           background: "var(--cg-accent)",
           border: "2px solid var(--cg-bg-panel)",
           opacity: 0.7,

@@ -340,7 +340,7 @@ describe("GraphCanvas - empty/error states", () => {
 
   it("shows empty state with actionable guidance when no index exists", () => {
     const { container } = render(<GraphCanvas state="empty" />);
-    expect(container.textContent).toContain("No graph data available");
+    expect(container.textContent).toContain("No code graph index found");
     expect(container.textContent).toContain("codegraph");
   });
 
@@ -348,7 +348,7 @@ describe("GraphCanvas - empty/error states", () => {
     const { container } = render(
       <GraphCanvas state="focused" rfNodes={[]} rfEdges={[]} />,
     );
-    expect(container.textContent).toContain("No graph data available");
+    expect(container.textContent).toContain("No code graph index found");
   });
 });
 

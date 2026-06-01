@@ -8,6 +8,7 @@ import { Library } from "./components/Library";
 import { Toast, type ToastData } from "./components/Toast";
 import { toReactFlowGraph, type RFNodeData, type RFEdgeData, type CappingWarning } from "./components/graphTransforms";
 import type { EdgeIdentity } from "./components/ReactFlowGraph";
+import { type LayoutPreset } from "./components/nodeStyles";
 import NavBar, { type BreadcrumbItem } from "./components/NavBar";
 import GraphExplorer, { type CanvasState } from "../pages/GraphExplorer";
 import SymbolSearch from "../pages/SymbolSearch";
@@ -28,8 +29,18 @@ const MAX_HISTORY = 50;
 
 type Theme = "system" | "light" | "dark";
 
+const THEME_STORAGE_KEY = "codegraph_theme";
+
+function loadTheme(): Theme {
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark" || stored === "system") return stored;
+  } catch { /* localStorage unavailable */ }
+  return "dark";
+}
+
 export default function App() {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setThemeState] = useState<Theme>(loadTheme);
   const [activeTab, setActiveTab] = useState<PageTab>("overview");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorTarget, setInspectorTarget] = useState<InspectorTarget>("node");
@@ -39,6 +50,15 @@ export default function App() {
   const [indexDetails, setIndexDetails] = useState<StatusResponse | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [toast, setToast] = useState<ToastData | null>(null);
+
+  // Persist theme to localStorage
+  const setTheme = useCallback((t: Theme) => {
+    setThemeState(t);
+    try { localStorage.setItem(THEME_STORAGE_KEY, t); } catch { /* noop */ }
+  }, []);
+
+  // ── Layout preset ──────────────────────────────────────────────────
+  const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>("local");
 
   // ── React Flow graph state ──────────────────────────────────────────
   const [rfNodes, setRfNodes] = useState<Node<RFNodeData>[]>([]);
@@ -268,6 +288,7 @@ export default function App() {
         selectedNodeId: nodeId,
         expandedGroupIds: expandedGroupIdsRef.current,
         nodeCap: 150,
+        layoutPreset,
       });
 
       setRfNodes(nodes);
@@ -488,6 +509,14 @@ export default function App() {
     });
   }, [pushHistory]);
 
+  // ── Clear selection (Esc / pane click) ─────────────────────────────
+  const handleClearSelection = useCallback(() => {
+    setSelectedNodeId(null);
+    setSelectedEdgeSource(null);
+    setSelectedEdgeTarget(null);
+    setInspectorOpen(false);
+  }, []);
+
   // ── Hierarchy group toggle ─────────────────────────────────────────
   const handleToggleGroup = useCallback((groupId: string) => {
     setExpandedGroupIds((prev) => {
@@ -610,6 +639,9 @@ export default function App() {
                   handleSelectEdge(edge);
                 }}
                 onSearchSelect={handleSearchSelect}
+                onClearSelection={handleClearSelection}
+                layoutPreset={layoutPreset}
+                onPresetChange={setLayoutPreset}
               />
             )}
             {activeTab === "search" && (

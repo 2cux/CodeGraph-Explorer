@@ -6,6 +6,7 @@ import {
   Controls,
   Background,
   useReactFlow,
+  useStore,
   type Node,
   type Edge,
   type OnNodesChange,
@@ -22,6 +23,7 @@ import CustomNode from "./CustomNode";
 import CustomEdge from "./CustomEdge";
 import HierarchyGroupNode from "./HierarchyGroupNode";
 import type { RFNodeData, RFEdgeData } from "./graphTransforms";
+import { type LayoutPreset, LAYOUT_PRESET_LABEL } from "./nodeStyles";
 
 // ── Node / Edge types (stable references) ─────────────────────────────
 
@@ -56,6 +58,12 @@ interface ReactFlowGraphProps {
   impactConfirmedIds?: Set<string>;
   /** Impact mode: set of possible-impact node IDs */
   impactPossibleIds?: Set<string>;
+  /** Called when user presses Esc or clicks pane to clear selection */
+  onClearSelection?: () => void;
+  /** Layout preset for dagre configuration */
+  layoutPreset?: LayoutPreset;
+  /** Called when preset is changed */
+  onPresetChange?: (preset: LayoutPreset) => void;
 }
 
 // ── Outer wrapper (provides ReactFlow context) ────────────────────────
@@ -67,6 +75,10 @@ export default function ReactFlowGraph(props: ReactFlowGraphProps) {
     </ReactFlowProvider>
   );
 }
+
+// ── Zoom threshold for hiding secondary text ──────────────────────────
+
+const ZOOM_HIDE_SECONDARY = 0.5;
 
 // ── Inner component (uses React Flow hooks) ───────────────────────────
 
@@ -83,8 +95,15 @@ function ReactFlowGraphInner({
   impactMode,
   impactConfirmedIds,
   impactPossibleIds,
+  onClearSelection,
+  layoutPreset = "local",
+  onPresetChange,
 }: ReactFlowGraphProps) {
   const { fitView } = useReactFlow();
+
+  // Zoom state for label visibility
+  const zoom = useStore((s) => s.transform[2]);
+  const hideSecondary = zoom < ZOOM_HIDE_SECONDARY;
 
   // Compute neighbor ids for selected node
   const neighborIds = useMemo(() => {
@@ -111,6 +130,7 @@ function ReactFlowGraphInner({
             ...n.data,
             isSelected: isConfirmed,
           },
+          className: hideSecondary ? "cg-node--hide-secondary" : "",
           style: {
             ...n.style,
             opacity: isConfirmed ? 1 : isPossible ? 0.65 : 0.2,
@@ -132,6 +152,7 @@ function ReactFlowGraphInner({
             ...n.data,
             isSelected: isEndpoint,
           },
+          className: hideSecondary ? "cg-node--hide-secondary" : "",
           style: {
             ...n.style,
             opacity: isEndpoint ? 1 : 0.25,
@@ -142,13 +163,16 @@ function ReactFlowGraphInner({
     }
 
     // Node selection: highlight center + 1-hop neighbors
-    if (!selectedNodeId) return nodes;
+    if (!selectedNodeId) return hideSecondary
+      ? nodes.map((n) => ({ ...n, className: "cg-node--hide-secondary" }))
+      : nodes;
     return nodes.map((n) => ({
       ...n,
       data: {
         ...n.data,
         isSelected: n.id === selectedNodeId,
       },
+      className: hideSecondary ? "cg-node--hide-secondary" : "",
       style: {
         ...n.style,
         opacity:
@@ -160,7 +184,7 @@ function ReactFlowGraphInner({
         transition: "opacity 200ms ease",
       },
     }));
-  }, [nodes, selectedNodeId, neighborIds, selectedEdgeSource, selectedEdgeTarget, impactMode, impactConfirmedIds, impactPossibleIds]);
+  }, [nodes, selectedNodeId, neighborIds, selectedEdgeSource, selectedEdgeTarget, impactMode, impactConfirmedIds, impactPossibleIds, hideSecondary]);
 
   // Augment edges with dimming info
   const displayEdges = useMemo(() => {
@@ -226,11 +250,22 @@ function ReactFlowGraphInner({
     }
   }, [nodes.length, fitView]);
 
+  // Fit view when preset changes
+  const prevPreset = useRef(layoutPreset);
+  useEffect(() => {
+    if (layoutPreset !== prevPreset.current && nodes.length > 0) {
+      prevPreset.current = layoutPreset;
+      const timer = setTimeout(() => {
+        fitView({ padding: 0.2, duration: 300 });
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [layoutPreset, nodes.length, fitView]);
+
   // Handlers
   const handleNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       const data = node.data as RFNodeData;
-      // If clicking a group parent, toggle expand/collapse
       if (data.isGroupParent && onToggleGroup) {
         onToggleGroup(node.id);
         return;
@@ -256,6 +291,21 @@ function ReactFlowGraphInner({
     fitView({ padding: 0.2, duration: 300 });
   }, [fitView]);
 
+  // Pane click: clear selection
+  const handlePaneClick = useCallback(() => {
+    onClearSelection?.();
+  }, [onClearSelection]);
+
+  // Keyboard: Esc to clear selection
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClearSelection?.();
+      }
+    },
+    [onClearSelection],
+  );
+
   // Don't persist internal layout changes (we control positions)
   const handleNodesChange: OnNodesChange = useCallback(() => {}, []);
   const handleEdgesChange: OnEdgesChange = useCallback(() => {}, []);
@@ -273,8 +323,14 @@ function ReactFlowGraphInner({
     [onSelectNode, onToggleGroup],
   );
 
+  const PRESETS: LayoutPreset[] = ["local", "impact"];
+
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div
+      style={{ width: "100%", height: "100%", position: "relative" }}
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
+    >
       <ReactFlow
         nodes={displayNodes}
         edges={displayEdges}
@@ -282,6 +338,7 @@ function ReactFlowGraphInner({
         edgeTypes={edgeTypes}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
+        onPaneClick={handlePaneClick}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         fitView={false}
@@ -332,23 +389,42 @@ function ReactFlowGraphInner({
             return "#888";
           }}
         />
+
+        {/* Top-right panel: Fit View + Preset switcher */}
         <Panel position="top-right">
-          <button
-            onClick={handleFitView}
-            title="Fit view"
-            style={{
-              padding: "4px 10px",
-              fontSize: 11,
-              borderRadius: 4,
-              border: "1px solid var(--cg-border)",
-              background: "var(--cg-bg-panel)",
-              color: "var(--cg-text-secondary)",
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
-          >
-            Fit View
-          </button>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {/* Layout preset switcher */}
+            {onPresetChange && (
+              <div style={{ display: "flex", gap: 2 }}>
+                {PRESETS.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => onPresetChange(p)}
+                    className={`cg-preset-btn${layoutPreset === p ? " cg-preset-btn--active" : ""}`}
+                    title={`${LAYOUT_PRESET_LABEL[p]} layout`}
+                  >
+                    {LAYOUT_PRESET_LABEL[p]}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={handleFitView}
+              title="Fit view"
+              style={{
+                padding: "4px 10px",
+                fontSize: 11,
+                borderRadius: 4,
+                border: "1px solid var(--cg-border)",
+                background: "var(--cg-bg-panel)",
+                color: "var(--cg-text-secondary)",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Fit View
+            </button>
+          </div>
         </Panel>
 
         {/* Cap warning banner */}

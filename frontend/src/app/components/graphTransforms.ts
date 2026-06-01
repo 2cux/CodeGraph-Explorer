@@ -1,6 +1,7 @@
 import type { Node, Edge } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 import type { SubgraphResponse, NeighborsResponse, GraphNodeItem, GraphEdgeItem } from "../../api";
+import { type LayoutPreset, LAYOUT_PRESET_DAGRE } from "./nodeStyles";
 
 // ── React Flow node data ──────────────────────────────────────────────
 
@@ -492,12 +493,15 @@ const GROUP_NODE_HEIGHT = 56;
 export function computeDagreLayout(
   nodes: Node<RFNodeData>[],
   edges: Edge<RFEdgeData>[],
+  preset: LayoutPreset = "local",
 ): Node<RFNodeData>[] {
   if (nodes.length === 0) return nodes;
 
+  const cfg = LAYOUT_PRESET_DAGRE[preset];
+
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: "LR", nodesep: 60, ranksep: 120, marginx: 60, marginy: 60 });
+  g.setGraph({ rankdir: cfg.rankdir, nodesep: cfg.nodesep, ranksep: cfg.ranksep, marginx: cfg.marginx, marginy: cfg.marginy });
 
   for (const n of nodes) {
     const isGroup = n.data.isGroupParent ?? false;
@@ -542,6 +546,8 @@ export interface ToReactFlowOptions {
   expandedGroupIds?: ReadonlySet<string>;
   /** Maximum nodes to display (for capping) */
   nodeCap?: number;
+  /** Layout preset for dagre configuration */
+  layoutPreset?: LayoutPreset;
 }
 
 export interface ToReactFlowResult {
@@ -572,6 +578,7 @@ export function toReactFlowGraph(
     selectedNodeId,
     expandedGroupIds = new Set<string>(),
     nodeCap = 150,
+    layoutPreset = "local",
   } = opts;
 
   // Build a set of all node ids
@@ -681,7 +688,7 @@ export function toReactFlowGraph(
 
   // ── Step 5: Dagre layout ───────────────────────────────────────────
 
-  const laidOutNodes = computeDagreLayout(cappedNodes, cappedEdges);
+  const laidOutNodes = computeDagreLayout(cappedNodes, cappedEdges, layoutPreset);
 
   return { nodes: laidOutNodes, edges: cappedEdges, cappingWarning };
 }

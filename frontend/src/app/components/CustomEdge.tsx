@@ -6,16 +6,14 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import type { RFEdgeData } from "./graphTransforms";
+import {
+  EDGE_TYPE_STYLE,
+  EDGE_TYPE_LABEL_COLOR,
+  LOW_CONF_EDGE_STYLE,
+  EXTERNAL_EDGE_STYLE,
+} from "./nodeStyles";
 
 type CustomEdgeProps = EdgeProps & { data?: RFEdgeData };
-
-const EDGE_LABEL_COLORS: Record<string, string> = {
-  calls: "var(--cg-text-secondary)",
-  tested_by: "var(--cg-success)",
-  imports: "var(--cg-text-muted)",
-  references: "var(--cg-text-muted)",
-  contains: "var(--cg-text-muted)",
-};
 
 function getEdgeStyle(data: RFEdgeData | undefined): {
   stroke: string;
@@ -28,51 +26,15 @@ function getEdgeStyle(data: RFEdgeData | undefined): {
   const isLowConf = confidence < 0.6;
   const isExternal = data?.isExternal === true;
 
-  let stroke = "var(--cg-text-muted)";
-  let strokeDasharray = "none";
-  let opacity = 0.7;
-  let strokeWidth = 1.5;
+  // External/unresolved: always dimmed
+  if (isExternal) return { ...EXTERNAL_EDGE_STYLE };
 
-  // External/unresolved edges: heavily dimmed
-  if (isExternal) {
-    stroke = "var(--cg-text-muted)";
-    strokeDasharray = "2 6";
-    opacity = 0.25;
-    strokeWidth = 1;
-    return { stroke, strokeDasharray, opacity, strokeWidth };
-  }
+  const base = EDGE_TYPE_STYLE[edgeType] || EDGE_TYPE_STYLE.calls;
 
-  if (edgeType === "calls") {
-    stroke = "var(--cg-text-secondary)";
-    strokeDasharray = "none";
-    opacity = 0.75;
-    strokeWidth = 1.5;
-  } else if (edgeType === "tested_by") {
-    stroke = "var(--cg-success)";
-    strokeDasharray = "6 3";
-    opacity = 0.65;
-    strokeWidth = 1.5;
-  } else if (edgeType === "imports" || edgeType === "references") {
-    stroke = "var(--cg-border-hover)";
-    strokeDasharray = "none";
-    opacity = 0.35;
-    strokeWidth = 1;
-  } else if (edgeType === "contains") {
-    stroke = "var(--cg-text-muted)";
-    strokeDasharray = "2 4";
-    opacity = 0.45;
-    strokeWidth = 1;
-  }
+  // Low confidence overrides type defaults
+  if (isLowConf) return { ...LOW_CONF_EDGE_STYLE };
 
-  // Low confidence overrides (order matters: applied after type defaults)
-  if (isLowConf) {
-    stroke = "var(--cg-warning)";
-    strokeDasharray = "4 4";
-    opacity = 0.5;
-    strokeWidth = 1.5;
-  }
-
-  return { stroke, strokeDasharray, opacity, strokeWidth };
+  return { ...base };
 }
 
 const CustomEdge = memo(function CustomEdge({
@@ -98,15 +60,20 @@ const CustomEdge = memo(function CustomEdge({
 
   const style = getEdgeStyle(data);
   const edgeType = data?.edgeType || "calls";
-  const labelColor = EDGE_LABEL_COLORS[edgeType] || "var(--cg-text-muted)";
+  const labelColor = EDGE_TYPE_LABEL_COLOR[edgeType] || "var(--cg-text-muted)";
   const isLowConf = (data?.confidence ?? 0.5) < 0.6;
   const isExternal = data?.isExternal === true;
 
-  // Selected edge gets a glow
+  // Selected edge gets glow + full opacity
+  const activeStrokeWidth = selected ? style.strokeWidth + 1.5 : style.strokeWidth;
+  const activeOpacity = selected ? 1 : style.opacity;
   const glowFilter = selected ? "drop-shadow(0 0 3px var(--cg-accent))" : undefined;
 
+  // Group class for hover + select
+  const groupClass = `cg-edge-group${selected ? " cg-edge--highlighted" : ""}`;
+
   return (
-    <>
+    <g className={groupClass}>
       {/* Invisible wider hit area */}
       <BaseEdge
         path={edgePath}
@@ -122,17 +89,18 @@ const CustomEdge = memo(function CustomEdge({
         markerEnd={markerEnd}
         style={{
           stroke: style.stroke,
-          strokeWidth: selected ? style.strokeWidth + 1.5 : style.strokeWidth,
+          strokeWidth: activeStrokeWidth,
           strokeDasharray: style.strokeDasharray,
-          opacity: selected ? 1 : style.opacity,
+          opacity: activeOpacity,
           filter: glowFilter,
           transition: "opacity 150ms ease, stroke-width 150ms ease",
           cursor: "pointer",
         }}
       />
-      {/* Edge label */}
+      {/* Edge label — hidden by default, shown on hover/select */}
       <EdgeLabelRenderer>
         <div
+          className={`cg-edge-label nodrag nopan${selected ? "" : ""}`}
           style={{
             position: "absolute",
             transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
@@ -143,12 +111,11 @@ const CustomEdge = memo(function CustomEdge({
             padding: "1px 5px",
             borderRadius: 3,
             border: `1px solid ${isLowConf ? "var(--cg-warning)" : "var(--cg-border)"}`,
-            opacity: isLowConf ? 0.7 : 0.85,
             pointerEvents: "all",
             cursor: "pointer",
             whiteSpace: "nowrap",
+            opacity: selected ? 0.85 : undefined,
           }}
-          className="nodrag nopan"
         >
           {edgeType}
           {isExternal && (
@@ -163,7 +130,7 @@ const CustomEdge = memo(function CustomEdge({
           )}
         </div>
       </EdgeLabelRenderer>
-    </>
+    </g>
   );
 });
 
