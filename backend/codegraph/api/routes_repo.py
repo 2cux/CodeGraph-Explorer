@@ -20,6 +20,14 @@ from pydantic import TypeAdapter
 router = APIRouter(prefix="/api/repo", tags=["repo"])
 
 
+class EntryPointItem(BaseModel):
+    symbol_id: str
+    name: str
+    type: str
+    file_path: str
+    edge_count: int  # combined callers + callees
+
+
 class RepoSummaryResponse(BaseModel):
     name: str
     root_path: str
@@ -32,6 +40,7 @@ class RepoSummaryResponse(BaseModel):
     commit_hash: str | None = None
     failed_files: int = 0
     low_confidence_ratio: float = 0.0
+    entry_points: list[EntryPointItem] = []
 
 
 class StatusResponse(BaseModel):
@@ -55,6 +64,53 @@ class IndexResponse(BaseModel):
     edge_count: int = 0
 
 
+def _compute_entry_points(store: GraphStore, max_count: int = 6) -> list[EntryPointItem]:
+    """Find top connected non-test, non-init symbols as likely entry points."""
+    from collections import Counter
+
+    # Count incoming + outgoing edges per symbol
+    edge_counts: Counter[str] = Counter()
+    for edge in store.all_edges():
+        edge_counts[edge.source] += 1
+        edge_counts[edge.target] += 1
+
+    def _is_test_path(file_path: str) -> bool:
+        """True if the file is under a test directory or named test_*."""
+        parts = file_path.replace("\\", "/").split("/")
+        return any(p in ("tests", "test", "__tests__") for p in parts)
+
+    def _type_priority(t: str) -> int:
+        return {"function": 3, "method": 3, "class": 2, "module": 1, "file": 1}.get(t, 0)
+
+    candidates: list[EntryPointItem] = []
+    for node in store.all_nodes():
+        if node.type.value == "test":
+            continue
+        if node.name == "__init__":
+            continue
+        if _is_test_path(node.file_path):
+            continue
+        ec = edge_counts.get(node.id, 0)
+        if ec == 0:
+            continue
+        candidates.append(EntryPointItem(
+            symbol_id=node.id,
+            name=node.name,
+            type=node.type.value,
+            file_path=node.file_path,
+            edge_count=ec,
+        ))
+
+    # Sort: edge_count desc, then type priority desc, then prefer shorter names
+    candidates.sort(key=lambda c: (
+        c.edge_count,
+        _type_priority(c.type),
+        -len(c.file_path),  # prefer files closer to root
+    ), reverse=True)
+
+    return candidates[:max_count]
+
+
 @router.get("/summary", response_model=RepoSummaryResponse)
 async def get_repo_summary(store: GraphStore = Depends(get_store)):
     """Return metadata about the indexed repository."""
@@ -69,6 +125,8 @@ async def get_repo_summary(store: GraphStore = Depends(get_store)):
     low_conf = sum(1 for e in edges if e.confidence < 0.6)
     low_conf_ratio = low_conf / len(edges) if edges else 0.0
 
+    entry_points = _compute_entry_points(store)
+
     project_root = get_project_root()
     return RepoSummaryResponse(
         name=project_root.name,
@@ -81,6 +139,7 @@ async def get_repo_summary(store: GraphStore = Depends(get_store)):
         indexed_at=datetime.now(timezone.utc).isoformat(),
         commit_hash=get_commit_hash(),
         low_confidence_ratio=round(low_conf_ratio, 4),
+        entry_points=entry_points,
     )
 
 

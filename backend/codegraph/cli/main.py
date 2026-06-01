@@ -888,7 +888,17 @@ def dashboard(
     # Stream server output until interrupted
     try:
         for line in server_process.stdout or []:
-            print(line.decode("utf-8", errors="replace"), end="")
+            text = line.decode("utf-8", errors="replace")
+            # Use buffer write when available (avoids GBK encode errors on Windows),
+            # fall back to print() for test environments where buffer is not a real tty.
+            try:
+                sys.stdout.buffer.write(
+                    text.encode(sys.stdout.encoding or "utf-8", errors="replace")
+                )
+                sys.stdout.buffer.flush()
+            except (AttributeError, OSError):
+                print(text, end="")
+                sys.stdout.flush()
     except KeyboardInterrupt:
         typer.echo("\nShutting down...")
     finally:

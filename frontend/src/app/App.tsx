@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, lastApiError } from "../api";
 import type { SearchResult, OverviewResponse, StatusResponse } from "../api";
 import { Topbar, type IndexStatus, type PageTab } from "./components/Topbar";
@@ -49,7 +49,10 @@ export default function App() {
       : "cg-light";
   }, [theme]);
 
-  // Load overview on mount
+  // Track whether we've auto-selected an entry point on initial load
+  const hasAutoSelected = useRef(false);
+
+  // Load overview on mount + auto-select first entry point
   useEffect(() => {
     async function load() {
       let statusRes: StatusResponse;
@@ -84,8 +87,26 @@ export default function App() {
       } catch {
         setCanvasState("error");
       }
+
+      // Auto-select first entry point so the focused graph renders immediately
+      if (!hasAutoSelected.current) {
+        try {
+          const summary = await api.repo.summary();
+          const firstEp = summary.entry_points?.[0];
+          if (firstEp) {
+            hasAutoSelected.current = true;
+            // Use a micro-delay so React can flush the overview state first
+            setTimeout(() => {
+              handleSelectSymbol(firstEp.symbol_id);
+            }, 0);
+          }
+        } catch {
+          // Non-critical — overview graph is shown as fallback
+        }
+      }
     }
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showToast]);
 
   // Re-index handlers
@@ -188,12 +209,15 @@ export default function App() {
         })),
       ];
 
-      const edges: GraphEdgeData[] = neighbors.neighbors.map((n) => ({
-        from: n.edge_type === "caller" ? n.node_id : nodeId,
-        to: n.edge_type === "caller" ? nodeId : n.node_id,
-        label: "calls" as const,
-        state: (parseFloat(n.confidence) < 0.6 ? "low_confidence" : "default") as GraphEdgeData["state"],
-      }));
+      const edges: GraphEdgeData[] = neighbors.neighbors.map((n) => {
+        const isIncoming = n.direction === "incoming";
+        return {
+          from: isIncoming ? n.node_id : nodeId,
+          to: isIncoming ? nodeId : n.node_id,
+          label: "calls" as const,
+          state: (parseFloat(n.confidence) < 0.6 ? "low_confidence" : "default") as GraphEdgeData["state"],
+        };
+      });
 
       setGraphNodes(nodes);
       setGraphEdges(edges);

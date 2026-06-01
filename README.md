@@ -196,7 +196,19 @@ codegraph status
 codegraph watch ./examples/demo_python_project
 ```
 
-### 2. 更新（获取最新版本）
+### 2. 启动前端 Dashboard（可选）
+
+如果不想使用一键启动，可以手动启动前端开发服务器：
+
+```bash
+cd frontend
+npm install
+VITE_CODEGRAPH_API_URL=http://127.0.0.1:8765 npm run dev
+```
+
+浏览器打开 http://localhost:5173。首屏会自动选择入口点并展示局部图谱。
+
+### 3. 更新（获取最新版本）
 
 GitHub 安装方式：
 
@@ -214,7 +226,7 @@ codegraph update
 
 更新不会影响已有的 MCP 配置和索引文件。
 
-### 3. 删除/卸载（完全移除 CLI 和依赖）
+### 4. 删除/卸载（完全移除 CLI 和依赖）
 
 ```bash
 pip uninstall codegraph-explorer
@@ -236,54 +248,9 @@ codegraph configure remove all
 
 ## 启动 Dashboard
 
-Dashboard 需要两个进程：后端 API 服务 + 前端开发服务器。
+Dashboard 提供两种启动方式：一键启动（推荐）或前后端分离启动。
 
-### Terminal 1：初始化项目并启动 API
-
-```bash
-cd your-project
-codegraph init
-codegraph api --root . --host 127.0.0.1 --port 8000
-```
-
-API 启动后会显示：
-```
-CodeGraph API starting at http://127.0.0.1:8000
-Project: /path/to/your-project
-API docs: http://127.0.0.1:8000/docs
-```
-
-如果项目尚未初始化索引，API 会提示：
-```
-No CodeGraph index found. Run: codegraph init
-```
-
-### Terminal 2：启动前端开发服务器
-
-```bash
-cd CodeGraph-Explorer/frontend
-npm install
-npm run dev
-```
-
-前端启动后在浏览器打开 http://localhost:5173，Dashboard 会自动连接到 `http://127.0.0.1:8000` 的 API。
-
-如需指定不同的 API 地址，设置环境变量：
-```bash
-VITE_CODEGRAPH_API_URL=http://127.0.0.1:8000 npm run dev
-```
-
-### Dashboard 首屏行为
-
-1. 页面加载时请求 `/api/repo/status` 检查索引状态
-2. 如果 `status=fresh`：加载仓库概览和局部图谱
-3. 如果 `status=stale`：展示图谱，同时显示过期警告
-4. 如果 `status=missing`：提示运行 `codegraph init`
-5. 如果 API 连接失败：显示连接错误和启动命令
-
-### 一键启动（后端 + 前端一体）
-
-也可以使用 `codegraph dashboard` 命令在同一端口启动 API + 构建好的前端：
+### 方式一：一键启动（推荐）
 
 ```bash
 cd your-project
@@ -292,6 +259,59 @@ codegraph dashboard --root .
 ```
 
 访问 http://localhost:8765 即可。此模式不需要单独启动前端开发服务器。
+
+### 方式二：前后端分离启动
+
+适合开发调试场景，前端支持热更新（HMR）。
+
+#### Terminal 1：启动后端 API
+
+```bash
+cd your-project
+codegraph init
+codegraph api --root . --host 127.0.0.1 --port 8765
+```
+
+API 启动后会显示：
+
+```
+CodeGraph API starting at http://127.0.0.1:8765
+Project: /path/to/your-project
+API docs: http://127.0.0.1:8765/docs
+```
+
+如果项目尚未初始化索引，API 会提示：
+
+```
+No CodeGraph index found. Run: codegraph init
+```
+
+#### Terminal 2：启动前端开发服务器
+
+```bash
+cd CodeGraph-Explorer/frontend
+npm install
+VITE_CODEGRAPH_API_URL=http://127.0.0.1:8765 npm run dev
+```
+
+前端启动后在浏览器打开 http://localhost:5173，Vite 会自动代理 `/api` 请求到 `VITE_CODEGRAPH_API_URL` 指定的后端地址。
+
+> **提示：** 如果已使用方式一启动 Dashboard，前端静态文件已内嵌在 FastAPI 服务中，不需要单独启动前端开发服务器。
+
+### Dashboard 首屏行为
+
+```
+1. 页面加载 → 请求 /api/repo/status 检查索引状态
+2. status=fresh or stale → 加载仓库概览数据 + 入口点候选列表
+3. 自动选择第一个业务入口点 → 加载局部邻居图谱（focused 视图）
+4. 图谱渲染等待数据加载完成，显示 loading 状态
+5. status=missing → 提示 "Run: codegraph init"
+6. API 连接失败 → 显示连接错误和启动命令
+7. 低置信度边以 warning 颜色弱化显示，不会被隐藏
+```
+
+首屏会自动选择入口点（非测试、高连接数的函数/类/方法），确保打开 Dashboard 即可看到关系图。
+如果入口点不可用，会回退展示文件级 Overview 模块依赖图。
 
 ---
 

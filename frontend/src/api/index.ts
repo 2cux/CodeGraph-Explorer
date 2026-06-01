@@ -54,6 +54,7 @@ export interface NeighborItem {
   type: string;
   file_path: string;
   edge_type: string;
+  direction: string;  // "incoming" (caller) or "outgoing" (callee)
   confidence: string;
 }
 
@@ -245,9 +246,34 @@ export interface DashboardStats {
   low_confidence_ratio: number;
 }
 
+export interface EntryPointItem {
+  symbol_id: string;
+  name: string;
+  type: string;
+  file_path: string;
+  edge_count: number;
+}
+
+export interface SummaryResponse {
+  name: string;
+  root_path: string;
+  file_count: number;
+  symbol_count: number;
+  function_count: number;
+  class_count: number;
+  edge_count: number;
+  indexed_at: string | null;
+  commit_hash: string | null;
+  failed_files: number;
+  low_confidence_ratio: number;
+  entry_points: EntryPointItem[];
+}
+
 // ── API client ─────────────────────────────────────────────────────────
 
-const BASE = (typeof import.meta !== "undefined" && import.meta.env?.VITE_CODEGRAPH_API_URL) || "http://127.0.0.1:8000";
+/** Explicit API base (dev mode via Vite proxy). In production builds the
+ *  frontend is served from the same origin — leave empty for relative URLs. */
+const BASE = (typeof import.meta !== "undefined" && import.meta.env?.VITE_CODEGRAPH_API_URL) || "";
 
 export let lastApiError: string | null = null;
 
@@ -262,18 +288,31 @@ class ApiConnectionError extends Error {
   }
 }
 
-async function fetchJSON<T>(path: string, params?: Record<string, string | number>): Promise<T> {
-  const baseUrl = BASE.endsWith("/") ? BASE.slice(0, -1) : BASE;
-  const url = new URL(baseUrl + path);
+function resolveUrl(path: string, params?: Record<string, string | number>): string {
+  if (BASE) {
+    const base = BASE.endsWith("/") ? BASE.slice(0, -1) : BASE;
+    const url = new URL(path, base);
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+    }
+    return url.toString();
+  }
+  // Same-origin: build relative URL
+  const url = new URL(path, window.location.origin);
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
   }
+  return url.toString();
+}
+
+async function fetchJSON<T>(path: string, params?: Record<string, string | number>): Promise<T> {
+  const url = resolveUrl(path, params);
 
   let res: Response;
   try {
     res = await fetch(url);
   } catch {
-    lastApiError = `Cannot connect to CodeGraph API at ${baseUrl}`;
+    lastApiError = `Cannot connect to CodeGraph API at ${url}`;
     throw new ApiConnectionError();
   }
 
@@ -287,16 +326,17 @@ async function fetchJSON<T>(path: string, params?: Record<string, string | numbe
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const baseUrl = BASE.endsWith("/") ? BASE.slice(0, -1) : BASE;
+  const url = resolveUrl(path);
+
   let res: Response;
   try {
-    res = await fetch(baseUrl + path, {
+    res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
   } catch {
-    lastApiError = `Cannot connect to CodeGraph API at ${baseUrl}`;
+    lastApiError = `Cannot connect to CodeGraph API at ${url}`;
     throw new ApiConnectionError();
   }
 
@@ -342,16 +382,17 @@ export interface StatusResponse {
 
 export const api = {
   repo: {
-    status: () => fetchJSON<StatusResponse>(`${BASE}/repo/status`),
+    status: () => fetchJSON<StatusResponse>("/api/repo/status"),
+    summary: () => fetchJSON<SummaryResponse>("/api/repo/summary"),
     index: (mode: "force" | "incremental" = "force") =>
       postJSON<{ status: string; message: string; file_count?: number; symbol_count?: number; edge_count?: number }>(
-        `${BASE}/repo/index`, { mode }
+        "/api/repo/index", { mode }
       ),
   },
 
   symbols: {
     search: (query: string, typeFilter?: string, fileFilter?: string, limit = 50, offset = 0) =>
-      fetchJSON<SearchResponse>(`${BASE}/symbols/search`, {
+      fetchJSON<SearchResponse>("/api/symbols/search", {
         query,
         ...(typeFilter && { type: typeFilter }),
         ...(fileFilter && { file: fileFilter }),
@@ -359,35 +400,35 @@ export const api = {
         offset,
       }),
     detail: (nodeId: string) =>
-      fetchJSON<SymbolDetail>(`${BASE}/symbols/${encodeURIComponent(nodeId)}`),
+      fetchJSON<SymbolDetail>(`/api/symbols/${encodeURIComponent(nodeId)}`),
     callers: (nodeId: string) =>
       fetchJSON<CallerCalleeResponse>(
-        `${BASE}/symbols/${encodeURIComponent(nodeId)}/callers`,
+        `/api/symbols/${encodeURIComponent(nodeId)}/callers`,
       ),
     callees: (nodeId: string) =>
       fetchJSON<CallerCalleeResponse>(
-        `${BASE}/symbols/${encodeURIComponent(nodeId)}/callees`,
+        `/api/symbols/${encodeURIComponent(nodeId)}/callees`,
       ),
     neighbors: (nodeId: string, depth = 1) =>
       fetchJSON<NeighborsResponse>(
-        `${BASE}/symbols/${encodeURIComponent(nodeId)}/neighbors`,
+        `/api/symbols/${encodeURIComponent(nodeId)}/neighbors`,
         { depth },
       ),
     impact: (nodeId: string, depth = 2) =>
       fetchJSON<ImpactResponse>(
-        `${BASE}/symbols/${encodeURIComponent(nodeId)}/impact`,
+        `/api/symbols/${encodeURIComponent(nodeId)}/impact`,
         { depth },
       ),
-    types: () => fetchJSON<TypesResponse>(`${BASE}/symbols/types`),
+    types: () => fetchJSON<TypesResponse>("/api/symbols/types"),
   },
 
   graph: {
     subgraph: (symbolId: string, depth = 1) =>
-      fetchJSON<SubgraphResponse>(`${BASE}/graph/subgraph`, { symbol_id: symbolId, depth }),
-    stats: () => fetchJSON<GraphStats>(`${BASE}/graph/stats`),
-    overview: () => fetchJSON<OverviewResponse>(`${BASE}/graph/overview`),
+      fetchJSON<SubgraphResponse>("/api/graph/subgraph", { symbol_id: symbolId, depth }),
+    stats: () => fetchJSON<GraphStats>("/api/graph/stats"),
+    overview: () => fetchJSON<OverviewResponse>("/api/graph/overview"),
     edge: (source: string, target: string, type?: string) =>
-      fetchJSON<EdgeDetailResponse>(`${BASE}/graph/edge`, {
+      fetchJSON<EdgeDetailResponse>("/api/graph/edge", {
         source,
         target,
         ...(type ? { type } : {}),
@@ -395,12 +436,12 @@ export const api = {
   },
 
   dashboard: {
-    stats: () => fetchJSON<DashboardStats>(`${BASE}/dashboard/stats`),
+    stats: () => fetchJSON<DashboardStats>("/api/dashboard/stats"),
   },
 
   context: {
     generate: (task: string, maxTokens = 6000, includeTests = true, depth = 2) =>
-      postJSON<ContextPackResponse>(`${BASE}/context-pack`, {
+      postJSON<ContextPackResponse>("/api/context-pack", {
         task,
         max_tokens: maxTokens,
         include_tests: includeTests,

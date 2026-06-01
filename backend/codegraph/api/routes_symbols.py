@@ -68,6 +68,7 @@ class NeighborItem(BaseModel):
     type: str
     file_path: str
     edge_type: str
+    direction: str = "outgoing"  # "incoming" (caller) or "outgoing" (callee)
     confidence: float = 0.0
 
 
@@ -235,6 +236,7 @@ async def get_neighbors(
     neighbors = store.get_neighbors(normalized)
     items = []
     for neighbor, edge in neighbors:
+        direction = "incoming" if edge.target == normalized else "outgoing"
         items.append(
             NeighborItem(
                 node_id=neighbor.id,
@@ -246,6 +248,7 @@ async def get_neighbors(
                 edge_type=edge.type.value
                 if hasattr(edge.type, "value")
                 else str(edge.type),
+                direction=direction,
                 confidence=edge.confidence,
             )
         )
