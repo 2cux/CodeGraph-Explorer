@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Node, Edge } from "@xyflow/react";
 import { api, lastApiError } from "../api";
 import type { SearchResult, OverviewResponse, StatusResponse } from "../api";
 import { Topbar, type IndexStatus, type PageTab } from "./components/Topbar";
 import { RightInspector, type InspectorTarget, type InspectorMode, type NodeInspectorData, type EdgeInspectorData } from "./components/RightInspector";
-import type { GraphNodeData, GraphEdgeData, NodeKind } from "./components/GraphCanvas";
 import { Library } from "./components/Library";
 import { Toast, type ToastData } from "./components/Toast";
-import SymbolSearch from "../pages/SymbolSearch";
+import { toReactFlowGraph, type RFNodeData, type RFEdgeData } from "./components/graphTransforms";
+import type { EdgeIdentity } from "./components/ReactFlowGraph";
 import GraphExplorer, { type CanvasState } from "../pages/GraphExplorer";
+import SymbolSearch from "../pages/SymbolSearch";
 import ImpactView from "../pages/ImpactView";
 import EvidencePackViewer from "../pages/EvidencePackViewer";
 import Settings from "../pages/Settings";
@@ -26,9 +28,10 @@ export default function App() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [toast, setToast] = useState<ToastData | null>(null);
 
-  // Graph state
-  const [graphNodes, setGraphNodes] = useState<GraphNodeData[]>([]);
-  const [graphEdges, setGraphEdges] = useState<GraphEdgeData[]>([]);
+  // ── React Flow graph state ──────────────────────────────────────────
+  const [rfNodes, setRfNodes] = useState<Node<RFNodeData>[]>([]);
+  const [rfEdges, setRfEdges] = useState<Edge<RFEdgeData>[]>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [overviewData, setOverviewData] = useState<OverviewResponse | null>(null);
 
   // Inspector data
@@ -51,8 +54,10 @@ export default function App() {
 
   // Track whether we've auto-selected an entry point on initial load
   const hasAutoSelected = useRef(false);
+  // Track current center node id
+  const centerNodeIdRef = useRef<string | null>(null);
 
-  // Load overview on mount + auto-select first entry point
+  // ── Load on mount: status → summary → auto-select center ──────────
   useEffect(() => {
     async function load() {
       let statusRes: StatusResponse;
@@ -63,7 +68,6 @@ export default function App() {
         else if (statusRes.status === "stale") setIndexStatus("stale");
         else setIndexStatus("missing");
       } catch (e) {
-        // API unreachable or no index
         if (e instanceof Error && e.name === "ApiConnectionError") {
           setIndexStatus("error");
           setCanvasState("error");
@@ -80,28 +84,30 @@ export default function App() {
         return;
       }
 
+      // Also load overview data (for overview tab fallback)
       try {
         const ov = await api.graph.overview();
         setOverviewData(ov);
-        setCanvasState("overview");
       } catch {
-        setCanvasState("error");
+        // non-critical
       }
 
-      // Auto-select first entry point so the focused graph renders immediately
+      // Auto-select first entry point for local subgraph view
       if (!hasAutoSelected.current) {
         try {
           const summary = await api.repo.summary();
           const firstEp = summary.entry_points?.[0];
           if (firstEp) {
             hasAutoSelected.current = true;
-            // Use a micro-delay so React can flush the overview state first
             setTimeout(() => {
               handleSelectSymbol(firstEp.symbol_id);
             }, 0);
+          } else {
+            // Fallback to overview view if no entry points
+            setCanvasState("overview");
           }
         } catch {
-          // Non-critical — overview graph is shown as fallback
+          setCanvasState("overview");
         }
       }
     }
@@ -109,7 +115,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showToast]);
 
-  // Re-index handlers
+  // ── Re-index handlers ──────────────────────────────────────────────
   const handleReindex = useCallback(async () => {
     try {
       setIndexStatus("indexing");
@@ -144,7 +150,7 @@ export default function App() {
     }
   }, [showToast]);
 
-  // Quick search
+  // ── Quick search (for Topbar) ──────────────────────────────────────
   const handleSearch = useCallback(async (query: string): Promise<SearchResult[]> => {
     if (!query.trim()) return [];
     try {
@@ -155,18 +161,23 @@ export default function App() {
     }
   }, []);
 
-  // Select symbol → load graph + inspector
+  // ── Select symbol → load subgraph + inspector ─────────────────────
   const handleSelectSymbol = useCallback(async (nodeId: string) => {
     setInspectorOpen(true);
     setInspectorTarget("node");
     setInspectorMode("loading");
+    setSelectedNodeId(nodeId);
+    setCanvasState("loading");
     setActiveTab("overview"); // switch to graph view
 
     try {
-      const [detail, neighbors] = await Promise.all([
+      // Fetch detail + subgraph in parallel
+      const [detail, subgraph] = await Promise.all([
         api.symbols.detail(nodeId),
-        api.symbols.neighbors(nodeId, 1),
+        api.graph.subgraph(nodeId, 1),
       ]);
+
+      centerNodeIdRef.current = nodeId;
 
       // Set node inspector data
       setNodeInspectorData({
@@ -182,54 +193,35 @@ export default function App() {
         tags: detail.tags,
         visibility: detail.visibility,
         callers_count: 0,
-        callees_count: neighbors.total,
+        callees_count: subgraph.edges.length,
         tests_count: 0,
       });
 
-      // Transform to graph nodes
-      const nodes: GraphNodeData[] = [
-        {
-          id: nodeId,
-          x: 360, y: 360,
-          kind: (detail.type?.toLowerCase() || "function") as NodeKind,
-          name: detail.name || nodeId,
-          path: detail.file_path || "",
-          confidence: 1,
-          state: "active",
-        },
-        ...neighbors.neighbors.map((n, i) => ({
-          id: n.node_id,
-          x: 180 + (i % 3) * 180,
-          y: 170 + Math.floor(i / 3) * 170,
-          kind: (n.type?.toLowerCase() || "function") as NodeKind,
-          name: n.name,
-          path: n.file_path,
-          confidence: parseFloat(n.confidence) || 0.5,
-          state: "normal" as const,
-        })),
-      ];
-
-      const edges: GraphEdgeData[] = neighbors.neighbors.map((n) => {
-        const isIncoming = n.direction === "incoming";
-        return {
-          from: isIncoming ? n.node_id : nodeId,
-          to: isIncoming ? nodeId : n.node_id,
-          label: "calls" as const,
-          state: (parseFloat(n.confidence) < 0.6 ? "low_confidence" : "default") as GraphEdgeData["state"],
-        };
+      // Transform to React Flow format
+      const { nodes, edges } = toReactFlowGraph(subgraph, {
+        centerNodeId: nodeId,
+        centerName: detail.name,
+        centerFilePath: detail.file_path,
+        selectedNodeId: nodeId,
       });
 
-      setGraphNodes(nodes);
-      setGraphEdges(edges);
+      setRfNodes(nodes);
+      setRfEdges(edges);
       setCanvasState("focused");
       setInspectorMode("node");
-    } catch {
+    } catch (e) {
       setInspectorMode("error");
+      setCanvasState("error");
       showToast("error", "Failed to load symbol details.");
     }
   }, [showToast]);
 
-  // Select file in overview
+  // ── Search bar select (from graph overlay) ────────────────────────
+  const handleSearchSelect = useCallback(async (symbolId: string) => {
+    await handleSelectSymbol(symbolId);
+  }, [handleSelectSymbol]);
+
+  // ── Select file in overview ───────────────────────────────────────
   const handleSelectFile = useCallback(async (filePath: string) => {
     setInspectorOpen(true);
     setInspectorTarget("node");
@@ -253,8 +245,8 @@ export default function App() {
     }
   }, [handleSelectSymbol, showToast]);
 
-  // Edge selection → fetch real edge detail from API
-  const handleSelectEdge = useCallback(async (edgeId: { source: string; target: string; type: string }) => {
+  // ── Edge selection → fetch edge detail ────────────────────────────
+  const handleSelectEdge = useCallback(async (edgeId: EdgeIdentity) => {
     setInspectorOpen(true);
     setInspectorTarget("edge");
     setInspectorMode("loading");
@@ -314,13 +306,51 @@ export default function App() {
             {activeTab === "overview" && (
               <GraphExplorer
                 canvasState={canvasState}
-                nodes={canvasState === "focused" ? graphNodes : undefined}
-                edges={canvasState === "focused" ? graphEdges : undefined}
+                rfNodes={canvasState === "focused" ? rfNodes : []}
+                rfEdges={canvasState === "focused" ? rfEdges : []}
+                selectedNodeId={selectedNodeId}
                 overviewData={overviewData}
                 indexStatus={indexStatus}
-                onSelectNode={handleSelectSymbol}
+                onSelectNode={(nodeId) => {
+                  if (nodeId === selectedNodeId) {
+                    // Re-click same node: reload center
+                    handleSelectSymbol(nodeId);
+                  } else {
+                    // Click new node: select it locally (highlight neighbors)
+                    setSelectedNodeId(nodeId);
+                    // Load its detail for inspector
+                    setInspectorOpen(true);
+                    setInspectorTarget("node");
+                    setInspectorMode("loading");
+                    api.symbols.detail(nodeId).then((detail) => {
+                      setNodeInspectorData({
+                        symbol_id: detail.id,
+                        name: detail.name,
+                        type: detail.type,
+                        file_path: detail.file_path,
+                        line_start: detail.position?.line_start,
+                        line_end: detail.position?.line_end,
+                        signature: detail.signature,
+                        docstring: detail.docstring,
+                        code_preview: detail.code_preview,
+                        tags: detail.tags,
+                        visibility: detail.visibility,
+                      });
+                      setInspectorMode("node");
+                    }).catch(() => {
+                      setInspectorMode("error");
+                    });
+                    // If clicking a node that's not the center, reload subgraph centered on it
+                    if (nodeId !== centerNodeIdRef.current) {
+                      handleSelectSymbol(nodeId);
+                    }
+                  }
+                }}
                 onSelectFile={handleSelectFile}
-                onSelectEdge={handleSelectEdge}
+                onSelectEdge={(edge) => {
+                  handleSelectEdge(edge);
+                }}
+                onSearchSelect={handleSearchSelect}
               />
             )}
             {activeTab === "search" && (

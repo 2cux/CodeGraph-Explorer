@@ -133,3 +133,98 @@
 .cg-skeleton-edge {
   animation: cg-shimmer 1.8s ease-in-out infinite;
 }
+
+/* ── React Flow overrides (dark theme support) ──────────────────────── */
+
+/* Override React Flow default styles for dark theme */
+.cg-dark .react-flow__background {
+  background: var(--cg-bg-canvas);
+}
+
+.cg-rf-controls .react-flow__controls-button,
+.cg-dark .react-flow__controls-button {
+  background: var(--cg-bg-panel) !important;
+  border-color: var(--cg-border) !important;
+  fill: var(--cg-text-secondary) !important;
+  box-shadow: none !important;
+}
+
+.cg-rf-controls .react-flow__controls-button:hover,
+.cg-dark .react-flow__controls-button:hover {
+  background: var(--cg-bg-subtle) !important;
+}
+
+.cg-rf-controls .react-flow__controls-button svg,
+.cg-dark .react-flow__controls-button svg {
+  fill: var(--cg-text-secondary) !important;
+}
+
+.cg-dark .react-flow__minimap {
+  background: var(--cg-bg-panel) !important;
+}
+
+/* Node dimming transitions */
+.cg-node-dimmed {
+  transition: opacity 200ms ease;
+}
+
+.cg-node-neighbor {
+  transition: opacity 200ms ease;
+}
+
+.cg-node-selected {
+  transition: opacity 200ms ease;
+  z-index: 10 !important;
+}
+
+/* Edge dimming */
+.cg-edge-dimmed {
+  transition: opacity 200ms ease;
+}
+
+.cg-edge-highlighted {
+  transition: opacity 200ms ease;
+  z-index: 5 !important;
+}
+
+/* Edge label hover */
+.cg-edge-label-hover:hover {
+  opacity: 1 !important;
+}
+
+/* React Flow attribution hide */
+.react-flow__attribution {
+  display: none !important;
+}
+
+/* Spin animation (for loading spinners) */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Ensure our custom nodes stack properly */
+.cg-rf-node {
+  position: relative;
+}
+
+/* Fix React Flow pane cursor in our theme */
+.cg-dark .react-flow__pane {
+  cursor: grab;
+}
+
+.cg-dark .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+/* React Flow selection box */
+.cg-dark .react-flow__selection {
+  background: rgba(96, 165, 250, 0.06) !important;
+  border: 1px solid rgba(96, 165, 250, 0.25) !important;
+}
+
+/* Minimap viewport box */
+.cg-dark .react-flow__minimap-mask {
+  fill: var(--cg-bg-canvas);
+  opacity: 0.6;
+}

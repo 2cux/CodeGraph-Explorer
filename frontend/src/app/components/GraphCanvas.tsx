@@ -1,9 +1,15 @@
 import { useMemo, useState } from "react";
+import type { Node, Edge } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 import { Spinner } from "./Spinner";
+import SearchBar from "./SearchBar";
+import ReactFlowGraph, { type EdgeIdentity } from "./ReactFlowGraph";
+import type { RFNodeData, RFEdgeData } from "./graphTransforms";
 import type { OverviewResponse } from "../../api";
 
-export type NodeKind = "function" | "method" | "class" | "file" | "test" | "external_symbol";
+// ── Re-exported types (backward compatibility) ────────────────────────
+
+export type NodeKind = "function" | "method" | "class" | "file" | "test" | "module" | "external_symbol";
 export type NodeState = "normal" | "active" | "related" | "dimmed";
 export type EdgeState = "default" | "active_flow" | "dimmed" | "low_confidence";
 export type CanvasState = "overview" | "focused" | "empty" | "loading" | "error";
@@ -26,7 +32,9 @@ export interface GraphEdgeData {
   state: EdgeState;
 }
 
-const KIND_LABEL: Record<NodeKind, string> = {
+// ── Constants ─────────────────────────────────────────────────────────
+
+const KIND_LABEL: Record<string, string> = {
   function: "FUNC",
   method: "METH",
   class: "CLASS",
@@ -35,7 +43,7 @@ const KIND_LABEL: Record<NodeKind, string> = {
   external_symbol: "EXT",
 };
 
-const KIND_COLOR: Record<NodeKind, string> = {
+const KIND_COLOR: Record<string, string> = {
   function: "var(--cg-accent)",
   method: "#A78BFA",
   class: "var(--cg-success)",
@@ -47,10 +55,7 @@ const KIND_COLOR: Record<NodeKind, string> = {
 export const NODE_W = 168;
 export const NODE_H = 46;
 
-const CANVAS_W = 1300;
-const CANVAS_H = 780;
-
-// ── Overview graph constants ─────────────────────────────────────────
+// ── Overview constants ────────────────────────────────────────────────
 
 const OV_NODE_W = 184;
 const OV_NODE_H = 48;
@@ -80,153 +85,143 @@ function parentDir(path: string): string {
   return parts.slice(0, -1).join("/");
 }
 
-export interface EdgeIdentity {
-  source: string;
-  target: string;
-  type: string;
-}
+// ── Props ─────────────────────────────────────────────────────────────
 
 interface Props {
   state: CanvasState;
   onSelectNode?: (nodeId: string) => void;
   onSelectFile?: (filePath: string) => void;
   onSelectEdge?: (edge: EdgeIdentity) => void;
+  /** React Flow nodes (for focused state) */
+  rfNodes?: Node<RFNodeData>[];
+  /** React Flow edges (for focused state) */
+  rfEdges?: Edge<RFEdgeData>[];
+  /** Selected node ID for dimming effect */
+  selectedNodeId?: string | null;
+  /** Overview data (for overview state) */
+  overviewData?: OverviewResponse | null;
+  /** Search bar callback — when user selects a symbol from search */
+  onSearchSelect?: (symbolId: string) => void;
+  /** Existing search function for Topbar compatibility */
+  searchFn?: (query: string) => Promise<{ symbol_id: string; name: string; type: string; file_path: string }[]>;
+  /** Legacy node/edge props (kept for tests/transition) */
   nodes?: GraphNodeData[];
   edges?: GraphEdgeData[];
-  overviewData?: OverviewResponse | null;
 }
 
-export function GraphCanvas({ state, onSelectNode, onSelectFile, onSelectEdge, nodes: propNodes, edges: propEdges, overviewData }: Props) {
-  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
+// ── Component ─────────────────────────────────────────────────────────
 
-  if (state === "loading") return <CanvasWrapper><LoadingState /></CanvasWrapper>;
-  if (state === "error") return <CanvasWrapper><ErrorState /></CanvasWrapper>;
-  if (state === "empty") return <CanvasWrapper><EmptyState /></CanvasWrapper>;
-
-  if (state === "overview") {
+export function GraphCanvas({
+  state,
+  onSelectNode,
+  onSelectFile,
+  onSelectEdge,
+  rfNodes,
+  rfEdges,
+  selectedNodeId,
+  overviewData,
+  onSearchSelect,
+  nodes: _legacyNodes,
+  edges: _legacyEdges,
+}: Props) {
+  // ── Loading ─────────────────────────────────────────────────────────
+  if (state === "loading") {
     return (
       <CanvasWrapper>
-        {overviewData ? <OverviewGraph data={overviewData} onSelectFile={onSelectFile} /> : <LoadingState />}
+        <LoadingState />
       </CanvasWrapper>
     );
   }
 
-  // focused state — require real data, no mock fallback
-  const nodes = propNodes;
-  const edges = propEdges;
-
-  if (!nodes || nodes.length === 0) {
-    return <CanvasWrapper><EmptyState /></CanvasWrapper>;
+  // ── Error ───────────────────────────────────────────────────────────
+  if (state === "error") {
+    return (
+      <CanvasWrapper>
+        <ErrorState />
+      </CanvasWrapper>
+    );
   }
 
-  const getNode = (id: string) => nodes.find((n) => n.id === id);
-  const edgeKey = (e: GraphEdgeData) => `${e.from}→${e.to}`;
+  // ── Empty ───────────────────────────────────────────────────────────
+  if (state === "empty") {
+    return (
+      <CanvasWrapper>
+        <EmptyState />
+      </CanvasWrapper>
+    );
+  }
+
+  // ── Overview ────────────────────────────────────────────────────────
+  if (state === "overview") {
+    return (
+      <CanvasWrapper>
+        {overviewData ? (
+          <>
+            {onSearchSelect && (
+              <div style={{ position: "absolute", top: 12, left: 12, zIndex: 10 }}>
+                <SearchBar onSelectResult={onSearchSelect} placeholder="Search & focus a symbol…" />
+              </div>
+            )}
+            <OverviewGraph data={overviewData} onSelectFile={onSelectFile} />
+          </>
+        ) : (
+          <LoadingState />
+        )}
+      </CanvasWrapper>
+    );
+  }
+
+  // ── Focused (React Flow) ────────────────────────────────────────────
+  const hasData = rfNodes && rfNodes.length > 0;
+
+  if (!hasData) {
+    return (
+      <CanvasWrapper>
+        <EmptyState />
+      </CanvasWrapper>
+    );
+  }
 
   return (
-    <CanvasWrapper>
-      <svg width="100%" height="100%" viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`} style={{ display: "block", overflow: "visible" }}>
-        {/* Grid */}
-        <defs>
-          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="var(--cg-grid)" strokeWidth="0.5" />
-          </pattern>
-        </defs>
-        <rect width={CANVAS_W} height={CANVAS_H} fill="url(#grid)" />
+    <div
+      style={{
+        width: "100%", height: "100%",
+        position: "relative",
+        background: "var(--cg-bg-canvas)",
+      }}
+    >
+      {/* Search overlay */}
+      {onSearchSelect && (
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            left: 12,
+            zIndex: 10,
+          }}
+        >
+          <SearchBar
+            onSelectResult={onSearchSelect}
+            placeholder="Search symbols…"
+          />
+        </div>
+      )}
 
-        {/* Edges */}
-        {edges?.map((e) => {
-          const from = getNode(e.from);
-          const to = getNode(e.to);
-          if (!from || !to) return null;
-          return (
-            <g
-              key={edgeKey(e)}
-              className="cg-edge-group"
-              onClick={() => onSelectEdge?.({ source: e.from, target: e.to, type: e.label })}
-              onMouseEnter={() => setHoveredEdge(edgeKey(e))}
-              onMouseLeave={() => setHoveredEdge(null)}
-            >
-              {/* Hit area */}
-              <line
-                x1={from.x + NODE_W / 2} y1={from.y + NODE_H / 2}
-                x2={to.x + NODE_W / 2} y2={to.y + NODE_H / 2}
-                className="cg-edge-hit"
-              />
-              {/* Visible line */}
-              <line
-                x1={from.x + NODE_W / 2} y1={from.y + NODE_H / 2}
-                x2={to.x + NODE_W / 2} y2={to.y + NODE_H / 2}
-                className="cg-edge-line"
-                stroke={edgeStrokeColor(e.state)}
-                strokeWidth={hoveredEdge === edgeKey(e) ? 1.5 : 1}
-                markerEnd={`url(#arrow-${e.state})`}
-              />
-              {/* Label */}
-              <g
-                className="cg-edge-label"
-                opacity={hoveredEdge === edgeKey(e) ? 1 : 0.6}
-                transform={`translate(${(from.x + to.x) / 2 + NODE_W / 2},${(from.y + to.y) / 2 + NODE_H / 2})`}
-              >
-                <rect x={-getLW(e.label) / 2} y={-6.5} width={getLW(e.label)} height={13} rx={2}
-                  fill="var(--cg-bg-canvas)" stroke="var(--cg-border)" />
-                <text x={0} y={3} textAnchor="middle" fontSize={8}
-                  fontFamily="'JetBrains Mono', monospace" fill={edgeStrokeColor(e.state)}>
-                  {e.label}
-                </text>
-              </g>
-            </g>
-          );
-        })}
-
-        {/* Edge markers */}
-        <defs>
-          {(["default", "active_flow", "dimmed", "low_confidence"] as EdgeState[]).map((s) => (
-            <marker key={s} id={`arrow-${s}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
-              <path d="M0,0 L8,4 L0,8 z" fill={edgeStrokeColor(s)} />
-            </marker>
-          ))}
-        </defs>
-
-        {/* Nodes */}
-        {nodes.map((n) => (
-          <foreignObject
-            key={n.id}
-            x={n.x}
-            y={n.y}
-            width={NODE_W}
-            height={NODE_H}
-            onMouseEnter={() => setHoveredNode(n.id)}
-            onMouseLeave={() => setHoveredNode(null)}
-            onClick={() => onSelectNode?.(n.id)}
-            style={{ cursor: "pointer" }}
-          >
-            <GraphNodeView node={n} />
-          </foreignObject>
-        ))}
-
-        {/* Halo on hovered node's edges */}
-        {hoveredNode && edges?.filter((e) => e.from === hoveredNode || e.to === hoveredNode).map((e) => {
-          const from = getNode(e.from);
-          const to = getNode(e.to);
-          if (!from || !to) return null;
-          return (
-            <circle
-              key={`halo-${edgeKey(e)}`}
-              className="cg-halo"
-              cx={(from.x + to.x) / 2 + NODE_W / 2}
-              cy={(from.y + to.y) / 2 + NODE_H / 2}
-              r={4}
-              fill={edgeStrokeColor(e.state)}
-            />
-          );
-        })}
-      </svg>
-    </CanvasWrapper>
+      {/* React Flow graph */}
+      <ReactFlowGraph
+        nodes={rfNodes}
+        edges={rfEdges || []}
+        selectedNodeId={selectedNodeId}
+        onSelectNode={onSelectNode}
+        onSelectEdge={onSelectEdge}
+      />
+    </div>
   );
 }
 
-export function GraphNodeView({ node, standalone: _standalone }: { node: GraphNodeData; standalone?: boolean }) {
+// ── Sub-components ────────────────────────────────────────────────────
+
+export function GraphNodeView({ node }: { node: GraphNodeData; standalone?: boolean }) {
   const isDimmed = node.state === "dimmed";
   const isActive = node.state === "active";
   const isRelated = node.state === "related";
@@ -234,8 +229,8 @@ export function GraphNodeView({ node, standalone: _standalone }: { node: GraphNo
   const borderColor = isActive
     ? KIND_COLOR[node.kind]
     : isRelated
-    ? "var(--cg-accent)"
-    : "var(--cg-border)";
+      ? "var(--cg-accent)"
+      : "var(--cg-border)";
 
   const bgColor = isActive
     ? "color-mix(in srgb, var(--cg-accent) 6%, transparent)"
@@ -260,14 +255,14 @@ export function GraphNodeView({ node, standalone: _standalone }: { node: GraphNo
         className="cg-mono"
         style={{
           fontSize: 9,
-          color: KIND_COLOR[node.kind],
+          color: KIND_COLOR[node.kind] || "var(--cg-text-muted)",
           letterSpacing: 0.5,
           flexShrink: 0,
           width: 32,
           fontWeight: 500,
         }}
       >
-        {KIND_LABEL[node.kind]}
+        {KIND_LABEL[node.kind] || node.kind.toUpperCase().slice(0, 4)}
       </span>
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
         <span
@@ -311,14 +306,7 @@ export function GraphNodeView({ node, standalone: _standalone }: { node: GraphNo
   );
 }
 
-function edgeStrokeColor(state: EdgeState) {
-  if (state === "active_flow") return "var(--cg-accent)";
-  if (state === "low_confidence") return "var(--cg-warning)";
-  if (state === "dimmed") return "var(--cg-border-hover)";
-  return "var(--cg-text-muted)";
-}
-
-function getLW(label: string) { return Math.max(34, label.length * 6 + 8); }
+// ── Wrapper / State views ─────────────────────────────────────────────
 
 function CanvasWrapper({ children }: { children: React.ReactNode }) {
   return (
@@ -341,10 +329,7 @@ function CanvasWrapper({ children }: { children: React.ReactNode }) {
 
 function LoadingState() {
   return (
-    <div
-      className="flex items-center"
-      style={{ gap: 10, color: "var(--cg-text-muted)" }}
-    >
+    <div className="flex items-center" style={{ gap: 10, color: "var(--cg-text-muted)" }}>
       <Spinner size={18} />
       <span style={{ fontSize: 12 }}>Loading graph...</span>
     </div>
@@ -358,17 +343,37 @@ function ErrorState() {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 8,
+        gap: 12,
         color: "var(--cg-text-muted)",
+        maxWidth: 360,
+        textAlign: "center",
       }}
     >
-      <svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="var(--cg-error)" strokeWidth="1.4" strokeLinecap="round">
+      <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="var(--cg-error)" strokeWidth="1.4" strokeLinecap="round">
         <circle cx="8" cy="8" r="5.5" />
         <path d="M8 4.5v4M8 11.2v.1" />
       </svg>
-      <span style={{ fontSize: 12, color: "var(--cg-text-secondary)" }}>
-        Failed to load graph data.
-      </span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <span style={{ fontSize: 12, color: "var(--cg-text-secondary)", fontWeight: 500 }}>
+          Cannot connect to CodeGraph API.
+        </span>
+        <span style={{ fontSize: 11, color: "var(--cg-text-muted)" }}>
+          Start the API server with:
+        </span>
+        <code
+          style={{
+            fontSize: 11,
+            padding: "4px 8px",
+            borderRadius: 4,
+            background: "var(--cg-bg-subtle)",
+            border: "1px solid var(--cg-border)",
+            color: "var(--cg-text-secondary)",
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          codegraph api --root &lt;project_path&gt;
+        </code>
+      </div>
     </div>
   );
 }
@@ -380,24 +385,59 @@ function EmptyState() {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 8,
+        gap: 12,
         color: "var(--cg-text-muted)",
+        maxWidth: 360,
+        textAlign: "center",
       }}
     >
-      <svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+      <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
         <circle cx="8" cy="8" r="5.5" />
         <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" />
       </svg>
-      <span style={{ fontSize: 12, color: "var(--cg-text-secondary)" }}>
-        No graph data available.
-      </span>
-      <span style={{ fontSize: 10 }}>Index a project to get started.</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <span style={{ fontSize: 12, color: "var(--cg-text-secondary)", fontWeight: 500 }}>
+          No graph data available.
+        </span>
+        <span style={{ fontSize: 11 }}>
+          Run{" "}
+          <code
+            style={{
+              fontSize: 11,
+              padding: "1px 4px",
+              borderRadius: 2,
+              background: "var(--cg-bg-subtle)",
+              color: "var(--cg-text-secondary)",
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            codegraph index &lt;project_path&gt;
+          </code>
+          {" "}to build the code graph, then refresh the Dashboard.
+        </span>
+      </div>
     </div>
   );
 }
 
+// ── Overview Graph (kept from original, capped at 100 nodes) ──────────
+
 function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelectFile?: (fp: string) => void }) {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+
+  // Cap nodes at 100
+  const capped = useMemo(() => {
+    if (data.nodes.length <= 100) return data;
+    return {
+      ...data,
+      nodes: data.nodes.slice(0, 100),
+      edges: data.edges.filter(
+        (e) =>
+          data.nodes.slice(0, 100).some((n) => n.id === e.source) &&
+          data.nodes.slice(0, 100).some((n) => n.id === e.target),
+      ),
+    };
+  }, [data]);
 
   const { layout, moduleColorMap } = useMemo(() => {
     const g = new dagre.graphlib.Graph();
@@ -405,13 +445,12 @@ function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelec
     g.setDefaultEdgeLabel(() => ({}));
 
     const colorMap: Record<string, string> = {};
-    for (const n of data.nodes) {
+    for (const n of capped.nodes) {
       getModuleColor(n.module, colorMap);
       g.setNode(n.id, { width: OV_NODE_W, height: OV_NODE_H });
     }
 
-    // Cap edges: keep top 200 most significant
-    const topEdges = [...data.edges]
+    const topEdges = [...capped.edges]
       .sort((a, b) => b.edge_count - a.edge_count)
       .slice(0, 200);
     for (const e of topEdges) {
@@ -420,7 +459,7 @@ function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelec
 
     dagre.layout(g);
     return { layout: g, moduleColorMap: colorMap };
-  }, [data]);
+  }, [capped]);
 
   const gw = layout.graph().width ?? 800;
   const gh = layout.graph().height ?? 600;
@@ -433,17 +472,22 @@ function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelec
       {/* Stats bar */}
       <div
         style={{
-          position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
-          display: "flex", gap: 16, zIndex: 5,
+          position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 5,
+          display: "flex", gap: 16,
           padding: "5px 14px", borderRadius: 6,
           background: "var(--cg-bg-panel)", border: "1px solid var(--cg-border)",
           fontSize: 10, color: "var(--cg-text-muted)",
         }}
       >
         <span style={{ color: "var(--cg-text-primary)", fontWeight: 600, fontSize: 11 }}>Overview</span>
-        <span>{data.nodes.length} files</span>
-        <span>{data.edges.length} dependencies</span>
-        <span>{data.nodes.reduce((s, n) => s + n.symbol_count, 0)} symbols</span>
+        <span>{capped.nodes.length} files</span>
+        <span>{capped.edges.length} dependencies</span>
+        <span>{capped.nodes.reduce((s, n) => s + n.symbol_count, 0)} symbols</span>
+        {data.nodes.length > 100 && (
+          <span style={{ color: "var(--cg-warning)" }}>
+            Showing top 100 nodes. Use search to explore more.
+          </span>
+        )}
       </div>
 
       <svg width="100%" height="100%" viewBox={`0 0 ${vw} ${vh}`} style={{ display: "block", overflow: "visible" }}>
@@ -475,7 +519,6 @@ function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelec
           );
         })}
 
-        {/* Arrow marker */}
         <defs>
           <marker id="arrow-ov" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="4" markerHeight="4" orient="auto">
             <path d="M0,0 L6,3 L0,6 z" fill="var(--cg-border-hover)" />
@@ -483,7 +526,7 @@ function OverviewGraph({ data, onSelectFile }: { data: OverviewResponse; onSelec
         </defs>
 
         {/* Nodes */}
-        {data.nodes.map((n) => {
+        {capped.nodes.map((n) => {
           const pt = layout.node(n.id);
           if (!pt) return null;
           const x = pt.x - OV_NODE_W / 2 + pad;
