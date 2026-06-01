@@ -24,6 +24,16 @@ interface Props {
   cappingWarning?: CappingWarning | null;
   /** Whether hierarchy folding is enabled */
   hierarchyEnabled?: boolean;
+  /** Edge selection source */
+  selectedEdgeSource?: string | null;
+  /** Edge selection target */
+  selectedEdgeTarget?: string | null;
+  /** Impact mode highlighting */
+  impactMode?: boolean;
+  /** Confirmed impact node IDs */
+  impactConfirmedIds?: Set<string>;
+  /** Possible impact node IDs */
+  impactPossibleIds?: Set<string>;
   /** @deprecated kept for tests */
   nodes?: GraphNodeData[];
   /** @deprecated kept for tests */
@@ -46,6 +56,11 @@ export default function GraphExplorer({
   hierarchyEnabled,
   nodes,
   edges,
+  selectedEdgeSource,
+  selectedEdgeTarget,
+  impactMode,
+  impactConfirmedIds,
+  impactPossibleIds,
 }: Props) {
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
@@ -119,6 +134,11 @@ export default function GraphExplorer({
         hierarchyEnabled={hierarchyEnabled}
         nodes={nodes}
         edges={edges}
+        selectedEdgeSource={selectedEdgeSource}
+        selectedEdgeTarget={selectedEdgeTarget}
+        impactMode={impactMode}
+        impactConfirmedIds={impactConfirmedIds}
+        impactPossibleIds={impactPossibleIds}
       />
     </div>
   );

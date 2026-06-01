@@ -267,6 +267,204 @@ describe("RightInspector - Edge evidence display", () => {
   });
 });
 
+describe("RightInspector - Node: Copy buttons and confidence", () => {
+  it("shows Copy Symbol ID button when onCopyToClipboard is provided", () => {
+    render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, confidence: 0.95 }}
+        onCopyToClipboard={() => {}}
+      />
+    );
+    expect(screen.getByText("Copy ID")).toBeInTheDocument();
+  });
+
+  it("shows Copy File Path button when onCopyToClipboard is provided", () => {
+    render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={mockNodeData}
+        onCopyToClipboard={() => {}}
+      />
+    );
+    expect(screen.getByText("Copy Path")).toBeInTheDocument();
+  });
+
+  it("shows confidence field when provided", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, confidence: 0.95 }}
+      />
+    );
+    expect(container.textContent).toContain("confidence");
+    expect(container.textContent).toContain("0.95");
+  });
+});
+
+describe("RightInspector - Node: Quick action buttons", () => {
+  it("shows Callers, Callees, Neighbors, Impact buttons for non-group nodes", () => {
+    render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={mockNodeData}
+        onSelectSymbol={() => {}}
+        onShowCallers={() => {}}
+        onShowCallees={() => {}}
+        onShowImpact={() => {}}
+      />
+    );
+    expect(screen.getByText("Callers")).toBeInTheDocument();
+    expect(screen.getByText("Callees")).toBeInTheDocument();
+    expect(screen.getByText("Neighbors")).toBeInTheDocument();
+    expect(screen.getByText("Impact")).toBeInTheDocument();
+  });
+
+  it("does NOT show quick action buttons for group parent nodes", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{
+          symbol_id: "file:src/auth.py",
+          name: "auth.py",
+          type: "file_group",
+          file_path: "src/auth.py",
+          is_group_parent: true,
+          child_count: 3,
+        }}
+        onSelectSymbol={() => {}}
+      />
+    );
+    expect(container.textContent).not.toContain("Callers");
+    expect(container.textContent).not.toContain("Callees");
+    expect(container.textContent).not.toContain("Neighbors");
+    expect(container.textContent).not.toContain("Impact");
+  });
+});
+
+describe("RightInspector - Node: Callers/Callees list", () => {
+  const nodeDataWithLists: NodeInspectorData = {
+    ...mockNodeData,
+    callers_list: [
+      { node_id: "src/x.py::foo", name: "foo", type: "function", file_path: "src/x.py", edge_type: "calls" },
+      { node_id: "tests/test_auth.py::test_login", name: "test_login", type: "test", file_path: "tests/test_auth.py", edge_type: "tested_by" },
+    ],
+    callees_list: [
+      { node_id: "src/db.py::query", name: "query", type: "function", file_path: "src/db.py", edge_type: "calls" },
+    ],
+  };
+
+  it("shows callers list when callers_list is provided", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={nodeDataWithLists}
+        onSelectSymbol={() => {}}
+      />
+    );
+    expect(container.textContent).toContain("Callers (2)");
+    expect(container.textContent).toContain("foo");
+    expect(container.textContent).toContain("test_login");
+  });
+
+  it("shows callees list when callees_list is provided", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={nodeDataWithLists}
+        onSelectSymbol={() => {}}
+      />
+    );
+    expect(container.textContent).toContain("Callees (1)");
+    expect(container.textContent).toContain("query");
+  });
+});
+
+describe("RightInspector - Node: Empty callers/callees", () => {
+  it("shows 'No callers or callees found' when both counts are 0", () => {
+    const { container } = render(
+      <RightInspector
+        target="node"
+        mode="node"
+        onClose={() => {}}
+        nodeData={{ ...mockNodeData, callers_count: 0, callees_count: 0 }}
+      />
+    );
+    expect(container.textContent).toContain("No callers or callees found");
+  });
+});
+
+describe("RightInspector - Edge: Unresolved/External markers", () => {
+  it("shows Unresolved marker when resolution is 'unresolved'", () => {
+    render(
+      <RightInspector
+        target="edge"
+        mode="edge"
+        onClose={() => {}}
+        edgeData={{ ...mockEdgeData, resolution: "unresolved", confidence: 0.3, confidence_level: "low" }}
+      />
+    );
+    // "Unresolved" appears both as resolution label and as the marker heading
+    const elements = screen.getAllByText("Unresolved");
+    expect(elements.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows External marker when resolution is 'external_symbol'", () => {
+    render(
+      <RightInspector
+        target="edge"
+        mode="edge"
+        onClose={() => {}}
+        edgeData={{ ...mockEdgeData, resolution: "external_symbol", confidence: 0.1, confidence_level: "low" }}
+      />
+    );
+    expect(screen.getByText("External")).toBeInTheDocument();
+  });
+
+  it("does NOT show Unresolved or External markers for normal resolutions", () => {
+    render(
+      <RightInspector
+        target="edge"
+        mode="edge"
+        onClose={() => {}}
+        edgeData={mockEdgeData}
+      />
+    );
+    expect(screen.queryByText("Unresolved")).not.toBeInTheDocument();
+    expect(screen.queryByText("External")).not.toBeInTheDocument();
+  });
+
+  it("does not contain forbidden phrases in edge inspector", () => {
+    const { container } = render(
+      <RightInspector
+        target="edge"
+        mode="edge"
+        onClose={() => {}}
+        edgeData={{ ...mockEdgeData, resolution: "unresolved" }}
+      />
+    );
+    const text = (container.textContent || "").toLowerCase();
+    const forbidden = ["read first", "you should", "must inspect", "next step", "implement"];
+    for (const term of forbidden) {
+      expect(text).not.toContain(term.toLowerCase());
+    }
+  });
+});
+
 describe("RightInspector - Error state", () => {
   it("shows error state when mode is error", () => {
     render(

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { RightInspector } from "../../app/components/RightInspector";
 import type { NodeInspectorData, EdgeInspectorData } from "../../app/components/RightInspector";
+import NavBar from "../../app/components/NavBar";
 import EvidencePackViewer from "../../pages/EvidencePackViewer";
 import ImpactView from "../../pages/ImpactView";
 import Settings from "../../pages/Settings";
@@ -65,6 +66,14 @@ describe("UI文案 neutrality — all components", () => {
 
   it("Settings has no action directives", () => {
     render(<Settings theme="dark" setTheme={() => {}} onReindex={() => {}} onIncrementalIndex={() => {}} indexStatus="fresh" />);
+    const text = (document.body.textContent || "").toLowerCase();
+    for (const term of FORBIDDEN) {
+      expect(text).not.toContain(term.toLowerCase());
+    }
+  });
+
+  it("NavBar has no action directives", () => {
+    render(<NavBar canGoBack={true} canGoForward={true} onBack={() => {}} onForward={() => {}} breadcrumbs={[{ label: "Repo Overview", onClick: () => {} }, { label: "login" }]} />);
     const text = (document.body.textContent || "").toLowerCase();
     for (const term of FORBIDDEN) {
       expect(text).not.toContain(term.toLowerCase());

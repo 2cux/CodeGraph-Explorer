@@ -1,4 +1,4 @@
-import { IconClose } from "./icons";
+import { IconClose, IconCopy } from "./icons";
 import { Spinner } from "./Spinner";
 
 export type InspectorTarget = "node" | "edge";
@@ -31,6 +31,12 @@ export interface NodeInspectorData {
   child_count?: number;
   /** For group parents: kind breakdown string */
   child_kind_summary?: string;
+  /** Confidence score for this node (from edge data or 1.0 for center) */
+  confidence?: number;
+  /** Callers list — populated by Show Callers action */
+  callers_list?: Array<{ node_id: string; name: string; type: string; file_path: string; edge_type: string }>;
+  /** Callees list — populated by Show Callees action */
+  callees_list?: Array<{ node_id: string; name: string; type: string; file_path: string; edge_type: string }>;
 }
 
 export interface EdgeInspectorData {
@@ -58,6 +64,14 @@ interface Props {
   onSelectSymbol?: (symbolId: string) => void;
   /** Called when user clicks expand/collapse on a group parent node */
   onToggleGroup?: (groupId: string) => void;
+  /** Called for copy-to-clipboard actions (text, human-readable label for toast) */
+  onCopyToClipboard?: (text: string, label: string) => void;
+  /** Called when user clicks "Show Callers" */
+  onShowCallers?: (symbolId: string) => void;
+  /** Called when user clicks "Show Callees" */
+  onShowCallees?: (symbolId: string) => void;
+  /** Called when user clicks "Show Impact" */
+  onShowImpact?: (symbolId: string) => void;
 }
 
 export function RightInspector({
@@ -70,6 +84,10 @@ export function RightInspector({
   edgeData,
   onSelectSymbol,
   onToggleGroup,
+  onCopyToClipboard,
+  onShowCallers,
+  onShowCallees,
+  onShowImpact,
 }: Props) {
   const effective: InspectorMode = mode ?? target;
   return (
@@ -84,7 +102,17 @@ export function RightInspector({
       }}
     >
       <InspectorHeader target={target} onClose={onClose} onSwitch={onSwitch} />
-      {effective === "node" && <NodeInspector data={nodeData} onSelectSymbol={onSelectSymbol} onToggleGroup={onToggleGroup} />}
+      {effective === "node" && (
+        <NodeInspector
+          data={nodeData}
+          onSelectSymbol={onSelectSymbol}
+          onToggleGroup={onToggleGroup}
+          onCopyToClipboard={onCopyToClipboard}
+          onShowCallers={onShowCallers}
+          onShowCallees={onShowCallees}
+          onShowImpact={onShowImpact}
+        />
+      )}
       {effective === "edge" && <EdgeInspector data={edgeData} />}
       {effective === "loading" && <LoadingBody />}
       {effective === "error" && <ErrorBody onRetry={onRetry} />}
@@ -166,10 +194,18 @@ function NodeInspector({
   data,
   onSelectSymbol,
   onToggleGroup,
+  onCopyToClipboard,
+  onShowCallers,
+  onShowCallees,
+  onShowImpact,
 }: {
   data?: NodeInspectorData | null;
   onSelectSymbol?: (symbolId: string) => void;
   onToggleGroup?: (groupId: string) => void;
+  onCopyToClipboard?: (text: string, label: string) => void;
+  onShowCallers?: (symbolId: string) => void;
+  onShowCallees?: (symbolId: string) => void;
+  onShowImpact?: (symbolId: string) => void;
 }) {
   if (!data) {
     return (
@@ -183,7 +219,8 @@ function NodeInspector({
   const location = data.line_start != null
     ? `${data.file_path}:${data.line_start}${data.line_end ? `-${data.line_end}` : ""}`
     : data.file_path;
-  const isLowConf = (data.metadata?.confidence as number) != null && (data.metadata?.confidence as number) < 0.6;
+  const isLowConf = data.confidence != null && data.confidence < 0.6;
+  const confLabel = data.confidence != null ? confidenceLevelLabel(data.confidence) : null;
 
   return (
     <div style={{ padding: "12px 14px 16px", display: "flex", flexDirection: "column" }}>
@@ -251,19 +288,20 @@ function NodeInspector({
           <KV label="line" value={`${data.line_start}${data.line_end ? `-${data.line_end}` : ""}`} mono />
         )}
         {data.visibility && <KV label="visibility" value={data.visibility} mono />}
-      </InspectorSection>
-
-      {/* Quick action: neighbors */}
-      {!data.is_group_parent && onSelectSymbol && (
-        <InspectorSection title="Explore">
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {data.confidence != null && (
+          <KV label="confidence" value={`${data.confidence.toFixed(2)} (${confLabel?.label || "Unknown"})`} tone={confLabel?.tone} mono />
+        )}
+        {/* Copy buttons */}
+        {onCopyToClipboard && (
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
             <button
-              onClick={() => onSelectSymbol(data.symbol_id)}
+              onClick={() => onCopyToClipboard(data.symbol_id, "symbol ID")}
+              title="Copy symbol ID to clipboard"
               style={{
-                gap: 6, height: 26, padding: "0 10px",
-                background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
-                color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
-                justifyContent: "flex-start", width: "100%",
+                display: "flex", alignItems: "center", gap: 4,
+                height: 22, padding: "0 8px",
+                background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 3,
+                color: "var(--cg-text-secondary)", fontSize: 10, cursor: "pointer",
                 fontFamily: "inherit",
               }}
               onMouseEnter={(e) => {
@@ -275,13 +313,45 @@ function NodeInspector({
                 e.currentTarget.style.borderColor = "var(--cg-border)";
               }}
             >
-              Re-center on this symbol
+              <IconCopy size={10} />
+              Copy ID
             </button>
+            <button
+              onClick={() => onCopyToClipboard(data.file_path, "file path")}
+              title="Copy file path to clipboard"
+              style={{
+                display: "flex", alignItems: "center", gap: 4,
+                height: 22, padding: "0 8px",
+                background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 3,
+                color: "var(--cg-text-secondary)", fontSize: 10, cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.borderColor = "var(--cg-border)";
+              }}
+            >
+              <IconCopy size={10} />
+              Copy Path
+            </button>
+          </div>
+        )}
+      </InspectorSection>
+
+      {/* Quick action: neighbors */}
+      {!data.is_group_parent && (onSelectSymbol || onShowCallers || onShowCallees || onShowImpact) && (
+        <InspectorSection title="Explore">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={{ display: "flex", gap: 6 }}>
               <button
-                onClick={() => onSelectSymbol(data.symbol_id)}
+                onClick={() => onShowCallers?.(data.symbol_id)}
+                title="Show symbols that call this symbol"
                 style={{
-                  gap: 6, height: 26, padding: "0 10px", flex: 1,
+                  gap: 6, height: 26, padding: "0 8px", flex: 1,
                   background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
                   color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
                   fontFamily: "inherit",
@@ -295,12 +365,13 @@ function NodeInspector({
                   e.currentTarget.style.borderColor = "var(--cg-border)";
                 }}
               >
-                View Callers
+                Callers
               </button>
               <button
-                onClick={() => onSelectSymbol(data.symbol_id)}
+                onClick={() => onShowCallees?.(data.symbol_id)}
+                title="Show symbols called by this symbol"
                 style={{
-                  gap: 6, height: 26, padding: "0 10px", flex: 1,
+                  gap: 6, height: 26, padding: "0 8px", flex: 1,
                   background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
                   color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
                   fontFamily: "inherit",
@@ -314,9 +385,114 @@ function NodeInspector({
                   e.currentTarget.style.borderColor = "var(--cg-border)";
                 }}
               >
-                View Callees
+                Callees
               </button>
             </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={() => onSelectSymbol?.(data.symbol_id)}
+                title="Re-center the graph on this symbol"
+                style={{
+                  gap: 6, height: 26, padding: "0 8px", flex: 1,
+                  background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
+                  color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                  e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "var(--cg-border)";
+                }}
+              >
+                Neighbors
+              </button>
+              <button
+                onClick={() => onShowImpact?.(data.symbol_id)}
+                title="Analyze impact of modifying this symbol"
+                style={{
+                  gap: 6, height: 26, padding: "0 8px", flex: 1,
+                  background: "transparent", border: "1px solid var(--cg-border)", borderRadius: 4,
+                  color: "var(--cg-text-primary)", fontSize: 11, cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--cg-bg-subtle)";
+                  e.currentTarget.style.borderColor = "var(--cg-border-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "var(--cg-border)";
+                }}
+              >
+                Impact
+              </button>
+            </div>
+          </div>
+        </InspectorSection>
+      )}
+
+      {/* Callers list (populated by Show Callers action) */}
+      {data.callers_list && data.callers_list.length > 0 && (
+        <InspectorSection title={`Callers (${data.callers_list.length})`}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {data.callers_list.map((c) => (
+              <div
+                key={c.node_id}
+                onClick={() => onSelectSymbol?.(c.node_id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "4px 6px", borderRadius: 3, cursor: "pointer",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--cg-bg-subtle)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-primary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {c.name}
+                </span>
+                <span className="cg-mono" style={{ fontSize: 8, color: "var(--cg-text-muted)", flexShrink: 0 }}>
+                  {c.edge_type}
+                </span>
+              </div>
+            ))}
+          </div>
+        </InspectorSection>
+      )}
+
+      {/* Callees list (populated by Show Callees action) */}
+      {data.callees_list && data.callees_list.length > 0 && (
+        <InspectorSection title={`Callees (${data.callees_list.length})`}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {data.callees_list.map((c) => (
+              <div
+                key={c.node_id}
+                onClick={() => onSelectSymbol?.(c.node_id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "4px 6px", borderRadius: 3, cursor: "pointer",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--cg-bg-subtle)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <span className="cg-mono" style={{ fontSize: 10, color: "var(--cg-text-primary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {c.name}
+                </span>
+                <span className="cg-mono" style={{ fontSize: 8, color: "var(--cg-text-muted)", flexShrink: 0 }}>
+                  {c.edge_type}
+                </span>
+              </div>
+            ))}
+          </div>
+        </InspectorSection>
+      )}
+
+      {/* Empty callers/callees state */}
+      {!data.is_group_parent && data.callers_count != null && data.callers_count === 0 && data.callees_count != null && data.callees_count === 0 && (
+        <InspectorSection title="Relations">
+          <div style={{ fontSize: 11, color: "var(--cg-text-muted)", padding: "4px 0" }}>
+            No callers or callees found for this symbol.
           </div>
         </InspectorSection>
       )}
@@ -420,6 +596,8 @@ function EdgeInspector({ data }: { data?: EdgeInspectorData | null }) {
   const level = confidenceLevelLabel(confidence);
   const resolution = data.resolution;
   const isLow = confidence < 0.6;
+  const isUnresolved = resolution === "unresolved";
+  const isExternal = resolution === "external_symbol";
 
   return (
     <div style={{ padding: "12px 14px 16px", display: "flex", flexDirection: "column" }}>
@@ -431,6 +609,51 @@ function EdgeInspector({ data }: { data?: EdgeInspectorData | null }) {
         <KV label="Confidence Level" value={data.confidence_level} mono />
         <KV label="Resolution" value={resolutionLabel(resolution)} mono />
       </InspectorSection>
+
+      {/* Unresolved marker */}
+      {isUnresolved && (
+        <div style={{
+          marginTop: 14, padding: "8px 10px",
+          background: "color-mix(in srgb, var(--cg-warning) 8%, transparent)",
+          border: "1px solid color-mix(in srgb, var(--cg-warning) 30%, transparent)",
+          borderRadius: 4, display: "flex", gap: 8,
+        }}>
+          <span style={{ color: "var(--cg-warning)", flexShrink: 0, lineHeight: 1, paddingTop: 1 }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <circle cx="8" cy="8" r="5.5" />
+              <path d="M8 4.5v4" />
+            </svg>
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: "var(--cg-warning)", fontWeight: 500 }}>Unresolved</div>
+            <div style={{ fontSize: 11, color: "var(--cg-text-secondary)", lineHeight: 1.5, marginTop: 2 }}>
+              This edge could not be resolved to a specific symbol definition.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* External symbol marker */}
+      {isExternal && (
+        <div style={{
+          marginTop: 14, padding: "8px 10px",
+          background: "var(--cg-bg-subtle)",
+          border: "1px solid var(--cg-border)",
+          borderRadius: 4, display: "flex", gap: 8,
+        }}>
+          <span style={{ color: "var(--cg-text-muted)", flexShrink: 0, lineHeight: 1, paddingTop: 1 }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+              <path d="M6 3h7v7M13 3L3 13" />
+            </svg>
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: "var(--cg-text-secondary)", fontWeight: 500 }}>External</div>
+            <div style={{ fontSize: 11, color: "var(--cg-text-muted)", lineHeight: 1.5, marginTop: 2 }}>
+              The target symbol is defined outside the indexed project.
+            </div>
+          </div>
+        </div>
+      )}
 
       {data.evidence ? (
         <InspectorSection title="Evidence">

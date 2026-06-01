@@ -8,11 +8,23 @@ import { Library } from "./components/Library";
 import { Toast, type ToastData } from "./components/Toast";
 import { toReactFlowGraph, type RFNodeData, type RFEdgeData, type CappingWarning } from "./components/graphTransforms";
 import type { EdgeIdentity } from "./components/ReactFlowGraph";
+import NavBar, { type BreadcrumbItem } from "./components/NavBar";
 import GraphExplorer, { type CanvasState } from "../pages/GraphExplorer";
 import SymbolSearch from "../pages/SymbolSearch";
 import ImpactView from "../pages/ImpactView";
 import EvidencePackViewer from "../pages/EvidencePackViewer";
 import Settings from "../pages/Settings";
+
+// ── Navigation history ──────────────────────────────────────────────
+
+interface NavEntry {
+  type: "overview" | "symbol" | "impact";
+  label: string;
+  symbolId?: string;
+  tab: PageTab;
+}
+
+const MAX_HISTORY = 50;
 
 type Theme = "system" | "light" | "dark";
 
@@ -32,6 +44,8 @@ export default function App() {
   const [rfNodes, setRfNodes] = useState<Node<RFNodeData>[]>([]);
   const [rfEdges, setRfEdges] = useState<Edge<RFEdgeData>[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeSource, setSelectedEdgeSource] = useState<string | null>(null);
+  const [selectedEdgeTarget, setSelectedEdgeTarget] = useState<string | null>(null);
   const [overviewData, setOverviewData] = useState<OverviewResponse | null>(null);
 
   // ── Hierarchy folding state ─────────────────────────────────────────
@@ -39,6 +53,33 @@ export default function App() {
   const expandedGroupIdsRef = useRef(expandedGroupIds);
   expandedGroupIdsRef.current = expandedGroupIds;
   const [cappingWarning, setCappingWarning] = useState<CappingWarning | null>(null);
+  const [pendingImpactSymbolId, setPendingImpactSymbolId] = useState<string | null>(null);
+
+  // ── Navigation history ──────────────────────────────────────────────
+  const [historyStack, setHistoryStack] = useState<NavEntry[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const isRestoringRef = useRef(false);
+
+  const pushHistory = useCallback((entry: NavEntry) => {
+    if (isRestoringRef.current) return;
+    setHistoryStack((prev) => {
+      const truncated = prev.slice(0, historyIndex + 1);
+      // Dedup consecutive same-type entries for same symbol
+      if (truncated.length > 0) {
+        const last = truncated[truncated.length - 1];
+        if (last.type === entry.type && last.symbolId === entry.symbolId && last.tab === entry.tab) {
+          return truncated; // no change, same entry
+        }
+      }
+      const next = [...truncated, entry].slice(-MAX_HISTORY);
+      return next;
+    });
+    setHistoryIndex((prev) => {
+      const newLen = Math.min(prev + 2, MAX_HISTORY);
+      return Math.min(newLen - 1, MAX_HISTORY - 1);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyIndex]);
 
   // Inspector data
   const [nodeInspectorData, setNodeInspectorData] = useState<NodeInspectorData | null>(null);
@@ -169,6 +210,10 @@ export default function App() {
 
   // ── Select symbol → load subgraph + inspector ─────────────────────
   const handleSelectSymbol = useCallback(async (nodeId: string) => {
+    // Clear edge selection when selecting a node
+    setSelectedEdgeSource(null);
+    setSelectedEdgeTarget(null);
+
     setInspectorOpen(true);
     setInspectorTarget("node");
     setInspectorMode("loading");
@@ -201,6 +246,7 @@ export default function App() {
         callers_count: 0,
         callees_count: subgraph.edges.length,
         tests_count: 0,
+        confidence: 1.0,
       });
 
       // Auto-expand the group containing this symbol
@@ -229,12 +275,89 @@ export default function App() {
       setCappingWarning(capWarn);
       setCanvasState("focused");
       setInspectorMode("node");
+
+      // Push to navigation history
+      pushHistory({
+        type: "symbol",
+        label: detail.name || nodeId,
+        symbolId: nodeId,
+        tab: "overview",
+      });
     } catch (e) {
       setInspectorMode("error");
       setCanvasState("error");
       showToast("error", "Failed to load symbol details.");
     }
-  }, [showToast]);
+  }, [showToast, pushHistory]);
+
+  // ── Navigation history handlers (after handleSelectSymbol) ──────────
+  const handleBack = useCallback(() => {
+    if (historyIndex <= 0) return;
+    const newIndex = historyIndex - 1;
+    const entry = historyStack[newIndex];
+    if (!entry) return;
+    isRestoringRef.current = true;
+    setHistoryIndex(newIndex);
+    setActiveTab(entry.tab);
+    if (entry.symbolId) {
+      handleSelectSymbol(entry.symbolId);
+    }
+    setTimeout(() => { isRestoringRef.current = false; }, 300);
+  }, [historyIndex, historyStack, handleSelectSymbol]);
+
+  const handleForward = useCallback(() => {
+    if (historyIndex >= historyStack.length - 1) return;
+    const newIndex = historyIndex + 1;
+    const entry = historyStack[newIndex];
+    if (!entry) return;
+    isRestoringRef.current = true;
+    setHistoryIndex(newIndex);
+    setActiveTab(entry.tab);
+    if (entry.symbolId) {
+      handleSelectSymbol(entry.symbolId);
+    }
+    setTimeout(() => { isRestoringRef.current = false; }, 300);
+  }, [historyIndex, historyStack, handleSelectSymbol]);
+
+  // Compute breadcrumb from current state
+  const breadcrumbs = useMemo<BreadcrumbItem[]>(() => {
+    const crumbs: BreadcrumbItem[] = [
+      {
+        label: "Repo Overview",
+        onClick: () => {
+          setActiveTab("overview");
+          if (selectedNodeId) {
+            pushHistory({ type: "overview", label: "Repo Overview", tab: "overview" });
+          }
+        },
+      },
+    ];
+    if (activeTab === "overview" && selectedNodeId && centerNodeIdRef.current === selectedNodeId) {
+      const name = selectedNodeId.split("::").pop() || selectedNodeId;
+      crumbs.push({ label: name });
+    }
+    if (activeTab === "impact") {
+      if (selectedNodeId) {
+        const name = selectedNodeId.split("::").pop() || selectedNodeId;
+        crumbs.push({ label: name, onClick: () => {
+          setActiveTab("overview");
+          handleSelectSymbol(selectedNodeId);
+        }});
+      }
+      crumbs.push({ label: "Impact" });
+    }
+    if (activeTab === "search") {
+      crumbs.push({ label: "Search" });
+    }
+    return crumbs;
+  }, [activeTab, selectedNodeId, pushHistory, handleSelectSymbol]);
+
+  // Push initial history entry on overview
+  useEffect(() => {
+    if (historyStack.length === 0 && activeTab === "overview") {
+      pushHistory({ type: "overview", label: "Repo Overview", tab: "overview" });
+    }
+  }, [historyStack.length, activeTab, pushHistory]);
 
   // ── Search bar select (from graph overlay) ────────────────────────
   const handleSearchSelect = useCallback(async (symbolId: string) => {
@@ -267,6 +390,11 @@ export default function App() {
 
   // ── Edge selection → fetch edge detail ────────────────────────────
   const handleSelectEdge = useCallback(async (edgeId: EdgeIdentity) => {
+    // Set edge selection highlighting
+    setSelectedEdgeSource(edgeId.source);
+    setSelectedEdgeTarget(edgeId.target);
+    setSelectedNodeId(null); // clear node selection
+
     setInspectorOpen(true);
     setInspectorTarget("edge");
     setInspectorMode("loading");
@@ -297,6 +425,68 @@ export default function App() {
       showToast("error", "Failed to load edge details.");
     }
   }, [showToast]);
+
+  // ── Copy to clipboard ─────────────────────────────────────────────
+  const handleCopyToClipboard = useCallback(async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("info", `Copied ${label} to clipboard.`);
+    } catch {
+      showToast("error", `Failed to copy ${label}.`);
+    }
+  }, [showToast]);
+
+  // ── Show Callers / Callees / Impact ───────────────────────────────
+  const handleShowCallers = useCallback(async (symbolId: string) => {
+    setInspectorOpen(true);
+    setInspectorTarget("node");
+    try {
+      const res = await api.symbols.callers(symbolId);
+      setNodeInspectorData((prev) => ({
+        ...prev,
+        symbol_id: prev?.symbol_id || symbolId,
+        name: prev?.name || symbolId,
+        type: prev?.type || "",
+        file_path: prev?.file_path || "",
+        callers_count: res.total,
+        callers_list: res.callers || [],
+      }));
+      setInspectorMode("node");
+    } catch {
+      showToast("error", "Failed to load callers.");
+    }
+  }, [showToast]);
+
+  const handleShowCallees = useCallback(async (symbolId: string) => {
+    setInspectorOpen(true);
+    setInspectorTarget("node");
+    try {
+      const res = await api.symbols.callees(symbolId);
+      setNodeInspectorData((prev) => ({
+        ...prev,
+        symbol_id: prev?.symbol_id || symbolId,
+        name: prev?.name || symbolId,
+        type: prev?.type || "",
+        file_path: prev?.file_path || "",
+        callees_count: res.total,
+        callees_list: res.callees || [],
+      }));
+      setInspectorMode("node");
+    } catch {
+      showToast("error", "Failed to load callees.");
+    }
+  }, [showToast]);
+
+  const handleShowImpact = useCallback((symbolId: string) => {
+    setPendingImpactSymbolId(symbolId);
+    setActiveTab("impact");
+    pushHistory({
+      type: "impact",
+      label: "Impact",
+      symbolId: symbolId,
+      tab: "impact",
+    });
+  }, [pushHistory]);
 
   // ── Hierarchy group toggle ─────────────────────────────────────────
   const handleToggleGroup = useCallback((groupId: string) => {
@@ -354,6 +544,13 @@ export default function App() {
           onSearch={handleSearch}
           onSelectResult={handleSelectSymbol}
         />
+        <NavBar
+          canGoBack={historyIndex > 0}
+          canGoForward={historyIndex < historyStack.length - 1}
+          onBack={handleBack}
+          onForward={handleForward}
+          breadcrumbs={breadcrumbs}
+        />
         <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
           {/* Main content area */}
           <div style={{ flex: 1, position: "relative", minWidth: 0 }}>
@@ -368,7 +565,12 @@ export default function App() {
                 onToggleGroup={handleToggleGroup}
                 cappingWarning={cappingWarning}
                 hierarchyEnabled={true}
+                selectedEdgeSource={selectedEdgeSource}
+                selectedEdgeTarget={selectedEdgeTarget}
                 onSelectNode={(nodeId) => {
+                  // Clear edge selection when clicking a node
+                  setSelectedEdgeSource(null);
+                  setSelectedEdgeTarget(null);
                   if (nodeId === selectedNodeId) {
                     // Re-click same node: reload center
                     handleSelectSymbol(nodeId);
@@ -414,7 +616,7 @@ export default function App() {
               <SymbolSearch onSelectSymbol={handleSelectSymbol} />
             )}
             {activeTab === "impact" && (
-              <ImpactView onSelectSymbol={handleSelectSymbol} />
+              <ImpactView onSelectSymbol={handleSelectSymbol} initialSymbolId={pendingImpactSymbolId ?? undefined} onSelectFile={handleSelectFile} />
             )}
             {activeTab === "evidence" && (
               <EvidencePackViewer />
@@ -442,6 +644,10 @@ export default function App() {
               edgeData={inspectorTarget === "edge" ? edgeInspectorData : null}
               onSelectSymbol={handleSelectSymbol}
               onToggleGroup={handleToggleGroup}
+              onCopyToClipboard={handleCopyToClipboard}
+              onShowCallers={handleShowCallers}
+              onShowCallees={handleShowCallees}
+              onShowImpact={handleShowImpact}
             />
           )}
         </div>

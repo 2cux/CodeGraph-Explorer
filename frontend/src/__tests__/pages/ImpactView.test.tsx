@@ -38,4 +38,39 @@ describe("ImpactView", () => {
     const { container } = render(<ImpactView onSelectSymbol={() => {}} />);
     expect(container.querySelector("input")).toBeInTheDocument();
   });
+
+  it("accepts initialSymbolId prop without crashing", () => {
+    const { container } = render(
+      <ImpactView onSelectSymbol={() => {}} initialSymbolId="src/auth.py::login" />,
+    );
+    expect(container.querySelector("input")).toBeInTheDocument();
+  });
+
+  it("accepts onSelectFile prop without crashing", () => {
+    render(
+      <ImpactView onSelectSymbol={() => {}} onSelectFile={() => {}} />,
+    );
+    expect(screen.getByText("Analyze")).toBeInTheDocument();
+  });
+
+  it("shows depth selector with options 1-5", () => {
+    render(<ImpactView onSelectSymbol={() => {}} />);
+    const options = screen.getAllByRole("option");
+    expect(options.length).toBe(5);
+    expect(options.map((o) => o.textContent)).toEqual(["1", "2", "3", "4", "5"]);
+  });
+
+  it("does not contain forbidden phrases (including with initialSymbolId)", () => {
+    const { container } = render(
+      <ImpactView onSelectSymbol={() => {}} initialSymbolId="test.py::foo" />,
+    );
+    const text = (container.textContent || "").toLowerCase();
+    const forbidden = [
+      "read first", "you should", "must inspect", "next step",
+      "implement here", "modify here", "add tests", "before editing",
+    ];
+    for (const term of forbidden) {
+      expect(text).not.toContain(term.toLowerCase());
+    }
+  });
 });

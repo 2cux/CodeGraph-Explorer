@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api, type ImpactResponse } from "../api";
 import { Spinner } from "../app/components/Spinner";
 
 interface Props {
   onSelectSymbol: (symbolId: string) => void;
+  initialSymbolId?: string;
+  onSelectFile?: (filePath: string) => void;
 }
 
-export default function ImpactView({ onSelectSymbol }: Props) {
+export default function ImpactView({ onSelectSymbol, initialSymbolId, onSelectFile }: Props) {
   const [symbolId, setSymbolId] = useState("");
   const [depth, setDepth] = useState(2);
   const [includeTests, setIncludeTests] = useState(true);
@@ -14,13 +16,34 @@ export default function ImpactView({ onSelectSymbol }: Props) {
   const [result, setResult] = useState<ImpactResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasAutoAnalyzed = useRef(false);
+
+  const depthRef = useRef(depth);
+  depthRef.current = depth;
+
+  // Auto-analyze when initialSymbolId is provided
+  useEffect(() => {
+    if (initialSymbolId && !hasAutoAnalyzed.current) {
+      hasAutoAnalyzed.current = true;
+      setSymbolId(initialSymbolId);
+      // Use setTimeout to avoid setState during render
+      setTimeout(() => {
+        analyzeWithId(initialSymbolId, depthRef.current);
+      }, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSymbolId]);
 
   async function analyze() {
     if (!symbolId.trim()) return;
+    analyzeWithId(symbolId, depth);
+  }
+
+  async function analyzeWithId(id: string, d: number) {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.symbols.impact(symbolId, depth);
+      const r = await api.symbols.impact(id, d);
       setResult(r);
     } catch {
       setError("Impact analysis failed.");
@@ -29,8 +52,10 @@ export default function ImpactView({ onSelectSymbol }: Props) {
     }
   }
 
-  const confirmed = result?.affected_symbols.filter((s) => s.confidence >= 0.6) ?? [];
-  const possible = includePossible ? (result?.affected_symbols.filter((s) => s.confidence < 0.6) ?? []) : [];
+  const confirmed = result?.affected_symbols.filter((s) => s.confidence >= 0.6 && !s.impact_type?.toLowerCase().includes("test")) ?? [];
+  const possible = includePossible ? (result?.affected_symbols.filter((s) => s.confidence < 0.6 && s.confidence >= 0.3 && !s.impact_type?.toLowerCase().includes("test")) ?? []) : [];
+  const relatedTests = includeTests ? (result?.affected_symbols.filter((s) => s.impact_type?.toLowerCase().includes("test")) ?? []) : [];
+  const unresolved = includePossible ? (result?.affected_symbols.filter((s) => s.confidence < 0.3) ?? []) : [];
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -139,7 +164,7 @@ export default function ImpactView({ onSelectSymbol }: Props) {
             {includePossible && (
               <Section title={`Possible Impact (${possible.length})`}>
                 {possible.length === 0 ? (
-                  <span style={{ fontSize: 11, color: "var(--cg-text-muted)" }}>None</span>
+                  <span style={{ fontSize: 11, color: "var(--cg-text-muted)" }}>No possible impact detected.</span>
                 ) : (
                   possible.map((s) => (
                     <ImpactRow key={s.symbol_id} item={s} weak onClick={() => onSelectSymbol(s.symbol_id)} />
@@ -148,11 +173,44 @@ export default function ImpactView({ onSelectSymbol }: Props) {
               </Section>
             )}
 
+            {/* Related Tests */}
+            {includeTests && relatedTests.length > 0 && (
+              <Section title={`Related Tests (${relatedTests.length})`}>
+                {relatedTests.map((s) => (
+                  <ImpactRow key={s.symbol_id} item={s} test onClick={() => onSelectSymbol(s.symbol_id)} />
+                ))}
+              </Section>
+            )}
+
+            {/* Unresolved / External Calls */}
+            {includePossible && unresolved.length > 0 && (
+              <Section title={`Unresolved / External Calls (${unresolved.length})`}>
+                <div style={{ marginBottom: 4 }}>
+                  <span style={{ fontSize: 10, color: "var(--cg-text-muted)" }}>
+                    Low-confidence or unresolved connections.
+                  </span>
+                </div>
+                {unresolved.map((s) => (
+                  <ImpactRow key={s.symbol_id} item={s} unresolved onClick={() => onSelectSymbol(s.symbol_id)} />
+                ))}
+              </Section>
+            )}
+
             {/* Affected Files */}
             {result.affected_files && result.affected_files.length > 0 && (
               <Section title={`Affected Files (${result.affected_files.length})`}>
                 {result.affected_files.map((f, i) => (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div
+                    key={i}
+                    onClick={() => onSelectFile?.(f.file_path)}
+                    style={{
+                      display: "flex", flexDirection: "column", gap: 2,
+                      cursor: onSelectFile ? "pointer" : "default",
+                      padding: "3px 6px", borderRadius: 3,
+                    }}
+                    onMouseEnter={(e) => { if (onSelectFile) e.currentTarget.style.background = "var(--cg-bg-subtle)"; }}
+                    onMouseLeave={(e) => { if (onSelectFile) e.currentTarget.style.background = "transparent"; }}
+                  >
                     <div className="cg-mono" style={{ fontSize: 11, color: "var(--cg-text-primary)" }}>
                       {f.file_path}
                     </div>
@@ -161,6 +219,15 @@ export default function ImpactView({ onSelectSymbol }: Props) {
                     </div>
                   </div>
                 ))}
+              </Section>
+            )}
+
+            {/* No affected files */}
+            {(!result.affected_files || result.affected_files.length === 0) && confirmed.length === 0 && possible.length === 0 && relatedTests.length === 0 && unresolved.length === 0 && (
+              <Section title="Impact">
+                <span style={{ fontSize: 11, color: "var(--cg-text-muted)" }}>
+                  No affected symbols detected. The impact of this change may be limited in scope.
+                </span>
               </Section>
             )}
 
@@ -202,20 +269,22 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function ImpactRow({ item, weak, onClick }: { item: { symbol_id: string; reason: string; impact_type: string; distance: number; confidence: number }; weak?: boolean; onClick?: () => void }) {
+function ImpactRow({ item, weak, test, unresolved, onClick }: { item: { symbol_id: string; reason: string; impact_type: string; distance: number; confidence: number }; weak?: boolean; test?: boolean; unresolved?: boolean; onClick?: () => void }) {
+  const dotColor = unresolved ? "var(--cg-text-muted)" : test ? "#4ADE80" : weak ? "var(--cg-warning)" : "var(--cg-success)";
+  const rowOpacity = unresolved ? 0.5 : weak ? 0.6 : test ? 0.85 : 1;
   return (
     <div
       onClick={onClick}
       style={{
         display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", borderRadius: 3, cursor: onClick ? "pointer" : "default",
-        opacity: weak ? 0.6 : 1,
+        opacity: rowOpacity,
       }}
       onMouseEnter={(e) => { if (onClick) e.currentTarget.style.background = "var(--cg-bg-subtle)"; }}
       onMouseLeave={(e) => { if (onClick) e.currentTarget.style.background = "transparent"; }}
     >
       <span style={{
         width: 4, height: 4, borderRadius: "50%", flexShrink: 0,
-        background: weak ? "var(--cg-warning)" : "var(--cg-success)",
+        background: dotColor,
       }} />
       <span className="cg-mono" style={{ fontSize: 11, color: "var(--cg-text-primary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {item.symbol_id}

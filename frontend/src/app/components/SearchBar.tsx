@@ -2,18 +2,51 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { api, type SearchResult } from "../../api";
 import { IconSearch } from "./icons";
 
+const HISTORY_KEY = "codegraph_search_history";
+const MAX_HISTORY = 5;
+
+interface HistoryEntry {
+  symbol_id: string;
+  name: string;
+  type: string;
+  file_path: string;
+}
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(entry: HistoryEntry): HistoryEntry[] {
+  const prev = loadHistory();
+  const filtered = prev.filter((h) => h.symbol_id !== entry.symbol_id);
+  const next = [entry, ...filtered].slice(0, MAX_HISTORY);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+  return next;
+}
+
 interface SearchBarProps {
   onSelectResult: (symbolId: string) => void;
   /** Optional placeholder text */
   placeholder?: string;
   /** Optional type filter for search results */
   typeFilter?: string;
+  /** Show confidence score in results */
+  showConfidence?: boolean;
+  /** Show match_sources chips in results */
+  showMatchSources?: boolean;
 }
 
 export default function SearchBar({
   onSelectResult,
   placeholder = "Search symbols...",
   typeFilter,
+  showConfidence = false,
+  showMatchSources = false,
 }: SearchBarProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -21,6 +54,7 @@ export default function SearchBar({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [highlightIndex, setHighlightIndex] = useState(-1);
+  const [searchHistory, setSearchHistory] = useState<HistoryEntry[]>(loadHistory);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -79,11 +113,20 @@ export default function SearchBar({
       setQuery("");
       setOpen(false);
       setResults([]);
+      setHighlightIndex(-1);
       inputRef.current?.blur();
+      setSearchHistory(saveHistory({
+        symbol_id: result.symbol_id,
+        name: result.name,
+        type: result.type,
+        file_path: result.file_path,
+      }));
       onSelectResult(result.symbol_id);
     },
     [onSelectResult],
   );
+
+  const showHistory = !query && searchHistory.length > 0;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -115,6 +158,12 @@ export default function SearchBar({
     if (t === "class") return "var(--cg-success)";
     if (t === "test") return "#4ADE80";
     return "var(--cg-text-muted)";
+  };
+
+  const confColor = (c: number): string => {
+    if (c >= 0.85) return "var(--cg-success)";
+    if (c >= 0.7) return "var(--cg-text-secondary)";
+    return "var(--cg-warning)";
   };
 
   return (
@@ -186,27 +235,62 @@ export default function SearchBar({
             boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
           }}
         >
+          {/* Search history — shown when query is empty */}
+          {showHistory && (
+            <>
+              <div style={{ padding: "4px 10px", fontSize: 9, color: "var(--cg-text-muted)", borderBottom: "1px solid var(--cg-border)" }}>
+                Recent
+              </div>
+              {searchHistory.map((h) => (
+                <button
+                  key={h.symbol_id}
+                  onClick={() => {
+                    setOpen(false);
+                    setQuery("");
+                    setHighlightIndex(-1);
+                    inputRef.current?.blur();
+                    onSelectResult(h.symbol_id);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "100%",
+                    padding: "4px 10px",
+                    border: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    fontFamily: "inherit",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--cg-bg-subtle)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <span className="cg-mono" style={{
+                    fontSize: 8, color: kindColor(h.type),
+                    padding: "1px 3px", borderRadius: 2,
+                    background: `color-mix(in srgb, ${kindColor(h.type)} 14%, transparent)`,
+                    flexShrink: 0,
+                  }}>
+                    {h.type.slice(0, 4).toUpperCase()}
+                  </span>
+                  <span className="cg-mono" style={{ fontSize: 11, color: "var(--cg-text-primary)" }}>
+                    {h.name}
+                  </span>
+                </button>
+              ))}
+            </>
+          )}
+
           {error ? (
-            <div
-              style={{
-                padding: "8px 12px",
-                fontSize: 11,
-                color: "var(--cg-error)",
-              }}
-            >
+            <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--cg-error)" }}>
               {error}
             </div>
-          ) : results.length === 0 ? (
-            <div
-              style={{
-                padding: "8px 12px",
-                fontSize: 11,
-                color: "var(--cg-text-muted)",
-              }}
-            >
+          ) : results.length === 0 && !showHistory ? (
+            <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--cg-text-muted)" }}>
               No results found.
             </div>
-          ) : (
+          ) : results.length > 0 ? (
             results.map((r, i) => (
               <button
                 key={r.symbol_id}
@@ -283,20 +367,44 @@ export default function SearchBar({
                     {r.file_path}
                   </span>
                 </div>
+                {/* Confidence + match sources */}
+                {(showConfidence || showMatchSources) && (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
+                    {showConfidence && (
+                      <span className="cg-mono" style={{ fontSize: 10, color: confColor(r.score) }}>
+                        {(r.score * 100).toFixed(0)}%
+                      </span>
+                    )}
+                    {showMatchSources && r.match_sources && r.match_sources.length > 0 && (
+                      <div style={{ display: "flex", gap: 2 }}>
+                        {r.match_sources.slice(0, 2).map((s) => (
+                          <span key={s} style={{
+                            fontSize: 7, padding: "1px 3px", borderRadius: 2,
+                            background: "var(--cg-bg-subtle)", color: "var(--cg-text-muted)",
+                          }}>
+                            {s}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </button>
             ))
+          ) : null}
+          {results.length > 0 && (
+            <div
+              style={{
+                padding: "3px 8px",
+                fontSize: 9,
+                color: "var(--cg-text-muted)",
+                textAlign: "right",
+                borderTop: "1px solid var(--cg-border)",
+              }}
+            >
+              ↑↓ navigate · ↵ select · esc close
+            </div>
           )}
-          <div
-            style={{
-              padding: "3px 8px",
-              fontSize: 9,
-              color: "var(--cg-text-muted)",
-              textAlign: "right",
-              borderTop: "1px solid var(--cg-border)",
-            }}
-          >
-            ↑↓ navigate · ↵ select · esc close
-          </div>
         </div>
       )}
     </div>

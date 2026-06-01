@@ -46,6 +46,16 @@ interface ReactFlowGraphProps {
   onToggleGroup?: (groupId: string) => void;
   /** Non-null when node capping has limited the display */
   cappingWarning?: { visibleNodes: number; totalNodes: number } | null;
+  /** Edge selection: source node ID of selected edge */
+  selectedEdgeSource?: string | null;
+  /** Edge selection: target node ID of selected edge */
+  selectedEdgeTarget?: string | null;
+  /** Impact mode: if true, apply impact-specific highlighting */
+  impactMode?: boolean;
+  /** Impact mode: set of confirmed-impact node IDs */
+  impactConfirmedIds?: Set<string>;
+  /** Impact mode: set of possible-impact node IDs */
+  impactPossibleIds?: Set<string>;
 }
 
 // ── Outer wrapper (provides ReactFlow context) ────────────────────────
@@ -68,6 +78,11 @@ function ReactFlowGraphInner({
   onSelectEdge,
   onToggleGroup,
   cappingWarning,
+  selectedEdgeSource,
+  selectedEdgeTarget,
+  impactMode,
+  impactConfirmedIds,
+  impactPossibleIds,
 }: ReactFlowGraphProps) {
   const { fitView } = useReactFlow();
 
@@ -84,6 +99,49 @@ function ReactFlowGraphInner({
 
   // Augment nodes with dimming info
   const displayNodes = useMemo(() => {
+    // Impact mode: highlight confirmed/possible, dim others
+    if (impactMode && (impactConfirmedIds || impactPossibleIds)) {
+      return nodes.map((n) => {
+        const isConfirmed = impactConfirmedIds?.has(n.id);
+        const isPossible = impactPossibleIds?.has(n.id);
+        const isImpacted = isConfirmed || isPossible;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            isSelected: isConfirmed,
+          },
+          style: {
+            ...n.style,
+            opacity: isConfirmed ? 1 : isPossible ? 0.65 : 0.2,
+            borderColor: isConfirmed ? "var(--cg-success)" : isPossible ? "var(--cg-warning)" : undefined,
+            borderWidth: isImpacted ? 2 : undefined,
+            transition: "opacity 200ms ease",
+          },
+        };
+      });
+    }
+
+    // Edge selection: highlight source + target
+    if (selectedEdgeSource && selectedEdgeTarget) {
+      return nodes.map((n) => {
+        const isEndpoint = n.id === selectedEdgeSource || n.id === selectedEdgeTarget;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            isSelected: isEndpoint,
+          },
+          style: {
+            ...n.style,
+            opacity: isEndpoint ? 1 : 0.25,
+            transition: "opacity 200ms ease",
+          },
+        };
+      });
+    }
+
+    // Node selection: highlight center + 1-hop neighbors
     if (!selectedNodeId) return nodes;
     return nodes.map((n) => ({
       ...n,
@@ -102,10 +160,45 @@ function ReactFlowGraphInner({
         transition: "opacity 200ms ease",
       },
     }));
-  }, [nodes, selectedNodeId, neighborIds]);
+  }, [nodes, selectedNodeId, neighborIds, selectedEdgeSource, selectedEdgeTarget, impactMode, impactConfirmedIds, impactPossibleIds]);
 
   // Augment edges with dimming info
   const displayEdges = useMemo(() => {
+    // Impact mode edges
+    if (impactMode && (impactConfirmedIds || impactPossibleIds)) {
+      return edges.map((e) => {
+        const sourceConfirmed = impactConfirmedIds?.has(e.source);
+        const targetConfirmed = impactConfirmedIds?.has(e.target);
+        const bothConfirmed = sourceConfirmed && targetConfirmed;
+        const anyImpacted = sourceConfirmed || targetConfirmed ||
+          impactPossibleIds?.has(e.source) || impactPossibleIds?.has(e.target);
+        return {
+          ...e,
+          style: {
+            opacity: bothConfirmed ? 0.9 : anyImpacted ? 0.5 : 0.1,
+            transition: "opacity 200ms ease",
+          },
+          animated: bothConfirmed,
+        };
+      });
+    }
+
+    // Edge selection: highlight matching edge
+    if (selectedEdgeSource && selectedEdgeTarget) {
+      return edges.map((e) => {
+        const isMatch = e.source === selectedEdgeSource && e.target === selectedEdgeTarget;
+        return {
+          ...e,
+          style: {
+            opacity: isMatch ? 0.9 : 0.12,
+            transition: "opacity 200ms ease",
+          },
+          animated: isMatch,
+        };
+      });
+    }
+
+    // Node selection: highlight connected edges
     if (!selectedNodeId) return edges;
     return edges.map((e) => {
       const connected =
@@ -119,7 +212,7 @@ function ReactFlowGraphInner({
         animated: connected,
       };
     });
-  }, [edges, selectedNodeId]);
+  }, [edges, selectedNodeId, selectedEdgeSource, selectedEdgeTarget, impactMode, impactConfirmedIds, impactPossibleIds]);
 
   // Fit view when nodes change (e.g. new center loaded)
   const prevNodeCount = useRef(0);

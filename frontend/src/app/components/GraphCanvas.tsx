@@ -113,6 +113,16 @@ interface Props {
   cappingWarning?: CappingWarning | null;
   /** Whether hierarchy folding is enabled */
   hierarchyEnabled?: boolean;
+  /** Edge selection: source node ID of selected edge */
+  selectedEdgeSource?: string | null;
+  /** Edge selection: target node ID of selected edge */
+  selectedEdgeTarget?: string | null;
+  /** Impact mode highlighting */
+  impactMode?: boolean;
+  /** Confirmed impact node IDs */
+  impactConfirmedIds?: Set<string>;
+  /** Possible impact node IDs */
+  impactPossibleIds?: Set<string>;
 }
 
 // ── Component ─────────────────────────────────────────────────────────
@@ -131,6 +141,11 @@ export function GraphCanvas({
   cappingWarning,
   nodes: _legacyNodes,
   edges: _legacyEdges,
+  selectedEdgeSource,
+  selectedEdgeTarget,
+  impactMode,
+  impactConfirmedIds,
+  impactPossibleIds,
 }: Props) {
   // ── Loading ─────────────────────────────────────────────────────────
   if (state === "loading") {
@@ -224,6 +239,11 @@ export function GraphCanvas({
         onSelectEdge={onSelectEdge}
         onToggleGroup={onToggleGroup}
         cappingWarning={cappingWarning}
+        selectedEdgeSource={selectedEdgeSource}
+        selectedEdgeTarget={selectedEdgeTarget}
+        impactMode={impactMode}
+        impactConfirmedIds={impactConfirmedIds}
+        impactPossibleIds={impactPossibleIds}
       />
     </div>
   );
