@@ -13,7 +13,7 @@ WARNING_TYPES: dict[str, dict[str, Any]] = {
     "stale_index": {
         "type": "stale_index",
         "severity": "warning",
-        "description": "Index is stale. Results may be outdated.",
+        "description": "Index is stale. Results may not reflect recent file changes.",
     },
     "symlink_outside_root": {
         "type": "symlink_outside_root",
@@ -58,7 +58,7 @@ WARNING_TYPES: dict[str, dict[str, Any]] = {
     "index_missing": {
         "type": "index_missing",
         "severity": "warning",
-        "description": "No index found for the project.",
+        "description": "No CodeGraph index found. Run: codegraph init",
     },
     "index_health": {
         "type": "index_health",
@@ -101,8 +101,16 @@ def build_stale_index_warning(
     changed_files: list[str] | None = None,
     added_files: list[str] | None = None,
     deleted_files: list[str] | None = None,
+    suggested_fix: str | None = None,
 ) -> dict[str, Any]:
-    """Build a ``stale_index`` warning with file change evidence."""
+    """Build a ``stale_index`` warning with file change evidence.
+
+    Args:
+        changed_files: List of changed file paths (max 10 in evidence).
+        added_files: List of added file paths (max 10 in evidence).
+        deleted_files: List of deleted file paths (max 10 in evidence).
+        suggested_fix: Optional fix command to include in the message.
+    """
     evidence: dict[str, Any] = {}
     if changed_files:
         evidence["changed_files"] = changed_files[:10]
@@ -113,6 +121,8 @@ def build_stale_index_warning(
 
     total = len(changed_files or []) + len(added_files or []) + len(deleted_files or [])
     message = f"Index is stale — {total} file(s) changed."
+    if suggested_fix:
+        message += f" Run: {suggested_fix}"
 
     return build_warning(
         "stale_index",

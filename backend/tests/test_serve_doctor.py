@@ -63,6 +63,23 @@ def _write_minimal_index(cg_dir: Path, root_path: Path) -> None:
     (cg_dir / "nodes.json").write_text("[]", encoding="utf-8")
     # edges.json
     (cg_dir / "edges.json").write_text("[]", encoding="utf-8")
+    # state.json (needed for lite get_index_status to report "fresh")
+    (cg_dir / "state.json").write_text(json.dumps({
+        "status": "fresh",
+        "last_indexed_at": now,
+        "last_incremental_at": None,
+        "last_error": None,
+        "deleted_files": [],
+        "pending_changes": {"changed": [], "added": [], "deleted": []},
+        "watch": {"enabled": False, "started_at": None, "debounce_ms": 500},
+        "last_change_summary": {"none": 1, "cosmetic": 0, "structural": 0, "added": 0, "deleted": 0},
+        "last_incremental_stats": {
+            "changed_files": 0, "reparsed_files": 0, "dependent_files": 0,
+            "deleted_nodes": 0, "inserted_nodes": 0,
+            "deleted_edges": 0, "inserted_edges": 0,
+            "duration_ms": 0, "full_replace": True,
+        },
+    }), encoding="utf-8")
 
 
 # ── serve --mcp --check ──────────────────────────────────────────────────
@@ -378,6 +395,27 @@ class TestDoctor:
         assert "MCP protocol compliance" in result.stdout
         assert "structured dicts" in result.stdout
         assert "Zero telemetry" in result.stdout
+
+    def test_doctor_shows_summary_section(self, runner, tmp_path, monkeypatch):
+        """doctor should show Step 12 Summary with index_status and index_health."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "summary_proj"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "12. Summary" in result.stdout
+        assert "Index status:" in result.stdout
+        assert "Index health:" in result.stdout
+        assert "Validation:" in result.stdout
+        assert "Fingerprints:" in result.stdout
+        assert "Storage:" in result.stdout
+        assert "Suggested fix:" in result.stdout
 
 
 # ── configure writes serve --mcp ─────────────────────────────────────────

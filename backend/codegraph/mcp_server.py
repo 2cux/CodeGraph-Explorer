@@ -62,7 +62,7 @@ from codegraph.graph.models import CodeGraph, EdgeType, GraphEdge, GraphNode, No
 from codegraph.graph.store import GraphStore
 from codegraph.graph.warnings import build_warning, build_stale_index_warning
 from codegraph.indexer.scanner import _is_safe_path
-from codegraph.indexer.status import detect_status
+from codegraph.indexer.status import detect_status, get_index_status
 from codegraph.storage.file_store import FileStore
 from codegraph.storage.sqlite_store import SqliteStore
 from codegraph.storage.state_store import IndexStateStore
@@ -475,8 +475,9 @@ def _serialize_edge_full(
 def _build_index_status() -> dict[str, Any]:
     """Build the index_status block shared by all tool responses.
 
-    Reads from state.json first (for watch-driven state), falling back
-    to detect_status for non-watch scenarios.
+    Uses the lite ``get_index_status()`` path — reads persistent
+    metadata only (state.json, metadata.json, fingerprints.json,
+    validation_report.json).  No file scanning, no hashing.
     """
     cg_dir = _find_codegraph_dir(_project_root)
     if cg_dir is None:
@@ -495,51 +496,12 @@ def _build_index_status() -> dict[str, Any]:
             "stats": {"files": 0, "symbols": 0, "edges": 0},
         }
 
-    # Read state.json for watch-driven status
-    state_store = IndexStateStore(cg_dir)
-    state = state_store.load()
-    watch_status = state.get("status", "missing")
+    # Lite path: metadata-only, no file scanning
+    root_path = cg_dir.parent
+    lite = get_index_status(root_path)
 
-    file_store = FileStore(cg_dir)
-    metadata = file_store.load_metadata()
-    root_path = Path(metadata.root_path) if (metadata and metadata.root_path) else cg_dir.parent
-
-    index_files = {
-        "graph_json": (cg_dir / "graph.json").exists(),
-        "sqlite": (cg_dir / "index.sqlite").exists(),
-        "metadata_json": (cg_dir / "metadata.json").exists(),
-    }
-
-    if metadata is None:
-        graph_exists = index_files.get("graph_json", False)
-        _stats: dict[str, int] = {"files": 0, "symbols": 0, "edges": 0}
-        if _store is not None:
-            nodes = _store.all_nodes()
-            files = {n.file_path for n in nodes if n.file_path}
-            _stats = {
-                "files": len(files),
-                "symbols": len(nodes),
-                "edges": _store.edge_count(),
-            }
-        return {
-            "status": "stale" if graph_exists else "missing",
-            "indexed_at": None,
-            "changed_files": [],
-            "added_files": [],
-            "deleted_files": [],
-            "index_files": index_files,
-            "stats": _stats,
-        }
-
-    result = detect_status(root_path, metadata)
-
-    # If watch is active, state.json has authority for indexing/error
-    if watch_status in ("indexing", "error"):
-        result_status = watch_status
-    else:
-        result_status = result.status
-
-    stats = {"files": 0, "symbols": 0, "edges": 0}
+    # Enrich with live store stats when available
+    stats = lite.get("stats", {"files": 0, "symbols": 0, "edges": 0})
     if _store is not None:
         nodes = _store.all_nodes()
         files = {n.file_path for n in nodes if n.file_path}
@@ -549,60 +511,43 @@ def _build_index_status() -> dict[str, Any]:
             "edges": _store.edge_count(),
         }
 
-    # Include fingerprint health
-    fingerprint_health: dict[str, Any] | None = None
-    fp_path = cg_dir / "fingerprints.json"
-    if fp_path.exists():
-        try:
-            from codegraph.indexer.fingerprint import FingerprintStore
-            fp_store = FingerprintStore(cg_dir)
-            fps = fp_store.load()
-            fingerprint_health = {
-                "present": True,
-                "count": len(fps),
-            }
-        except Exception:
-            fingerprint_health = {"present": False}
-
-    # Include change_summary from state
-    last_change_summary = state.get("last_change_summary")
-    # Include incremental performance stats
-    last_incremental_stats = state.get("last_incremental_stats")
-
-    status_block = {
-        "status": result_status,
-        "indexed_at": result.indexed_at,
-        "changed_files": result.changed_files[:20],
-        "added_files": result.added_files[:20],
-        "deleted_files": result.deleted_files[:20],
-        "index_files": index_files,
+    # Build backward-compatible status block
+    status_block: dict[str, Any] = {
+        "status": lite["status"],
+        "indexed_at": lite.get("indexed_at"),
+        "index_files": lite.get("index_files", {}),
         "stats": stats,
+        # Lite doesn't scan files, so change lists are derived
+        # from state.json's last_change_summary
+        "changed_files": [],
+        "added_files": [],
+        "deleted_files": [],
     }
-    if watch_status == "error":
-        status_block["last_error"] = state.get("last_error")
-    if fingerprint_health is not None:
-        status_block["fingerprint_health"] = fingerprint_health
-    if last_change_summary is not None:
-        status_block["last_change_summary"] = last_change_summary
-    if last_incremental_stats is not None:
-        status_block["last_incremental_stats"] = last_incremental_stats
 
-    # Include graph validation health
-    index_health: dict[str, Any] | None = None
-    if cg_dir is not None:
-        try:
-            from codegraph.graph.validation import load_validation_report
-            vr = load_validation_report(cg_dir)
-            if vr is not None:
-                index_health = {
-                    "status": vr["status"],
-                    "generated_at": vr.get("generated_at"),
-                    "issue_counts": vr.get("issue_counts", {}),
-                }
-        except Exception:
-            pass
-    if index_health is not None:
-        status_block["index_health"] = index_health
+    change_summary = lite.get("last_change_summary")
+    if change_summary:
+        total = sum(change_summary.values())
+        if total > 0:
+            status_block[
+                "_change_summary_note"] = f"{change_summary.get('structural', 0)} structural, {change_summary.get('added', 0)} added, {change_summary.get('deleted', 0)} deleted"
+
+    if lite["status"] == "error":
+        status_block["last_error"] = lite.get("last_error")
+
+    if lite.get("fingerprint_health"):
+        status_block["fingerprint_health"] = lite["fingerprint_health"]
+
+    if lite.get("last_change_summary"):
+        status_block["last_change_summary"] = lite["last_change_summary"]
+
+    if lite.get("last_incremental_stats"):
+        status_block["last_incremental_stats"] = lite["last_incremental_stats"]
+
+    if lite.get("index_health"):
+        status_block["index_health"] = lite["index_health"]
+
+    if lite.get("suggested_fix"):
+        status_block["suggested_fix"] = lite["suggested_fix"]
 
     return status_block
 
@@ -623,18 +568,34 @@ def _collect_warnings(
         })
     elif status == "error":
         last_error = index_status.get("last_error", "Unknown error")
+        suggested_fix = index_status.get("suggested_fix", "codegraph doctor")
         warnings.append({
             "type": "index_update_failed",
             "severity": "warning",
-            "message": "Last incremental index failed. Results may be outdated.",
+            "message": f"Last incremental index failed. Results may be outdated. Run: {suggested_fix}",
             "evidence": {"error": str(last_error)},
         })
     elif status == "stale":
+        change_summary = index_status.get("last_change_summary", {})
+        total = sum(change_summary.values()) if change_summary else 0
+        suggested_fix = index_status.get("suggested_fix", "codegraph init --incremental")
         stale_entry = build_stale_index_warning(
             changed_files=index_status.get("changed_files", []),
             added_files=index_status.get("added_files", []),
             deleted_files=index_status.get("deleted_files", []),
+            suggested_fix=suggested_fix,
         )
+        # Override message with the one that includes the fix command
+        if total > 0:
+            stale_entry["message"] = (
+                f"Index is stale. Results may not reflect recent file changes. "
+                f"({total} file(s) changed). Run: {suggested_fix}"
+            )
+        else:
+            stale_entry["message"] = (
+                f"Index is stale. Results may not reflect recent file changes. "
+                f"Run: {suggested_fix}"
+            )
         warnings.append(stale_entry)
 
     if fuzzy_warning:
@@ -653,6 +614,7 @@ def _collect_warnings(
         warnings.append(build_warning(
             "index_health",
             message=(
+                f"Index health warning detected. "
                 f"Graph validation status is '{health_status}' "
                 f"({issue_counts.get('warnings', 0)} warnings, "
                 f"{issue_counts.get('fatal', 0)} fatal). "
@@ -677,12 +639,15 @@ def _respond_ok(
 ) -> dict[str, Any]:
     """Wrap a successful tool result in the standard envelope with payload meta."""
     estimated_tokens = _estimate_payload_tokens(data)
+    idx = _build_index_status()
+    idx_health = idx.get("index_health")
     return {
         "ok": True,
         "tool": tool,
         "data": data,
         "warnings": warnings or [],
-        "index_status": _build_index_status(),
+        "index_status": idx["status"],
+        "index_health": idx_health["status"] if idx_health else "ok",
         "meta": {
             "schema_version": SCHEMA_VERSION,
             "response_mode": response_mode,
@@ -703,6 +668,8 @@ def _respond_error(
     warnings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Wrap a failed tool result in the standard envelope."""
+    idx = _build_index_status()
+    idx_health = idx.get("index_health")
     return {
         "ok": False,
         "tool": tool,
@@ -712,7 +679,8 @@ def _respond_error(
             "details": details or {},
         },
         "warnings": warnings or [],
-        "index_status": _build_index_status(),
+        "index_status": idx["status"],
+        "index_health": idx_health["status"] if idx_health else "ok",
         "meta": {"schema_version": SCHEMA_VERSION},
     }
 
@@ -2991,6 +2959,10 @@ def repo_status(
 ) -> dict[str, Any]:
     """Check index freshness and report changed/added/deleted files.
 
+    Returns project_root, index_status, index_health, indexed_at,
+    changed/added/deleted file counts, last_incremental_stats,
+    validation_status, and a suggested_fix action.
+
     Args:
         root: Optional project root path override
         response_mode: "compact" (default) or "standard"
@@ -3000,27 +2972,69 @@ def repo_status(
 
     if index_status["status"] == "missing":
         return _respond_ok(
-            data=index_status,
+            data={
+                "project_root": project_root,
+                "index_status": "missing",
+                "index_health": "ok",
+                "indexed_at": None,
+                "changed_files_count": 0,
+                "added_files_count": 0,
+                "deleted_files_count": 0,
+                "last_incremental_stats": None,
+                "validation_status": None,
+                "suggested_fix": "codegraph init",
+                "index_files": index_status.get("index_files", {}),
+                "stats": index_status.get("stats", {}),
+                "fingerprint_health": None,
+                "last_change_summary": None,
+                "index_health_details": None,
+            },
             tool="codegraph_repo_status",
             warnings=[{
                 "type": "index_missing",
-                "message": "No .codegraph index found.",
-                "reason_code": "stale_index",
+                "severity": "warning",
+                "message": "No CodeGraph index found. Run: codegraph init",
+                "reason_code": "index_missing",
             }],
         )
 
+    change_summary = index_status.get("last_change_summary", {})
+    changed_count = change_summary.get("structural", 0) + change_summary.get("cosmetic", 0)
+    added_count = change_summary.get("added", 0)
+    deleted_count = change_summary.get("deleted", 0)
+    idx_health = index_status.get("index_health")
+
     if response_mode == "compact":
-        data = {
-            "status": index_status["status"],
+        data: dict[str, Any] = {
+            "project_root": project_root,
+            "index_status": index_status["status"],
+            "index_health": idx_health["status"] if idx_health else "ok",
             "indexed_at": index_status.get("indexed_at"),
-            "index_files": index_status.get("index_files", {}),
-            "changed_file_count": len(index_status.get("changed_files", []))
-                                + len(index_status.get("added_files", []))
-                                + len(index_status.get("deleted_files", [])),
-            "stats": index_status.get("stats", {}),
+            "changed_files_count": changed_count,
+            "added_files_count": added_count,
+            "deleted_files_count": deleted_count,
+            "last_incremental_stats": index_status.get("last_incremental_stats"),
+            "validation_status": idx_health["status"] if idx_health else None,
+            "suggested_fix": index_status.get("suggested_fix"),
         }
     else:
-        data = index_status
+        data = {
+            "project_root": project_root,
+            "index_status": index_status["status"],
+            "index_health": idx_health["status"] if idx_health else "ok",
+            "indexed_at": index_status.get("indexed_at"),
+            "changed_files_count": changed_count,
+            "added_files_count": added_count,
+            "deleted_files_count": deleted_count,
+            "last_incremental_stats": index_status.get("last_incremental_stats"),
+            "validation_status": idx_health["status"] if idx_health else None,
+            "suggested_fix": index_status.get("suggested_fix"),
+            "index_files": index_status.get("index_files", {}),
+            "stats": index_status.get("stats", {}),
+            "fingerprint_health": index_status.get("fingerprint_health"),
+            "last_change_summary": index_status.get("last_change_summary"),
+            "index_health_details": idx_health,
+        }
 
     return _respond_ok(
         data=data,
@@ -3028,7 +3042,11 @@ def repo_status(
         warnings=(
             [{
                 "type": "stale_index",
-                "message": f"Index is stale — {len(index_status.get('changed_files', [])) + len(index_status.get('added_files', [])) + len(index_status.get('deleted_files', []))} file(s) changed.",
+                "severity": "warning",
+                "message": (
+                    f"Index is stale. Results may not reflect recent file changes. "
+                    f"Run: {index_status.get('suggested_fix', 'codegraph init --incremental')}"
+                ),
                 "reason_code": "stale_index",
             }]
             if index_status["status"] == "stale"
@@ -3145,6 +3163,15 @@ def repo_summary(
         "low_confidence_ratio": low_conf_ratio,
     }
 
+    idx = _build_index_status()
+    idx_health = idx.get("index_health")
+    index_info = {
+        "status": idx["status"],
+        "health": idx_health["status"] if idx_health else "ok",
+        "indexed_at": idx.get("indexed_at"),
+        "suggested_fix": idx.get("suggested_fix"),
+    }
+
     if response_mode == "compact":
         data: dict[str, Any] = {
             "stats": stats,
@@ -3155,7 +3182,7 @@ def repo_summary(
                 "tested_symbols": len(tested_symbols),
             },
             "capabilities": _get_capabilities(),
-            "index_status": _build_index_status(),
+            "index_info": index_info,
         }
     elif response_mode == "standard":
         data = {
@@ -3168,7 +3195,7 @@ def repo_summary(
                 "tested_symbols": len(tested_symbols),
             },
             "capabilities": _get_capabilities(),
-            "index_status": _build_index_status(),
+            "index_info": index_info,
         }
     else:  # standard
         data = {
@@ -3181,7 +3208,7 @@ def repo_summary(
                 "tested_symbols": len(tested_symbols),
             },
             "capabilities": _get_capabilities(),
-            "index_status": _build_index_status(),
+            "index_info": index_info,
         }
 
     return _respond_ok(

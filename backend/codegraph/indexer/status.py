@@ -1,14 +1,19 @@
 """Index status detection — fresh / stale / missing.
 
-Compares current filesystem state against metadata.json fingerprints
-to determine which files have changed, been added, or been deleted.
+Two tiers are provided:
 
-When fingerprints.json is available, uses stat pre-filter (mtime+size)
-and structural hash comparison to classify changes as cosmetic vs
-structural, avoiding expensive re-indexing of comment-only changes.
+1. ``detect_status()`` — full filesystem scan + fingerprint comparison
+   (expensive; for ``codegraph init`` and ``codegraph status`` CLI).
+2. ``get_index_status()`` — lightweight, reads only persistent metadata
+   files (state.json, metadata.json, fingerprints.json,
+   validation_report.json). Never scans project files or computes
+   hashes. Suitable for every MCP request.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Any
 
 from codegraph.graph.models import FileEntry, IndexMetadata
 from codegraph.indexer.scanner import scan_python_files, compute_fingerprint, normalize_path
@@ -265,3 +270,162 @@ def detect_status_with_classification(
         indexed_at=metadata.indexed_at,
         change_summary=change_summary,
     )
+
+
+# ── Lite status (no file scanning) ──────────────────────────────────────────
+
+def _suggested_fix(status: str) -> str | None:
+    """Return a human-readable suggested fix command for a given status."""
+    if status == "missing":
+        return "codegraph init"
+    if status == "stale":
+        return "codegraph init --incremental"
+    if status == "error":
+        return "codegraph doctor; then codegraph init --force"
+    return None
+
+
+def get_index_status(project_root: str | Path) -> dict[str, Any]:
+    """Return index status derived from persistent metadata only.
+
+    Reads ``state.json``, ``metadata.json``, ``fingerprints.json``, and
+    ``validation_report.json`` without scanning project files or computing
+    hashes.  Safe to call on every MCP request.
+
+    Returns a dict with keys:
+
+    * ``status`` — ``"fresh"`` | ``"stale"`` | ``"missing"`` | ``"indexing"`` | ``"error"``
+    * ``indexed_at`` — ISO-8601 timestamp or ``None``
+    * ``index_files`` — booleans for sqlite / graph_json / metadata_json
+    * ``stats`` — ``{files, symbols, edges}`` counts (may be 0)
+    * ``fingerprint_health`` — ``{"present": bool, "count": int}`` or ``None``
+    * ``index_health`` — ``{"status", "generated_at", "issue_counts"}`` or ``None``
+    * ``last_change_summary`` — change-classification dict or ``None``
+    * ``last_incremental_stats`` — incremental-run stats dict or ``None``
+    * ``suggested_fix`` — human-readable fix command or ``None``
+    * ``last_error`` — error string (only when status == ``"error"``)
+    """
+    root = Path(project_root)
+    cg_dir = root / ".codegraph"
+
+    if not cg_dir.exists():
+        return {
+            "status": "missing",
+            "indexed_at": None,
+            "index_files": {
+                "graph_json": False,
+                "sqlite": False,
+                "metadata_json": False,
+            },
+            "stats": {"files": 0, "symbols": 0, "edges": 0},
+            "fingerprint_health": None,
+            "index_health": None,
+            "last_change_summary": None,
+            "last_incremental_stats": None,
+            "suggested_fix": _suggested_fix("missing"),
+        }
+
+    # ── Read state.json ─────────────────────────────────────────────────
+    state: dict[str, Any] = {}
+    try:
+        from codegraph.storage.state_store import IndexStateStore
+        state_store = IndexStateStore(cg_dir)
+        state = state_store.load()
+    except Exception:
+        pass
+
+    watch_status = state.get("status", "missing")
+
+    # ── Read metadata.json ──────────────────────────────────────────────
+    metadata: IndexMetadata | None = None
+    try:
+        from codegraph.storage.file_store import FileStore
+        file_store = FileStore(cg_dir)
+        metadata = file_store.load_metadata()
+    except Exception:
+        pass
+
+    # ── Index file presence ─────────────────────────────────────────────
+    index_files = {
+        "graph_json": (cg_dir / "graph.json").exists(),
+        "sqlite": (cg_dir / "index.sqlite").exists(),
+        "metadata_json": (cg_dir / "metadata.json").exists(),
+    }
+
+    # ── Derive aggregate status ─────────────────────────────────────────
+    # Priority: state.json watch_status > metadata-based stale/fresh > missing
+
+    if watch_status == "indexing":
+        result_status = "indexing"
+    elif watch_status == "error":
+        result_status = "error"
+    elif metadata is None:
+        graph_exists = index_files.get("graph_json", False) or index_files.get("sqlite", False)
+        result_status = "stale" if graph_exists else "missing"
+    elif watch_status == "stale":
+        result_status = "stale"
+    elif watch_status == "fresh":
+        result_status = "fresh"
+    else:
+        # Unknown state — if index files exist, assume stale
+        graph_exists = index_files.get("graph_json", False) or index_files.get("sqlite", False)
+        result_status = "stale" if graph_exists else "missing"
+
+    # ── Stats (from metadata when available) ────────────────────────────
+    stats: dict[str, int]
+    if metadata is not None:
+        stats = {
+            "files": metadata.file_count,
+            "symbols": metadata.symbol_count,
+            "edges": metadata.edge_count,
+        }
+    else:
+        stats = {"files": 0, "symbols": 0, "edges": 0}
+
+    # ── Fingerprint health ──────────────────────────────────────────────
+    fingerprint_health: dict[str, Any] | None = None
+    fp_path = cg_dir / "fingerprints.json"
+    if fp_path.exists():
+        try:
+            from codegraph.indexer.fingerprint import FingerprintStore
+            fp_store = FingerprintStore(cg_dir)
+            fps = fp_store.load()
+            fingerprint_health = {"present": True, "count": len(fps)}
+        except Exception:
+            fingerprint_health = {"present": False}
+
+    # ── Change summary & incremental stats from state ───────────────────
+    last_change_summary = state.get("last_change_summary")
+    last_incremental_stats = state.get("last_incremental_stats")
+
+    # ── Graph validation health ─────────────────────────────────────────
+    index_health: dict[str, Any] | None = None
+    try:
+        from codegraph.graph.validation import load_validation_report
+        vr = load_validation_report(cg_dir)
+        if vr is not None:
+            index_health = {
+                "status": vr["status"],
+                "generated_at": vr.get("generated_at"),
+                "issue_counts": vr.get("issue_counts", {}),
+            }
+    except Exception:
+        pass
+
+    # ── Build result ────────────────────────────────────────────────────
+    result: dict[str, Any] = {
+        "status": result_status,
+        "indexed_at": metadata.indexed_at if metadata else None,
+        "index_files": index_files,
+        "stats": stats,
+        "fingerprint_health": fingerprint_health,
+        "index_health": index_health,
+        "last_change_summary": last_change_summary,
+        "last_incremental_stats": last_incremental_stats,
+        "suggested_fix": _suggested_fix(result_status),
+    }
+
+    if result_status == "error":
+        result["last_error"] = state.get("last_error")
+
+    return result

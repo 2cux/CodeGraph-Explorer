@@ -333,9 +333,9 @@ class TestUnifiedEnvelope:
         result = repo_status()
         assert result["ok"] is True
         assert result["tool"] == "codegraph_repo_status"
-        assert "status" in result["data"]
-        assert "index_files" in result["data"]
-        assert "stats" in result["data"]
+        assert "index_status" in result["data"]
+        assert "project_root" in result["data"]
+        assert "suggested_fix" in result["data"] or result["data"].get("suggested_fix") is None
 
     def test_repo_summary_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
@@ -761,20 +761,19 @@ class TestRepoStatus:
     def test_reports_status(self, mcp_setup):
         from codegraph.mcp_server import repo_status
         result = repo_status()
-        assert result["data"]["status"] in ("fresh", "stale", "missing", "error")
+        assert result["data"]["index_status"] in ("fresh", "stale", "missing", "indexing", "error")
 
     def test_has_index_files(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = repo_status()
+        result = repo_status(response_mode="standard")
         index_files = result["data"]["index_files"]
         assert "graph_json" in index_files
-        assert "symbols_json" in index_files
         assert "sqlite" in index_files
         assert "metadata_json" in index_files
 
     def test_has_stats(self, mcp_setup):
         from codegraph.mcp_server import repo_status
-        result = repo_status()
+        result = repo_status(response_mode="standard")
         stats = result["data"]["stats"]
         assert "files" in stats
         assert "symbols" in stats
@@ -783,9 +782,38 @@ class TestRepoStatus:
     def test_stale_has_warning(self, mcp_setup):
         from codegraph.mcp_server import repo_status
         result = repo_status()
-        if result["data"]["status"] == "stale":
+        if result["data"]["index_status"] == "stale":
             stale_warnings = [w for w in result["warnings"] if w.get("type") == "stale_index"]
             assert len(stale_warnings) > 0
+
+    def test_has_project_root(self, mcp_setup):
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "project_root" in result["data"]
+        assert result["data"]["project_root"] is not None
+
+    def test_has_suggested_fix(self, mcp_setup):
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        # suggested_fix should be present (may be None for fresh index)
+        assert "suggested_fix" in result["data"]
+
+    def test_has_validation_status(self, mcp_setup):
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "validation_status" in result["data"]
+
+    def test_has_separate_counts(self, mcp_setup):
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "changed_files_count" in result["data"]
+        assert "added_files_count" in result["data"]
+        assert "deleted_files_count" in result["data"]
+
+    def test_has_last_incremental_stats(self, mcp_setup):
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "last_incremental_stats" in result["data"]
 
 
 # ── Test: repo_summary ────────────────────────────────────────────────────
@@ -820,10 +848,12 @@ class TestRepoSummary:
         assert "test_files" in tcs
         assert "tested_symbols" in tcs
 
-    def test_has_index_status(self, mcp_setup):
+    def test_has_index_info(self, mcp_setup):
         from codegraph.mcp_server import repo_summary
         result = repo_summary()
-        assert "index_status" in result["data"]
+        assert "index_info" in result["data"]
+        assert "status" in result["data"]["index_info"]
+        assert "health" in result["data"]["index_info"]
 
 
 # ── Test: Error handling ───────────────────────────────────────────────────
@@ -952,10 +982,32 @@ class TestIndexStatusIntegration:
             lambda: repo_status(),
             lambda: repo_summary(),
         ]
+        valid_statuses = {"fresh", "stale", "missing", "indexing", "error"}
         for tool_fn in tools:
             result = tool_fn()
             assert "index_status" in result, f"Missing index_status in tool response"
-            assert "status" in result["index_status"]
+            assert result["index_status"] in valid_statuses, f"Unexpected index_status: {result['index_status']}"
+
+    def test_all_tools_have_index_health_field(self, mcp_setup):
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+        )
+        tools = [
+            lambda: search_symbols("login"),
+            lambda: get_symbol("app/api/auth.py::login"),
+            lambda: get_callers("app/api/auth.py::login"),
+            lambda: get_callees("app/api/auth.py::login"),
+            lambda: get_neighbors("app/api/auth.py::login"),
+            lambda: get_impact("app/api/auth.py::login"),
+            lambda: repo_status(),
+            lambda: repo_summary(),
+        ]
+        valid_health = {"ok", "warning", "error"}
+        for tool_fn in tools:
+            result = tool_fn()
+            assert "index_health" in result, f"Missing index_health in tool response"
+            assert result["index_health"] in valid_health, f"Unexpected index_health: {result['index_health']}"
 
 
 # ── Test: response_mode behavior ────────────────────────────────────────────

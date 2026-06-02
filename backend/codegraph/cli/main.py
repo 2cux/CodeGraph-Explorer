@@ -16,7 +16,7 @@ from codegraph.graph import query as graph_query
 from codegraph.graph import impact as graph_impact
 from codegraph.indexer.graph_builder import build_index, build_index_from_paths
 from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
-from codegraph.indexer.status import detect_status, detect_status_with_classification, StatusResult
+from codegraph.indexer.status import detect_status, detect_status_with_classification, StatusResult, get_index_status
 from codegraph.storage.file_store import FileStore
 from codegraph.storage.sqlite_store import SqliteStore
 from codegraph.storage.state_store import IndexStateStore
@@ -1187,17 +1187,22 @@ def doctor(
             except Exception:
                 pass
 
-        # Freshness check
+        # Freshness check (lite — no file scanning)
         if index_files["metadata.json"] and index_files["graph.json"]:
-            store = FileStore(cg_dir)
-            metadata = store.load_metadata()
-            if metadata:
-                result = detect_status(project_root, metadata)
-                if result.status == "fresh":
-                    ok("Index is fresh")
-                elif result.status == "stale":
-                    warn(f"Index is stale — {result.total_changes} file(s) changed")
-                    typer.echo(f"     Run: codegraph init --incremental")
+            lite = get_index_status(project_root)
+            status = lite["status"]
+            if status == "fresh":
+                ok("Index is fresh")
+            elif status == "stale":
+                cs = lite.get("last_change_summary") or {}
+                total = sum(cs.values())
+                warn(f"Index is stale — {total} file(s) changed")
+                typer.echo(f"     Run: {lite.get('suggested_fix', 'codegraph init --incremental')}")
+            elif status == "indexing":
+                typer.echo("     Index update is in progress...")
+            elif status == "error":
+                fail(f"Index error: {lite.get('last_error', 'Unknown')}")
+                typer.echo(f"     Run: {lite.get('suggested_fix', 'codegraph doctor')}")
         typer.echo()
 
     # 5b. Storage integrity
@@ -1566,7 +1571,7 @@ def doctor(
             fail("Tool responses are JSON strings (double-encoded — MCP clients may not parse correctly)")
 
         # Check 2: Envelope structure validation
-        required_keys = {"ok", "tool", "warnings", "index_status", "meta"}
+        required_keys = {"ok", "tool", "warnings", "index_status", "index_health", "meta"}
         if required_keys <= set(test_ok.keys()):
             ok(f"Response envelope has all required keys: {sorted(required_keys)}")
         else:
@@ -1594,6 +1599,80 @@ def doctor(
         fail(f"Cannot import MCP server module: {e}")
     except Exception as e:
         fail(f"Protocol check failed: {e}")
+    typer.echo()
+
+    # ── 12. Summary ──────────────────────────────────────────────────────
+    typer.echo("12. Summary")
+    typer.echo("-" * 30)
+
+    # Collect index health signals from lite function
+    if cg_dir.exists():
+        lite = get_index_status(project_root)
+    else:
+        lite = get_index_status(project_root)
+
+    index_status = lite["status"]
+    idx_health = lite.get("index_health") or {}
+    health_status = idx_health.get("status", "ok") if idx_health else "ok"
+
+    if index_status == "fresh":
+        ok(f"Index status:  {index_status}")
+    elif index_status == "stale":
+        warn(f"Index status:  {index_status}")
+    elif index_status == "missing":
+        fail(f"Index status:  {index_status}")
+    elif index_status == "error":
+        fail(f"Index status:  {index_status}")
+    else:
+        typer.echo(f"  [INFO]  Index status:  {index_status}")
+
+    if health_status == "ok":
+        ok(f"Index health:  {health_status}")
+    elif health_status == "warning":
+        warn(f"Index health:  {health_status}")
+    else:
+        fail(f"Index health:  {health_status}")
+
+    # Validation status
+    issue_counts = idx_health.get("issue_counts", {})
+    if idx_health:
+        typer.echo(f"  [INFO]  Validation:     {health_status} "
+                   f"({issue_counts.get('warnings', 0)} warnings, "
+                   f"{issue_counts.get('fatal', 0)} fatal)")
+    else:
+        typer.echo(f"  [INFO]  Validation:     no report")
+
+    # Fingerprints
+    fp = lite.get("fingerprint_health")
+    if fp and fp.get("present"):
+        ok(f"Fingerprints:  present ({fp.get('count', 0)} entries)")
+    elif fp:
+        warn("Fingerprints:  missing or corrupt")
+    else:
+        typer.echo("  [INFO]  Fingerprints:  not available")
+
+    # Storage consistency (captured from step 5b)
+    storage_msg = "unknown"
+    if cg_dir.exists():
+        try:
+            integrity = check_storage_integrity(cg_dir)
+            storage_msg = integrity.get("consistency", "unknown")
+        except Exception:
+            storage_msg = "error"
+    if storage_msg == "ok":
+        ok(f"Storage:       {storage_msg}")
+    elif storage_msg == "warning":
+        warn(f"Storage:       {storage_msg}")
+    else:
+        fail(f"Storage:       {storage_msg}")
+
+    # Suggested fix
+    suggested = lite.get("suggested_fix")
+    if suggested:
+        typer.echo(f"  [INFO]  Suggested fix: {suggested}")
+    else:
+        ok("Suggested fix: No action needed")
+
     typer.echo()
 
 

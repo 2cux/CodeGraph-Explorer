@@ -3084,6 +3084,189 @@ class TestStatusDetection:
         assert not stale.is_fresh
 
 
+# ── get_index_status (lite) tests ────────────────────────────────────────
+
+
+class TestGetIndexStatus:
+    """Tests for the lite get_index_status() — no file scanning."""
+
+    def test_missing_when_no_codegraph_dir(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        result = get_index_status(tmp_path / "nonexistent")
+        assert result["status"] == "missing"
+        assert result["suggested_fix"] == "codegraph init"
+
+    def test_fresh_when_state_says_fresh(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        now = "2026-01-01T00:00:00Z"
+        # Write state.json with fresh status
+        import json
+        (cg_dir / "state.json").write_text(json.dumps({
+            "status": "fresh",
+            "last_indexed_at": now,
+            "last_error": None,
+            "last_change_summary": {"none": 5, "cosmetic": 0, "structural": 0, "added": 0, "deleted": 0},
+            "last_incremental_stats": {},
+        }), encoding="utf-8")
+        # Write metadata.json
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "indexer_version": "1.0.0",
+            "root_path": str(tmp_path),
+            "indexed_at": now,
+            "file_count": 5,
+            "symbol_count": 20,
+            "edge_count": 15,
+            "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+        result = get_index_status(tmp_path)
+        assert result["status"] == "fresh"
+        assert result["suggested_fix"] is None
+        assert result["stats"]["files"] == 5
+
+    def test_stale_when_state_says_stale(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        import json
+        (cg_dir / "state.json").write_text(json.dumps({
+            "status": "stale",
+            "last_change_summary": {"none": 3, "structural": 2, "added": 1, "deleted": 0, "cosmetic": 0},
+        }), encoding="utf-8")
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(tmp_path), "indexed_at": "2026-01-01T00:00:00Z",
+            "file_count": 5, "symbol_count": 20, "edge_count": 15, "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+        result = get_index_status(tmp_path)
+        assert result["status"] == "stale"
+        assert result["suggested_fix"] == "codegraph init --incremental"
+
+    def test_error_when_state_says_error(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        import json
+        (cg_dir / "state.json").write_text(json.dumps({
+            "status": "error",
+            "last_error": "Something went wrong",
+        }), encoding="utf-8")
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(tmp_path), "indexed_at": "2026-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 1, "edge_count": 0, "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+        result = get_index_status(tmp_path)
+        assert result["status"] == "error"
+        assert result["last_error"] == "Something went wrong"
+        assert "doctor" in result["suggested_fix"]
+
+    def test_no_file_scanning(self, tmp_path, monkeypatch):
+        """get_index_status must never scan files or compute hashes."""
+        from codegraph.indexer.status import get_index_status
+
+        # Make scan_python_files explode if called
+        def _fail(*args, **kwargs):
+            raise RuntimeError("scan_python_files must not be called by get_index_status")
+
+        monkeypatch.setattr(
+            "codegraph.indexer.status.scan_python_files", _fail
+        )
+        monkeypatch.setattr(
+            "codegraph.indexer.status.compute_fingerprint", _fail
+        )
+
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        import json
+        (cg_dir / "state.json").write_text(json.dumps({
+            "status": "fresh",
+            "last_change_summary": {"none": 1},
+        }), encoding="utf-8")
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(tmp_path), "indexed_at": "2026-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 1, "edge_count": 0, "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+
+        # Should succeed without ever calling scan_python_files
+        result = get_index_status(tmp_path)
+        assert result["status"] == "fresh"
+
+    def test_includes_index_health_from_validation(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        import json
+        (cg_dir / "state.json").write_text(json.dumps({"status": "fresh"}))
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(tmp_path), "indexed_at": "2026-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 1, "edge_count": 0, "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+        (cg_dir / "validation_report.json").write_text(json.dumps({
+            "status": "warning",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "issue_counts": {"warnings": 3, "fatal": 0, "auto_corrected": 1, "dropped": 0},
+        }), encoding="utf-8")
+        result = get_index_status(tmp_path)
+        assert result["index_health"] is not None
+        assert result["index_health"]["status"] == "warning"
+        assert result["index_health"]["issue_counts"]["warnings"] == 3
+
+    def test_includes_fingerprint_health(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        import json
+        (cg_dir / "state.json").write_text(json.dumps({"status": "fresh"}))
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(tmp_path), "indexed_at": "2026-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 1, "edge_count": 0, "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+        # Empty fingerprints dict
+        (cg_dir / "fingerprints.json").write_text("{}", encoding="utf-8")
+        result = get_index_status(tmp_path)
+        assert result["fingerprint_health"] is not None
+        assert result["fingerprint_health"]["present"] is True
+        assert result["fingerprint_health"]["count"] == 0
+
+    def test_includes_incremental_stats(self, tmp_path):
+        from codegraph.indexer.status import get_index_status
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        import json
+        inc_stats = {"changed_files": 3, "duration_ms": 150}
+        (cg_dir / "state.json").write_text(json.dumps({
+            "status": "fresh",
+            "last_incremental_stats": inc_stats,
+        }), encoding="utf-8")
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(tmp_path), "indexed_at": "2026-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 1, "edge_count": 0, "files": [],
+        }), encoding="utf-8")
+        (cg_dir / "graph.json").write_text("{}", encoding="utf-8")
+        result = get_index_status(tmp_path)
+        assert result["last_incremental_stats"] == inc_stats
+
+    def test_suggested_fix_for_each_status(self, tmp_path):
+        from codegraph.indexer.status import get_index_status, _suggested_fix
+        assert _suggested_fix("missing") == "codegraph init"
+        assert _suggested_fix("stale") == "codegraph init --incremental"
+        assert "doctor" in _suggested_fix("error")
+        assert _suggested_fix("fresh") is None
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Round 7 — GraphStore removal tests
 # ══════════════════════════════════════════════════════════════════════════
