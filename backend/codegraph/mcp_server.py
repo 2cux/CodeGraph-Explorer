@@ -772,7 +772,9 @@ def _apply_result_shaping(
         filtered = [item for item in filtered if item.get("type") not in exclude_types]
 
     # Sort
-    if sort_by == "confidence":
+    if sort_by == "preserve":
+        pass
+    elif sort_by == "confidence":
         filtered.sort(key=lambda x: (x.get("confidence", 0) or 0), reverse=True)
     elif sort_by == "distance":
         filtered.sort(key=lambda x: (x.get("distance", 999) or 999))
@@ -1358,12 +1360,19 @@ def _apply_compact_whitelist(data: dict[str, Any]) -> dict[str, Any]:
 @mcp.tool(name="codegraph_search_symbols")
 def search_symbols(
     query: str,
+    type: str | None = None,
     types: str | None = None,
     tags: str | None = None,
     paths: str | None = None,
+    file_path: str | None = None,
+    path_prefix: str | None = None,
+    layer: str | None = None,
+    include_tests: bool = True,
+    exclude_external: bool = True,
+    min_score: float = 0.2,
     exact: bool = False,
     fuzzy: bool = True,
-    exclude_tests: bool = True,
+    exclude_tests: bool | None = None,
     limit: int = 20,
     offset: int = 0,
     sort_by: str = "relevance",
@@ -1378,12 +1387,19 @@ def search_symbols(
 
     Args:
         query: Search keyword — symbol name, file path fragment, or docstring keyword
+        type: Exact node type, e.g. "function"
         types: Comma-separated node types, e.g. "function,method,class" (default: all)
         tags: Comma-separated tags, e.g. "auth,route" (default: none)
         paths: Comma-separated path glob patterns, e.g. "app/api/**,tests/**"
+        file_path: Exact file path
+        path_prefix: File path prefix
+        layer: Layer label inferred from file path, e.g. "api", "service"
+        include_tests: Include test symbols (default true; production sorts first)
+        exclude_external: Exclude external symbols (default true)
+        min_score: Minimum relevance score (default 0.2)
         exact: If true, only return exact name matches (default false)
         fuzzy: If true, use fuzzy matching (default true)
-        exclude_tests: Exclude test symbols from results (default true)
+        exclude_tests: Legacy inverse of include_tests
         limit: Maximum results (default 20, max 100)
         offset: Pagination offset (default 0)
         sort_by: Sort order — "relevance" (default), "confidence", "file_path", "name"
@@ -1391,6 +1407,15 @@ def search_symbols(
         include_explanations: If true, include reason text and evidence (default false)
     """
     effective_limit = max(1, min(limit or max_results or 20, 100))
+    effective_include_tests = include_tests if exclude_tests is None else not exclude_tests
+    include_types_list: list[str] | None = None
+    if types:
+        include_types_list = [t.strip() for t in types.split(",") if t.strip()]
+    if type:
+        include_types_list = [*(include_types_list or []), type]
+    effective_type_filter = type_filter
+    if type and not include_types_list:
+        effective_type_filter = type
     if response_mode not in VALID_RESPONSE_MODES:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
@@ -1409,9 +1434,18 @@ def search_symbols(
             result = graph_query.search_symbols(
                 query_store,
                 query=query,
-                type_filter=type_filter,
+                type_filter=effective_type_filter,
+                types=include_types_list,
                 file_filter=file_filter,
+                file_path=file_path,
+                path_prefix=path_prefix,
+                layer=layer,
+                include_tests=effective_include_tests,
+                exclude_external=exclude_external,
+                min_score=min_score,
                 limit=effective_limit + offset,
+                use_fts=True,
+                fuzzy=fuzzy,
             )
         finally:
             if isinstance(query_store, SqliteStore):
@@ -1426,13 +1460,10 @@ def search_symbols(
     items = result["results"]
 
     # Parse type filters
-    include_types_list: list[str] | None = None
     exclude_types_list: list[str] | None = None
-    if types:
-        include_types_list = [t.strip() for t in types.split(",") if t.strip()]
-    if exclude_tests and not include_types_list:
+    if not effective_include_tests and not include_types_list:
         exclude_types_list = ["test"]
-    elif exclude_tests and include_types_list:
+    elif not effective_include_tests and include_types_list:
         exclude_types_list = ["test"] if "test" not in include_types_list else None
 
     # Parse path filters
@@ -1454,11 +1485,12 @@ def search_symbols(
         items = [item for item in items if item.get("name", "").lower() == query_lower]
 
     # Shape results
+    shape_sort = "preserve" if sort_by == "relevance" else sort_by
     shaped = _apply_result_shaping(
         items,
         limit=effective_limit,
         offset=offset,
-        sort_by=sort_by,
+        sort_by=shape_sort,
         include_types=include_types_list,
         exclude_types=exclude_types_list,
         include_paths=include_paths_list,
@@ -1472,36 +1504,72 @@ def search_symbols(
             "name": item["name"],
             "type": item["type"],
             "file_path": item["file_path"],
+            "line_start": item.get("line_start"),
+            "line_end": item.get("line_end"),
             "score": item.get("score"),
             "match_sources": item.get("match_sources", []),
+            "layer": item.get("layer"),
         }
-        if item.get("tags"):
-            entry["tags"] = item["tags"]
         if response_mode == "compact":
-            entry["reason_code"] = (
-                item.get("match_sources", [None])[0] if item.get("match_sources") else "symbol_name_match"
-            )
+            pass
         elif response_mode == "standard":
-            entry["line_start"] = item.get("line_start")
-            entry["line_end"] = item.get("line_end")
-            if item.get("confidence"):
-                entry["confidence"] = item["confidence"]
-                entry["confidence_level"] = get_confidence_level(item["confidence"])
+            entry["qualified_name"] = item.get("qualified_name")
+            entry["signature"] = item.get("signature")
+            entry["docstring_excerpt"] = item.get("docstring_excerpt")
+            entry["tags"] = item.get("tags", [])
+            entry["confidence"] = item.get("confidence", 1.0)
+            entry["confidence_level"] = get_confidence_level(item.get("confidence", 1.0))
             if include_explanations:
                 entry["reason"] = f"Matched via: {', '.join(item.get('match_sources', []))}"
-        # standard fallback — already covered in the elif branch above
+        entry["truncated"] = item.get("truncated", False)
         serialized_results.append(entry)
+
+    warnings: list[dict[str, Any]] = []
+    if result.get("ambiguous"):
+        warnings.append(build_warning(
+            "ambiguous_symbol_match",
+            message="Ambiguous symbol match. Use symbol_id for exact lookup.",
+            reason_code="ambiguous_symbol_match",
+        ))
+    serialized_candidates: list[dict[str, Any]] = []
+    if result.get("ambiguous"):
+        for item in result.get("candidates", []):
+            candidate: dict[str, Any] = {
+                "symbol_id": item.get("symbol_id"),
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "file_path": item.get("file_path"),
+                "line_start": item.get("line_start"),
+                "line_end": item.get("line_end"),
+                "score": item.get("score"),
+                "match_sources": item.get("match_sources", []),
+                "layer": item.get("layer"),
+            }
+            if response_mode == "standard":
+                candidate["qualified_name"] = item.get("qualified_name")
+                candidate["signature"] = item.get("signature")
+                candidate["docstring_excerpt"] = item.get("docstring_excerpt")
+                candidate["tags"] = item.get("tags", [])
+                candidate["confidence"] = item.get("confidence", 1.0)
+            serialized_candidates.append(candidate)
 
     return _respond_ok(
         data={
             "query": query,
             "results": serialized_results,
+            "ambiguous": bool(result.get("ambiguous")),
+            "candidates": serialized_candidates,
             "total": shaped["total"],
             "offset": shaped["offset"],
             "limit": shaped["limit"],
             "has_more": shaped["has_more"],
         },
         tool="codegraph_search_symbols",
+        warnings=warnings,
+        response_mode=response_mode,
+        item_count=len(serialized_results),
+        truncated=shaped["has_more"],
+        max_items=effective_limit,
     )
 
 

@@ -68,9 +68,18 @@ def search_symbols(
     store: GraphStore,
     query: str = "",
     type_filter: str | None = None,
+    types: list[str] | None = None,
     file_filter: str | None = None,
+    file_path: str | None = None,
+    path_prefix: str | None = None,
+    layer: str | None = None,
+    include_tests: bool = True,
+    exclude_external: bool = True,
+    min_score: float = 0.2,
     limit: int = 50,
     offset: int = 0,
+    use_fts: bool = True,
+    fuzzy: bool = True,
 ) -> dict:
     """Search for symbols by name, file path, or docstring.
 
@@ -82,9 +91,18 @@ def search_symbols(
         return store.search_symbols(
             query=query,
             type_filter=type_filter,
+            types=types,
             file_filter=file_filter,
+            file_path=file_path,
+            path_prefix=path_prefix,
+            layer=layer,
+            include_tests=include_tests,
+            exclude_external=exclude_external,
+            min_score=min_score,
             limit=limit,
             offset=offset,
+            use_fts=use_fts,
+            fuzzy=fuzzy,
         )
 
     nodes = store.search_nodes(query)
@@ -95,8 +113,20 @@ def search_symbols(
         # Apply type filter
         if type_filter and node.type.value != type_filter:
             continue
+        if types and node.type.value not in types:
+            continue
         # Apply file filter
         if file_filter and file_filter not in node.file_path:
+            continue
+        if file_path and node.file_path != file_path:
+            continue
+        if path_prefix and not node.file_path.replace("\\", "/").startswith(path_prefix.replace("\\", "/").rstrip("/") + "/"):
+            continue
+        if exclude_external and node.type.value == "external_symbol":
+            continue
+        if not include_tests and (node.type.value == "test" or _is_test_path(node.file_path)):
+            continue
+        if layer and _assign_search_layer(node.file_path) != layer:
             continue
 
         score = 0.0
@@ -142,13 +172,50 @@ def search_symbols(
             "tags": node.tags,
             "line_start": node.location.line_start if node.location else None,
             "line_end": node.location.line_end if node.location else None,
+            "confidence": 1.0,
+            "layer": _assign_search_layer(node.file_path),
+            "truncated": False,
         })
 
+    results = [r for r in results if r["score"] >= min_score]
     results.sort(key=lambda r: r["score"], reverse=True)
     total = len(results)
     paginated = results[offset:offset + limit]
+    for item in paginated:
+        item["truncated"] = total > offset + limit
 
-    return {"results": paginated, "total": total}
+    return {"results": paginated, "total": total, "ambiguous": False}
+
+
+def _is_test_path(file_path: str) -> bool:
+    normalized = file_path.replace("\\", "/").lower()
+    return (
+        normalized.startswith("tests/")
+        or "/tests/" in normalized
+        or normalized.endswith("_test.py")
+        or normalized.split("/")[-1].startswith("test_")
+    )
+
+
+def _assign_search_layer(file_path: str) -> str:
+    normalized = file_path.replace("\\", "/").lower()
+    layer_map: list[tuple[str, str]] = [
+        ("codegraph/graph/", "graph"), ("codegraph/indexer", "indexer"),
+        ("codegraph/storage/", "storage"), ("codegraph/context/", "context"),
+        ("codegraph/mcp/", "mcp"), ("mcp_server", "mcp"),
+        ("api/", "api"), ("routes", "api"), ("router", "api"),
+        ("service", "service"), ("services", "service"),
+        ("store/", "storage"), ("context/", "context"), ("evidence", "context"),
+        ("test", "tests"), ("test_", "tests"),
+        ("config", "config"), ("settings", "config"),
+        ("model", "models"), ("schema", "models"),
+        ("persistence", "persistence"), ("repository", "persistence"),
+        ("cli/", "indexer"), ("cli_", "indexer"),
+    ]
+    for pattern, value in layer_map:
+        if pattern in normalized:
+            return value
+    return "unknown"
 
 
 # ── Subgraph ───────────────────────────────────────────────────────────

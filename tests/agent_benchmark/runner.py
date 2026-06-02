@@ -329,14 +329,46 @@ def _codegraph_search_all(
 ) -> dict[str, Any]:
     """Search with ALL keywords and combine results (simulates real agent behavior)."""
     all_results: dict[str, dict[str, Any]] = {}
+    ambiguous_count = 0
+    payload_tokens = 0
     for kw in keywords[:5]:
-        result = graph_query.search_symbols(store, query=kw, limit=limit)
+        result = graph_query.search_symbols(
+            store,
+            query=kw,
+            limit=limit,
+            include_tests=True,
+            exclude_external=True,
+            min_score=0.2,
+        )
+        if result.get("ambiguous"):
+            ambiguous_count += 1
+        compact_payload = [
+            {
+                "symbol_id": r["symbol_id"],
+                "name": r["name"],
+                "type": r["type"],
+                "file_path": r["file_path"],
+                "line_start": r.get("line_start"),
+                "line_end": r.get("line_end"),
+                "score": r.get("score"),
+                "match_sources": r.get("match_sources", []),
+                "layer": r.get("layer"),
+            }
+            for r in result.get("results", [])
+        ]
+        payload_tokens += _estimate_json_tokens(compact_payload)
         for item in result.get("results", []):
             sid = item["symbol_id"]
             if sid not in all_results:
                 all_results[sid] = item
     combined = list(all_results.values())
-    return {"results": combined, "total": len(combined)}
+    return {
+        "results": combined,
+        "total": len(combined),
+        "ambiguous_count": ambiguous_count,
+        "search_payload_tokens": payload_tokens,
+        "top_symbol": combined[0]["symbol_id"] if combined else None,
+    }
 
 
 def _pick_best_symbol(search_result: dict[str, Any]) -> dict[str, Any] | None:
@@ -467,6 +499,10 @@ def run_codegraph_locate(
         "mcp_payload_tokens": mcp_payload,
         "mcp_payload_tokens_compact": mcp_compact,
         "mcp_payload_tokens_standard": mcp_standard,
+        "search_symbols_found": [r["symbol_id"] for r in search_result.get("results", [])],
+        "search_top_symbol": search_result.get("top_symbol"),
+        "search_ambiguous": search_result.get("ambiguous_count", 0) > 0,
+        "search_payload_tokens": search_result.get("search_payload_tokens", 0),
         "required_followup_reads": followup_reads,
         "discovery_token_estimate": discovery,
         "full_task_token_estimate": full_task,
@@ -605,6 +641,10 @@ def run_codegraph_impact(
         "mcp_payload_tokens": mcp_payload,
         "mcp_payload_tokens_compact": mcp_compact,
         "mcp_payload_tokens_standard": mcp_standard,
+        "search_symbols_found": [r["symbol_id"] for r in search_result.get("results", [])],
+        "search_top_symbol": search_result.get("top_symbol"),
+        "search_ambiguous": search_result.get("ambiguous_count", 0) > 0,
+        "search_payload_tokens": search_result.get("search_payload_tokens", 0),
         "required_followup_reads": followup_reads,
         "discovery_token_estimate": discovery,
         "full_task_token_estimate": full_task,
@@ -749,6 +789,10 @@ def run_codegraph_modification_prep(
         "mcp_payload_tokens": mcp_payload,
         "mcp_payload_tokens_compact": mcp_compact,
         "mcp_payload_tokens_standard": mcp_standard,
+        "search_symbols_found": [r["symbol_id"] for r in search_result.get("results", [])],
+        "search_top_symbol": search_result.get("top_symbol"),
+        "search_ambiguous": search_result.get("ambiguous_count", 0) > 0,
+        "search_payload_tokens": search_result.get("search_payload_tokens", 0),
         "required_followup_reads": discovery_files_to_read,
         "discovery_token_estimate": discovery,
         "full_task_token_estimate": total_tokens,
@@ -889,6 +933,10 @@ def run_codegraph_test_discovery(
         "mcp_payload_tokens": mcp_payload,
         "mcp_payload_tokens_compact": mcp_compact,
         "mcp_payload_tokens_standard": mcp_standard,
+        "search_symbols_found": [r["symbol_id"] for r in search_result.get("results", [])],
+        "search_top_symbol": search_result.get("top_symbol"),
+        "search_ambiguous": search_result.get("ambiguous_count", 0) > 0,
+        "search_payload_tokens": search_result.get("search_payload_tokens", 0),
         "required_followup_reads": followup_reads,
         "discovery_token_estimate": discovery,
         "full_task_token_estimate": full_task,
@@ -1127,6 +1175,10 @@ def run_benchmark(mode: str = "baseline", response_mode: str = "compact") -> lis
                 "mcp_payload_tokens": outcome.get("mcp_payload_tokens", 0),
                 "mcp_payload_tokens_compact": outcome.get("mcp_payload_tokens_compact", 0),
                 "mcp_payload_tokens_standard": outcome.get("mcp_payload_tokens_standard", 0),
+                "search_recall": 0.0,
+                "search_top1_accuracy": 0.0,
+                "search_ambiguous": bool(outcome.get("search_ambiguous", False)),
+                "search_payload_tokens": outcome.get("search_payload_tokens", 0),
                 "required_followup_reads": outcome.get("required_followup_reads", 0),
                 "discovery_token_estimate": outcome.get("discovery_token_estimate", 0),
                 "full_task_token_estimate": outcome.get("full_task_token_estimate", 0),
@@ -1152,6 +1204,22 @@ def run_benchmark(mode: str = "baseline", response_mode: str = "compact") -> lis
                 f for f in expected_files
                 if not any(_fuzzy_path_match(f, ff) for ff in found_files_set)
             ]
+            search_found = outcome.get("search_symbols_found", [])
+            if expected_symbols:
+                found_by_search = [
+                    s for s in expected_symbols
+                    if any(_fuzzy_match(s, f) for f in search_found)
+                ]
+                result["search_recall"] = round(len(found_by_search) / len(expected_symbols), 4)
+                top_symbol = outcome.get("search_top_symbol")
+                result["search_top1_accuracy"] = (
+                    1.0
+                    if top_symbol and any(_fuzzy_match(s, top_symbol) for s in expected_symbols)
+                    else 0.0
+                )
+            else:
+                result["search_recall"] = 1.0
+                result["search_top1_accuracy"] = 1.0
 
             results.append(result)
             print(f"[OK] {mode:10s} | {task_id:40s} | files={len(found_files_set):2d} | tokens={outcome.get('estimated_tokens', 0):5d}")
@@ -1178,6 +1246,10 @@ def run_benchmark(mode: str = "baseline", response_mode: str = "compact") -> lis
                 "mcp_payload_tokens": 0,
                 "mcp_payload_tokens_compact": 0,
                 "mcp_payload_tokens_standard": 0,
+                "search_recall": 0.0,
+                "search_top1_accuracy": 0.0,
+                "search_ambiguous": False,
+                "search_payload_tokens": 0,
                 "required_followup_reads": 0,
                 "discovery_token_estimate": 0,
                 "full_task_token_estimate": 0,

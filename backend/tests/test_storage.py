@@ -221,7 +221,7 @@ class TestSqliteStore:
             "code_preview": None, "visibility": "public", "tags": [], "metadata": {},
         }])
         result = store.search_symbols("password", limit=10, use_fts=False)
-        assert result["results"][0]["match_sources"] == ["like"]
+        assert "like_name" in result["results"][0]["match_sources"]
 
     def test_node_not_found(self, tmp_path):
         db_path = tmp_path / "test.sqlite"

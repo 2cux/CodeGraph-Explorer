@@ -191,6 +191,18 @@ def generate_report() -> str:
     lines.append(f"| Required followup file reads | {agg_followup} | — |")
     lines.append("")
 
+    search = summary.get("search", {})
+    if search:
+        lines.append("### Search Quality")
+        lines.append("")
+        lines.append(f"| Metric | Value |")
+        lines.append(f"|---|---:|")
+        lines.append(f"| Search recall | {search.get('avg_recall', 0):.1f}% |")
+        lines.append(f"| Top-1 accuracy | {search.get('avg_top1_accuracy', 0):.1f}% |")
+        lines.append(f"| Ambiguous rate | {search.get('ambiguous_rate', 0):.1f}% |")
+        lines.append(f"| Search payload tokens | {search.get('payload_tokens', 0):,} |")
+        lines.append("")
+
     # ── Compact vs Standard comparison ───────────────────────────────────
     cmp_compact = totals.get("codegraph_mcp_compact_tokens", 0)
     cmp_standard = totals.get("codegraph_mcp_standard_tokens", 0)
@@ -227,17 +239,22 @@ def generate_report() -> str:
     # ── Per-task results ────────────────────────────────────────────────
     lines.append("## 2. Per-Task Results")
     lines.append("")
-    lines.append("| Task | MCP Calls | MCP Tokens | Full Tokens | grep/read Δ | Token Δ | Recall |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| Task | MCP Calls | MCP Tokens | Search Recall | Top-1 | Ambiguous | Search Tokens | Full Tokens | Recall |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for c in comparisons:
         bids = c["task_id"]
         cg_tc = c["codegraph"]["tool_calls"]
         cg_mcp = c["codegraph"].get("mcp_payload_tokens", 0)
+        search_recall = f"{c['codegraph'].get('search_recall', 0):.0f}%"
+        search_top1 = f"{c['codegraph'].get('search_top1_accuracy', 0):.0f}%"
+        search_ambiguous = "yes" if c["codegraph"].get("search_ambiguous", False) else "no"
+        search_tokens = c["codegraph"].get("search_payload_tokens", 0)
         cg_full = c["codegraph"].get("full_task_token_estimate", 0)
-        gr_d = f"{c['deltas']['grep_read_pct']:+.0f}%"
-        tok_d = f"{c['deltas']['tokens_pct']:+.0f}%"
         recall = f"{c['codegraph']['file_recall']:.0f}%"
-        lines.append(f"| {bids} | {cg_tc} | {cg_mcp:,} | {cg_full:,} | {gr_d} | {tok_d} | {recall} |")
+        lines.append(
+            f"| {bids} | {cg_tc} | {cg_mcp:,} | {search_recall} | {search_top1} | "
+            f"{search_ambiguous} | {search_tokens:,} | {cg_full:,} | {recall} |"
+        )
     lines.append("")
 
     # ── Detailed comparison ─────────────────────────────────────────────

@@ -969,8 +969,9 @@ class TestResponseMode:
         result = search_symbols("login")
         items = result["data"]["results"]
         assert len(items) > 0
-        # compact: has reason_code but no long reason
-        assert "reason_code" in items[0]
+        # compact: has match sources but no long reason or legacy reason_code
+        assert "match_sources" in items[0]
+        assert "reason_code" not in items[0]
         assert "reason" not in items[0]
 
     def test_search_symbols_standard_has_more_fields(self, mcp_setup):
@@ -1079,7 +1080,7 @@ class TestSearchSymbolsEnhanced:
 
     def test_tags_filter(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = search_symbols("", tags="route")
+        result = search_symbols("", tags="route", response_mode="standard")
         for r in result["data"]["results"]:
             tags_lower = [t.lower() for t in r.get("tags", [])]
             assert "route" in tags_lower
@@ -1090,9 +1091,9 @@ class TestSearchSymbolsEnhanced:
         for r in result["data"]["results"]:
             assert "app/api" in r["file_path"]
 
-    def test_exclude_tests_default(self, mcp_setup):
+    def test_legacy_exclude_tests(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
-        result = search_symbols("")
+        result = search_symbols("", exclude_tests=True)
         for r in result["data"]["results"]:
             assert r.get("type") != "test"
 

@@ -73,6 +73,26 @@ def discovery_token_estimate(result: dict[str, Any]) -> int:
     return result.get("discovery_token_estimate", 0)
 
 
+def search_recall(result: dict[str, Any]) -> float:
+    """Recall of the entry-point search stage."""
+    return result.get("search_recall", 0.0)
+
+
+def search_top1_accuracy(result: dict[str, Any]) -> float:
+    """Whether search top-1 matched an expected symbol."""
+    return result.get("search_top1_accuracy", 0.0)
+
+
+def search_ambiguous(result: dict[str, Any]) -> bool:
+    """Whether entry-point search reported ambiguity."""
+    return bool(result.get("search_ambiguous", False))
+
+
+def search_payload_tokens(result: dict[str, Any]) -> int:
+    """Estimated tokens for search_symbols responses only."""
+    return result.get("search_payload_tokens", 0)
+
+
 def full_task_token_estimate(result: dict[str, Any]) -> int:
     """Total estimated tokens for the full task (discovery + execution)."""
     return result.get("full_task_token_estimate", 0)
@@ -111,6 +131,10 @@ def compare_results(
     cg_followup = required_followup_reads(codegraph)
     cg_discovery = discovery_token_estimate(codegraph)
     cg_full = full_task_token_estimate(codegraph)
+    cg_search_recall = search_recall(codegraph)
+    cg_search_top1 = search_top1_accuracy(codegraph)
+    cg_search_ambiguous = search_ambiguous(codegraph)
+    cg_search_payload = search_payload_tokens(codegraph)
 
     # Compact vs Standard — use measured data when available
     cg_mcp_compact = codegraph.get("mcp_payload_tokens_compact", cg_mcp_tokens)
@@ -172,6 +196,10 @@ def compare_results(
             "required_followup_reads": cg_followup,
             "discovery_token_estimate": cg_discovery,
             "full_task_token_estimate": cg_full,
+            "search_recall": round(cg_search_recall * 100, 1),
+            "search_top1_accuracy": round(cg_search_top1 * 100, 1),
+            "search_ambiguous": cg_search_ambiguous,
+            "search_payload_tokens": cg_search_payload,
             # Dual-mode metrics
             "mcp_payload_tokens_compact": cg_mcp_compact,
             "mcp_payload_tokens_standard": cg_mcp_standard,
@@ -230,6 +258,10 @@ def aggregate_summary(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
     total_cg_mcp_standard = sum(c["codegraph"].get("mcp_payload_tokens_standard", 0) for c in comparisons)
     total_cg_full_compact = sum(c["codegraph"].get("full_task_token_estimate_compact", 0) for c in comparisons)
     total_cg_full_standard = sum(c["codegraph"].get("full_task_token_estimate_standard", 0) for c in comparisons)
+    total_search_payload = sum(c["codegraph"].get("search_payload_tokens", 0) for c in comparisons)
+    avg_search_recall = sum(c["codegraph"].get("search_recall", 0.0) for c in comparisons) / total
+    avg_search_top1 = sum(c["codegraph"].get("search_top1_accuracy", 0.0) for c in comparisons) / total
+    ambiguous_count = sum(1 for c in comparisons if c["codegraph"].get("search_ambiguous", False))
     # Use measured ratio when available, otherwise fallback
     if total_cg_mcp_standard > 0:
         avg_compact_vs_standard_ratio = round(total_cg_mcp_compact / total_cg_mcp_standard, 3)
@@ -272,7 +304,14 @@ def aggregate_summary(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
             "codegraph_mcp_standard_tokens": total_cg_mcp_standard,
             "codegraph_full_compact_tokens": total_cg_full_compact,
             "codegraph_full_standard_tokens": total_cg_full_standard,
+            "search_payload_tokens": total_search_payload,
             "compact_vs_standard_payload_ratio": avg_compact_vs_standard_ratio,
+        },
+        "search": {
+            "avg_recall": round(avg_search_recall, 1),
+            "avg_top1_accuracy": round(avg_search_top1, 1),
+            "ambiguous_rate": round(ambiguous_count / total * 100, 1),
+            "payload_tokens": total_search_payload,
         },
         "failure_cases": failure_cases,
     }

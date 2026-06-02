@@ -7,6 +7,7 @@ All batch writes are automatically chunked to avoid hitting SQLite's
 """
 
 import json
+import difflib
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,41 @@ def _row_to_edge(row: sqlite3.Row) -> dict:
     else:
         data.pop("edge_metadata", None)
     return data
+
+
+def _is_test_path(file_path: str) -> bool:
+    normalized = file_path.replace("\\", "/").lower()
+    return (
+        normalized.startswith("tests/")
+        or "/tests/" in normalized
+        or normalized.endswith("_test.py")
+        or "/test_" in normalized
+        or normalized.split("/")[-1].startswith("test_")
+    )
+
+
+def _assign_search_layer(file_path: str) -> str:
+    normalized = file_path.replace("\\", "/").lower()
+    layer_map: list[tuple[str, str]] = [
+        ("codegraph/graph/", "graph"), ("codegraph/graph_", "graph"),
+        ("codegraph/indexer", "indexer"), ("indexer/", "indexer"),
+        ("codegraph/storage/", "storage"), ("storage/", "storage"),
+        ("codegraph/context/", "context"),
+        ("codegraph/mcp/", "mcp"), ("mcp_server", "mcp"),
+        ("api/", "api"), ("routes", "api"), ("router", "api"),
+        ("service", "service"), ("services", "service"),
+        ("store/", "storage"),
+        ("context/", "context"), ("evidence", "context"),
+        ("test", "tests"), ("test_", "tests"),
+        ("config", "config"), ("settings", "config"),
+        ("model", "models"), ("schema", "models"),
+        ("persistence", "persistence"), ("repository", "persistence"),
+        ("cli/", "indexer"), ("cli_", "indexer"),
+    ]
+    for pattern, layer in layer_map:
+        if pattern in normalized:
+            return layer
+    return "unknown"
 
 
 CREATE_NODES = """
@@ -346,91 +382,159 @@ class SqliteStore:
         self,
         query: str = "",
         type_filter: str | None = None,
+        types: list[str] | None = None,
         file_filter: str | None = None,
+        file_path: str | None = None,
+        path_prefix: str | None = None,
+        layer: str | None = None,
+        include_tests: bool = True,
+        exclude_external: bool = True,
+        min_score: float = 0.2,
         limit: int = 50,
         offset: int = 0,
         use_fts: bool = True,
+        fuzzy: bool = True,
     ) -> dict[str, Any]:
         """Search symbols in SQLite using exact, FTS5, LIKE, then fuzzy passes."""
         q = query.strip()
-        seen: set[str] = set()
-        results: list[dict[str, Any]] = []
+        requested_limit = max(1, min(limit, 100))
+        scan_limit = max(requested_limit + offset, 100)
+        fuzzy_scan_limit = max(scan_limit, 1000)
+        merged: dict[str, dict[str, Any]] = {}
+        query_mentions_test = "test" in q.lower()
+        include_test_only = bool(types) and set(types) <= {"test"}
 
-        def add_rows(rows: list[sqlite3.Row], score: float, source: str) -> None:
+        def add_rows(rows: list[sqlite3.Row], score: float, source: str, layer_name: str) -> None:
             for row in rows:
                 data = _row_to_node(row)
-                if data["id"] in seen:
+                if not self._passes_search_filters(data, layer, include_tests, exclude_external):
                     continue
-                seen.add(data["id"])
-                results.append(self._node_result(data, score, [source]))
+                self._merge_result(merged, data, score, source, layer_name)
 
-        base_where, base_params = self._node_filter_sql(type_filter, file_filter)
+        base_where, base_params = self._node_filter_sql(
+            type_filter=type_filter,
+            types=types,
+            file_filter=file_filter,
+            file_path=file_path,
+            path_prefix=path_prefix,
+            exclude_external=exclude_external,
+        )
         c = self.conn
 
         if q:
-            exact_where = base_where + ["(id = ? OR name = ? OR qualified_name = ?)"]
+            # 1. exact symbol_id
             rows = c.execute(
-                f"SELECT * FROM nodes WHERE {' AND '.join(exact_where)} ORDER BY name LIMIT ?",
-                [*base_params, q, q, q, limit + offset],
+                f"SELECT * FROM nodes WHERE {' AND '.join(base_where + ['id = ?'])} LIMIT ?",
+                [*base_params, q, scan_limit],
             ).fetchall()
-            for row in rows:
-                data = _row_to_node(row)
-                if data["id"] in seen:
-                    continue
-                seen.add(data["id"])
-                source = "node_id" if data["id"] == q else "exact_name"
-                if data.get("qualified_name") == q:
-                    source = "qualified_name"
-                results.append(self._node_result(data, 1.0, [source]))
+            add_rows(rows, 1.0, "exact_symbol_id", "exact_symbol_id")
 
+            # 2. exact name
+            rows = c.execute(
+                f"SELECT * FROM nodes WHERE {' AND '.join(base_where + ['name = ?'])} LIMIT ?",
+                [*base_params, q, scan_limit],
+            ).fetchall()
+            add_rows(rows, 0.9, "exact_name", "exact_name")
+
+            # 3. exact qualified_name
+            rows = c.execute(
+                f"SELECT * FROM nodes WHERE {' AND '.join(base_where + ['qualified_name = ?'])} LIMIT ?",
+                [*base_params, q, scan_limit],
+            ).fetchall()
+            add_rows(rows, 0.95, "exact_qualified_name", "exact_qualified_name")
+
+            # 4. FTS5 MATCH
             if use_fts and self.has_fts_table():
                 fts_query = self._fts_query(q)
                 if fts_query:
-                    fts_where = [w.replace("type", "n.type").replace("file_path", "n.file_path") for w in base_where]
+                    fts_where = [
+                        w.replace("type", "n.type").replace("file_path", "n.file_path")
+                        for w in base_where
+                    ]
                     rows = c.execute(
                         f"""SELECT n.*, bm25(symbols_fts) AS rank
                             FROM symbols_fts JOIN nodes n ON n.id = symbols_fts.symbol_id
                             WHERE symbols_fts MATCH ? {' AND ' + ' AND '.join(fts_where) if fts_where else ''}
                             ORDER BY rank LIMIT ?""",
-                        [fts_query, *base_params, limit + offset],
+                        [fts_query, *base_params, scan_limit],
                     ).fetchall()
                     for row in rows:
                         data = _row_to_node(row)
-                        if data["id"] in seen:
+                        if not self._passes_search_filters(data, layer, include_tests, exclude_external):
                             continue
-                        seen.add(data["id"])
-                        results.append(self._node_result(data, 0.85, ["fts5"]))
+                        fts_score, sources = self._score_fts_match(data, q)
+                        for source in sources:
+                            self._merge_result(merged, data, fts_score, source, "fts")
 
-            if len(results) < limit + offset:
-                like = f"%{q}%"
-                like_where = base_where + [
-                    "(id LIKE ? OR name LIKE ? OR qualified_name LIKE ? OR file_path LIKE ? OR docstring LIKE ?)"
-                ]
-                rows = c.execute(
-                    f"SELECT * FROM nodes WHERE {' AND '.join(like_where)} ORDER BY name LIMIT ?",
-                    [*base_params, like, like, like, like, like, limit + offset],
-                ).fetchall()
-                add_rows(rows, 0.7, "like")
+            # 5. LIKE fallback
+            like = f"%{q}%"
+            like_where = base_where + [
+                "(id LIKE ? OR name LIKE ? OR qualified_name LIKE ? OR file_path LIKE ? OR signature LIKE ? OR docstring LIKE ? OR tags LIKE ?)"
+            ]
+            rows = c.execute(
+                f"SELECT * FROM nodes WHERE {' AND '.join(like_where)} ORDER BY name LIMIT ?",
+                [*base_params, like, like, like, like, like, like, like, scan_limit],
+            ).fetchall()
+            for row in rows:
+                data = _row_to_node(row)
+                if not self._passes_search_filters(data, layer, include_tests, exclude_external):
+                    continue
+                like_score, sources = self._score_like_match(data, q)
+                for source in sources:
+                    self._merge_result(merged, data, like_score, source, "like")
 
-            if len(results) < limit + offset:
-                fuzzy = f"%{''.join(q.split())}%"
+            # 6. fuzzy fallback, only when previous layers found nothing useful.
+            best_score = max((item["score"] for item in merged.values()), default=0.0)
+            if fuzzy and (not merged or best_score < 0.4):
                 rows = c.execute(
                     f"SELECT * FROM nodes WHERE {' AND '.join(base_where or ['1=1'])} "
-                    "AND replace(name, '_', '') LIKE ? ORDER BY name LIMIT ?",
-                    [*base_params, fuzzy, limit + offset],
+                    "ORDER BY name LIMIT ?",
+                    [*base_params, fuzzy_scan_limit],
                 ).fetchall()
-                add_rows(rows, 0.45, "fuzzy")
+                for row in rows:
+                    data = _row_to_node(row)
+                    if not self._passes_search_filters(data, layer, include_tests, exclude_external):
+                        continue
+                    score = self._score_fuzzy_match(data.get("name", ""), q)
+                    if score >= min_score:
+                        self._merge_result(merged, data, score, "fuzzy_name", "fuzzy")
         else:
             rows = c.execute(
-                f"SELECT * FROM nodes WHERE {' AND '.join(base_where or ['1=1'])} ORDER BY id LIMIT ? OFFSET ?",
-                [*base_params, limit, offset],
+                f"SELECT * FROM nodes WHERE {' AND '.join(base_where or ['1=1'])} ORDER BY id LIMIT ?",
+                [*base_params, scan_limit],
             ).fetchall()
-            add_rows(rows, 0.5, "all")
-            total = self._count_nodes_where(base_where, base_params)
-            return {"results": results, "total": total}
+            add_rows(rows, 0.5, "all", "all")
 
+        results = [
+            item for item in merged.values()
+            if item.get("score", 0.0) >= min_score
+        ]
+        exact_name_paths = {
+            item.get("file_path", "")
+            for item in results
+            if "exact_name" in item.get("match_sources", [])
+        }
+        ambiguous = self._is_ambiguous(results, exact_name_paths)
+        results.sort(
+            key=lambda item: self._search_sort_key(
+                item,
+                query_mentions_test=query_mentions_test,
+                include_test_only=include_test_only,
+            )
+        )
         total = len(results)
-        return {"results": results[offset:offset + limit], "total": total}
+        paginated = results[offset:offset + requested_limit]
+        for item in paginated:
+            item["truncated"] = total > offset + requested_limit
+        response: dict[str, Any] = {
+            "results": paginated,
+            "total": total,
+            "ambiguous": ambiguous,
+        }
+        if ambiguous:
+            response["candidates"] = results[:3]
+            response["warning"] = "Ambiguous symbol match. Use symbol_id for exact lookup."
+        return response
 
     @staticmethod
     def _fts_query(query: str) -> str:
@@ -440,33 +544,210 @@ class SqliteStore:
     @staticmethod
     def _node_result(node: dict, score: float, sources: list[str]) -> dict[str, Any]:
         location = node.get("location") or {}
+        docstring = node.get("docstring") or ""
         return {
             "id": node["id"],
             "symbol_id": node["id"],
             "name": node["name"],
+            "qualified_name": node.get("qualified_name", ""),
             "type": node["type"],
             "file_path": node.get("file_path", ""),
-            "score": score,
+            "score": round(max(0.0, min(float(score), 1.0)), 4),
             "match_sources": sources,
             "tags": node.get("tags", []),
             "line_start": location.get("line_start"),
             "line_end": location.get("line_end"),
+            "confidence": float(node.get("confidence", 1.0) or 1.0),
+            "layer": _assign_search_layer(node.get("file_path", "")),
+            "signature": node.get("signature"),
+            "docstring_excerpt": docstring[:200] if docstring else None,
+            "truncated": False,
         }
 
     @staticmethod
     def _node_filter_sql(
         type_filter: str | None,
-        file_filter: str | None,
+        types: list[str] | None = None,
+        file_filter: str | None = None,
+        file_path: str | None = None,
+        path_prefix: str | None = None,
+        exclude_external: bool = True,
     ) -> tuple[list[str], list[Any]]:
         where: list[str] = []
         params: list[Any] = []
-        if type_filter:
+        effective_types = list(types or [])
+        if type_filter and type_filter not in effective_types:
+            effective_types.append(type_filter)
+        if effective_types:
+            placeholders = ", ".join("?" for _ in effective_types)
+            where.append(f"type IN ({placeholders})")
+            params.extend(effective_types)
+        elif type_filter:
             where.append("type = ?")
             params.append(type_filter)
+        if exclude_external:
+            where.append("type != ?")
+            params.append("external_symbol")
+        if file_path:
+            where.append("file_path = ?")
+            params.append(file_path)
         if file_filter:
             where.append("file_path LIKE ?")
             params.append(f"%{file_filter}%")
+        if path_prefix:
+            normalized = path_prefix.replace("\\", "/").rstrip("/")
+            where.append("file_path LIKE ?")
+            params.append(f"{normalized}/%")
         return where, params
+
+    @classmethod
+    def _merge_result(
+        cls,
+        merged: dict[str, dict[str, Any]],
+        node: dict,
+        score: float,
+        source: str,
+        layer_name: str,
+    ) -> None:
+        symbol_id = node["id"]
+        if symbol_id not in merged:
+            result = cls._node_result(node, score, [source])
+            result["search_layer"] = layer_name
+            merged[symbol_id] = result
+            return
+        current = merged[symbol_id]
+        current["score"] = round(max(float(current.get("score", 0.0)), score), 4)
+        if source not in current["match_sources"]:
+            current["match_sources"].append(source)
+        current["search_layer"] = cls._best_layer(current.get("search_layer", ""), layer_name)
+
+    @staticmethod
+    def _best_layer(current: str, candidate: str) -> str:
+        order = {
+            "exact_symbol_id": 6,
+            "exact_qualified_name": 5,
+            "exact_name": 4,
+            "fts": 3,
+            "like": 2,
+            "fuzzy": 1,
+            "all": 0,
+        }
+        return candidate if order.get(candidate, 0) > order.get(current, 0) else current
+
+    @staticmethod
+    def _passes_search_filters(
+        node: dict,
+        layer: str | None,
+        include_tests: bool,
+        exclude_external: bool,
+    ) -> bool:
+        node_type = node.get("type")
+        file_path = node.get("file_path", "")
+        if exclude_external and node_type == "external_symbol":
+            return False
+        if not include_tests and (node_type == "test" or _is_test_path(file_path)):
+            return False
+        if layer and _assign_search_layer(file_path) != layer:
+            return False
+        return True
+
+    @staticmethod
+    def _score_fts_match(node: dict, query: str) -> tuple[float, list[str]]:
+        q = query.lower()
+        tags = " ".join(node.get("tags", []) or []).lower()
+        fields = {
+            "fts_name": (node.get("name") or "").lower(),
+            "fts_qualified_name": (node.get("qualified_name") or "").lower(),
+            "fts_path": (node.get("file_path") or "").lower(),
+            "fts_signature": (node.get("signature") or "").lower(),
+            "fts_docstring": (node.get("docstring") or "").lower(),
+            "fts_tags": tags,
+        }
+        weights = {
+            "fts_name": 0.8,
+            "fts_qualified_name": 0.78,
+            "fts_path": 0.65,
+            "fts_signature": 0.55,
+            "fts_docstring": 0.45,
+            "fts_tags": 0.45,
+        }
+        sources = [source for source, value in fields.items() if q in value]
+        if not sources:
+            sources = ["fts"]
+        score = max(weights.get(source, 0.6) for source in sources)
+        return score, sources
+
+    @staticmethod
+    def _score_like_match(node: dict, query: str) -> tuple[float, list[str]]:
+        q = query.lower()
+        tags = " ".join(node.get("tags", []) or []).lower()
+        checks = [
+            ("like_symbol_id", node.get("id", ""), 0.7),
+            ("like_name", node.get("name", ""), 0.68),
+            ("like_qualified_name", node.get("qualified_name", ""), 0.62),
+            ("like_path", node.get("file_path", ""), 0.55),
+            ("like_signature", node.get("signature", ""), 0.5),
+            ("like_docstring", node.get("docstring", ""), 0.45),
+            ("like_tags", tags, 0.45),
+        ]
+        matched = [
+            (source, score)
+            for source, value, score in checks
+            if q in str(value).lower()
+        ]
+        if not matched:
+            return 0.4, ["like"]
+        return max(score for _, score in matched), [source for source, _ in matched]
+
+    @staticmethod
+    def _score_fuzzy_match(name: str, query: str) -> float:
+        compact_name = name.replace("_", "").lower()
+        compact_query = "".join(query.split()).replace("_", "").lower()
+        if not compact_query:
+            return 0.2
+        ratio = difflib.SequenceMatcher(None, compact_query, compact_name).ratio()
+        return round(0.2 + (0.4 * ratio), 4)
+
+    @staticmethod
+    def _search_sort_key(
+        item: dict[str, Any],
+        query_mentions_test: bool,
+        include_test_only: bool,
+    ) -> tuple[Any, ...]:
+        sources = item.get("match_sources", [])
+        exact_rank = 99
+        if "exact_symbol_id" in sources:
+            exact_rank = 0
+        elif "exact_qualified_name" in sources:
+            exact_rank = 1
+        elif "exact_name" in sources:
+            exact_rank = 2
+        is_test = item.get("type") == "test" or _is_test_path(item.get("file_path", ""))
+        is_external = item.get("type") == "external_symbol"
+        is_init = item.get("name") == "__init__" or item.get("file_path", "").endswith("__init__.py")
+        path = item.get("file_path", "")
+        return (
+            exact_rank,
+            0 if (query_mentions_test or include_test_only or not is_test) else 1,
+            0 if not is_external else 1,
+            -(item.get("confidence", 1.0) or 0.0),
+            -(item.get("score", 0.0) or 0.0),
+            len(path),
+            1 if is_init else 0,
+            item.get("symbol_id", ""),
+        )
+
+    @staticmethod
+    def _is_ambiguous(results: list[dict[str, Any]], exact_name_paths: set[str]) -> bool:
+        if len(exact_name_paths) > 1:
+            return True
+        if len(results) < 2:
+            return False
+        sorted_results = sorted(results, key=lambda item: item.get("score", 0.0), reverse=True)
+        top = sorted_results[:3]
+        if len(top) >= 2 and (top[0].get("score", 0.0) - top[-1].get("score", 0.0)) < 0.05:
+            return True
+        return False
 
     def _count_nodes_where(self, where: list[str], params: list[Any]) -> int:
         row = self.conn.execute(
