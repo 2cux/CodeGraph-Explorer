@@ -1,6 +1,18 @@
 # --- CodeGraph index ---
 .codegraph/
 
+# --- SQLite artifacts ---
+*.sqlite-wal
+*.sqlite-shm
+
+# --- Lock files ---
+*.lock
+
+# --- Temp / Scratch ---
+tmp/
+logs/
+context_packs/
+
 # --- Python ---
 __pycache__/
 *.pyc

@@ -1,0 +1,71 @@
+{
+  "_comment": "Benchmark Regression Gate thresholds. These are set SLIGHTLY BELOW current performance to catch regressions. Update when baseline improves.",
+
+  "recall": {
+    "min_symbol_recall": 0.55,
+    "min_file_recall": 0.75,
+    "min_recall_pass_rate": 0.58
+  },
+
+  "tokens": {
+    "min_token_reduction": 0.10,
+    "min_compact_vs_standard_reduction": 0.30,
+    "max_compact_payload_tokens": 2000,
+    "max_full_task_token_estimate": 3000
+  },
+
+  "grep_read": {
+    "min_grep_read_reduction": 0.40,
+    "min_files_read_reduction": 0.30
+  },
+
+  "search": {
+    "min_top1_accuracy": 0.50,
+    "max_ambiguous_rate": 0.25,
+    "min_search_recall": 0.40
+  },
+
+  "edges": {
+    "max_false_confirmed_edges": 0,
+    "max_unresolved_in_confirmed": 0,
+    "max_name_only_confirmed": 0
+  },
+
+  "impact": {
+    "require_confirmed_possible_separation": true,
+    "require_tests_separate_group": true,
+    "max_confirmed_files": 20
+  },
+
+  "mcp_protocol": {
+    "require_stdout_clean": true,
+    "require_index_status_present": true,
+    "require_index_health_present": true,
+    "compact_forbid_full_source": true,
+    "compact_forbid_full_evidence": true,
+    "compact_forbid_markdown_body": true
+  },
+
+  "evidence_pack": {
+    "require_no_reading_plan": true,
+    "require_no_agent_instructions": true,
+    "require_no_recommended_context": true,
+    "require_no_implementation_plan": true,
+    "require_structured_evidence_only": true
+  },
+
+  "incremental": {
+    "require_cosmetic_skip_rebuild": true,
+    "require_structural_partial_update": true,
+    "require_deleted_file_cleanup": true,
+    "require_no_full_replace_degradation": true,
+    "require_storage_counts_consistent": true
+  },
+
+  "storage": {
+    "max_dangling_edges": 0,
+    "require_fts_count_match": true,
+    "require_validation_status_ok": true,
+    "require_integrity_status_ok": true
+  }
+}
