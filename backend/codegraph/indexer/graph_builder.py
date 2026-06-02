@@ -1,6 +1,7 @@
 """Graph builder that orchestrates indexing and constructs the code graph."""
 
 from pathlib import Path
+from typing import Any
 
 from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata, NodeType, Resolution
 from codegraph.graph.confidence import get_confidence
@@ -52,6 +53,13 @@ def build_index_from_paths(root: Path, paths: list[Path]) -> tuple[list[GraphNod
         rel = _rel_path(root, path)
         tree = parse_file(path)
         nodes = extract_symbols(rel, tree)
+
+        # Phase 1: ensure language_id is set on all nodes
+        for node in nodes:
+            if not node.language_id or node.language_id == "python":
+                node.language_id = "python"
+            node.language = node.language_id
+
         call_edges = extract_calls(tree, path, rel_path=rel, edge_counter=edge_counter)
 
         all_nodes.extend(nodes)
@@ -398,3 +406,122 @@ def _build_test_relationships(
 def _next_eid(counter: list[int]) -> str:
     counter[0] += 1
     return f"edge_{counter[0]:04d}"
+
+
+# ── Phase 1: Language abstraction pipeline ─────────────────────────────
+
+def build_index_v2(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
+    """Build the code graph using the language abstraction layer.
+
+    Uses :class:`~codegraph.language_support.LanguageRegistry` to detect
+    the language of each file, then routes to the appropriate extractor
+    and resolver.
+
+    This produces identical output to :func:`build_index_from_paths` for
+    Python files, with the addition of ``provenance`` on every edge and
+    ``language_id`` / ``framework_id`` on every node.
+
+    Unsupported files are skipped without error.
+    """
+    from codegraph.language_support.registry import get_registry
+    from codegraph.language_support.python.extractor import PythonExtractor
+    from codegraph.language_support.python.resolver import PythonResolver
+
+    registry = get_registry()
+    python_extractor = PythonExtractor()
+    python_resolver = PythonResolver()
+
+    # Scan for supported files (currently only .py)
+    files: list[Path] = []
+    for py_file in scan_python_files(root):
+        if registry.is_supported(py_file):
+            files.append(py_file)
+
+    if not files:
+        return [], []
+
+    # Phase 1a: Per-file extraction
+    extractor_results: list[Any] = []
+    all_nodes: list[GraphNode] = []
+    all_edges: list[GraphEdge] = []
+
+    for path in files:
+        rel = _rel_path(root, path)
+
+        # Detect language and route to appropriate extractor
+        lang_id = registry.detect(rel)
+        if lang_id is None:
+            continue  # unsupported file — skip without error
+
+        if lang_id == "python":
+            result = python_extractor.extract(
+                file_path=str(path),
+                project_root=str(root),
+            )
+            extractor_results.append(result)
+
+            # Collect symbols from this extraction
+            all_nodes.extend(result.symbols)
+
+            # Collect raw edges (attached by the extractor for transport)
+            if hasattr(result, '_raw_edges'):
+                all_edges.extend(result._raw_edges)
+
+    # Phase 1b: Cross-file resolution
+    if extractor_results:
+        resolved = python_resolver.resolve(extractor_results)
+
+        # Merge resolved confirmed edges into the edge set
+        # (ResolvedEdge → GraphEdge conversion)
+        all_edges = _merge_resolved_edges(all_edges, resolved)
+
+    # Deduplicate
+    all_edges = _deduplicate_edges(all_edges)
+
+    return all_nodes, all_edges
+
+
+def _merge_resolved_edges(
+    raw_edges: list[GraphEdge],
+    resolved: Any,  # ResolvedEdges
+) -> list[GraphEdge]:
+    """Merge resolved confirmed edges into the raw edge set.
+
+    Existing raw edges (from extractors) are preserved. Resolved confirmed
+    edges that add provenance information are added or replace their
+    raw equivalents.
+    """
+    from codegraph.language_support.resolver import Provenance
+
+    # Build lookup for existing edges
+    edge_keys: dict[tuple[str, str, str], GraphEdge] = {}
+    for e in raw_edges:
+        key = (e.source, e.target, e.type.value if hasattr(e.type, 'value') else str(e.type))
+        edge_keys[key] = e
+
+    # Apply provenance from confirmed resolved edges
+    for re in resolved.confirmed:
+        key = (re.source, re.target, re.edge_type.value if hasattr(re.edge_type, 'value') else str(re.edge_type))
+        if key in edge_keys:
+            existing = edge_keys[key]
+            # Add provenance to existing edge
+            if existing.metadata:
+                existing.metadata.provenance = re.provenance.value if hasattr(re.provenance, 'value') else str(re.provenance)
+        else:
+            # New confirmed edge — create GraphEdge
+            edge_id = f"edge_resolved_{len(raw_edges):04d}"
+            meta = EdgeMetadata(
+                resolution=re.resolution,
+                provenance=re.provenance.value if hasattr(re.provenance, 'value') else str(re.provenance),
+                evidence=re.evidence,
+            )
+            raw_edges.append(GraphEdge(
+                id=edge_id,
+                type=re.edge_type,
+                source=re.source,
+                target=re.target,
+                confidence=re.confidence,
+                metadata=meta,
+            ))
+
+    return raw_edges

@@ -113,7 +113,9 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "relation", "distance", "direction",
     # Confidence / resolution
     "confidence", "confidence_level", "resolution", "resolution_category",
-    "reason_codes", "reason_code",
+    "reason_codes", "reason_code", "provenance",
+    # Language / framework (Phase 1 multi-language)
+    "language_id", "language", "framework_id",
     # Layer / grouping
     "layer", "group", "role", "groups", "counts",
     # Warnings & status
@@ -263,6 +265,13 @@ def _get_capabilities() -> dict[str, Any]:
     """Return capability metadata for the current index."""
     caps: dict[str, Any] = dict(CAPABILITIES)
     caps["limitations"] = list(LIMITATIONS)
+    # Phase 1: use LanguageRegistry for language list
+    try:
+        from codegraph.language_support.registry import get_registry
+        registry = get_registry()
+        caps["languages"] = registry.language_ids()
+    except Exception:
+        pass  # fall back to hardcoded list in CAPABILITIES
     if _store is not None:
         caps["index_stats"] = {
             "symbols": len(_store.all_nodes()),
@@ -1346,6 +1355,7 @@ def search_symbols(
     sort_by: str = "relevance",
     response_mode: str = "compact",
     include_explanations: bool = False,
+    language_id: str | None = None,
     # Legacy params for backward compat
     type_filter: str | None = None,
     file_filter: str | None = None,
@@ -1373,6 +1383,7 @@ def search_symbols(
         sort_by: Sort order — "relevance" (default), "confidence", "file_path", "name"
         response_mode: "compact" (default) or "standard"
         include_explanations: If true, include reason text and evidence (default false)
+        language_id: Filter by language (e.g. "python"). Default: no filter.
     """
     effective_limit = max(1, min(limit or max_results or 20, 100))
     effective_include_tests = include_tests if exclude_tests is None else not exclude_tests
@@ -1414,6 +1425,7 @@ def search_symbols(
                 limit=effective_limit + offset,
                 use_fts=True,
                 fuzzy=fuzzy,
+                language_id=language_id,
             )
         finally:
             if isinstance(query_store, SqliteStore):

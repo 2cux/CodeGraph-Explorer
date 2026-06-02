@@ -28,6 +28,9 @@ def _row_to_node(row: sqlite3.Row) -> dict:
             data["tags"] = json.loads(data["tags"])
         except json.JSONDecodeError:
             data["tags"] = [data["tags"]] if data["tags"] else []
+    # Phase 1: normalize language_id — fall back to legacy 'language' column
+    if not data.get("language_id"):
+        data["language_id"] = data.get("language", "python")
     return data
 
 
@@ -36,9 +39,15 @@ def _row_to_edge(row: sqlite3.Row) -> dict:
     if isinstance(data.get("source_location"), str):
         data["source_location"] = json.loads(data["source_location"])
     if isinstance(data.get("edge_metadata"), str):
-        data["metadata"] = json.loads(data.pop("edge_metadata"))
+        meta = json.loads(data.pop("edge_metadata"))
+        # Normalize provenance: may be stored in edge_metadata JSON
+        # or as a top-level column (future migration).
+        data["metadata"] = meta
     else:
         data.pop("edge_metadata", None)
+    # If provenance is stored as top-level column, pass it through
+    if "provenance" in data and data.get("metadata") and not data["metadata"].get("provenance"):
+        data["metadata"]["provenance"] = data["provenance"]
     return data
 
 
@@ -87,6 +96,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     file_path TEXT DEFAULT '',
     module TEXT DEFAULT '',
     language TEXT DEFAULT 'python',
+    language_id TEXT DEFAULT 'python',
+    framework_id TEXT,
     location TEXT,
     signature TEXT,
     docstring TEXT,
@@ -95,6 +106,15 @@ CREATE TABLE IF NOT EXISTS nodes (
     tags TEXT DEFAULT '[]',
     metadata TEXT DEFAULT '{}'
 );
+"""
+
+# Migration DDL for databases created before Phase 1 multi-language refactoring.
+MIGRATE_NODES_LANGUAGE_ID = """
+ALTER TABLE nodes ADD COLUMN language_id TEXT DEFAULT 'python';
+"""
+
+MIGRATE_NODES_FRAMEWORK_ID = """
+ALTER TABLE nodes ADD COLUMN framework_id TEXT;
 """
 
 CREATE_EDGES = """
@@ -175,6 +195,8 @@ class SqliteStore:
         c.executescript(CREATE_META)
         c.executescript(CREATE_NODE_INDEXES)
         c.executescript(CREATE_EDGE_INDEXES)
+        # Phase 1 multi-language migration: add columns to existing databases
+        self._migrate_schema(c)
         if self.supports_fts5():
             try:
                 c.executescript(CREATE_SYMBOLS_FTS)
@@ -186,6 +208,27 @@ class SqliteStore:
             self.fts_warning = "FTS5 unavailable; falling back to LIKE search"
         self.set_meta("schema_version", SUPPORTED_SCHEMA_VERSION)
         c.commit()
+
+    def _migrate_schema(self, c: sqlite3.Connection) -> None:
+        """Add columns introduced in Phase 1 multi-language refactoring.
+
+        Uses ALTER TABLE ADD COLUMN which is a no-cost metadata operation
+        in SQLite when a default is provided.
+        """
+        existing_cols = {
+            row[1] for row in
+            c.execute("PRAGMA table_info('nodes')").fetchall()
+        }
+        if "language_id" not in existing_cols:
+            try:
+                c.execute(MIGRATE_NODES_LANGUAGE_ID)
+            except sqlite3.DatabaseError:
+                pass  # column already exists or table doesn't exist yet
+        if "framework_id" not in existing_cols:
+            try:
+                c.execute(MIGRATE_NODES_FRAMEWORK_ID)
+            except sqlite3.DatabaseError:
+                pass
 
     def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -264,11 +307,11 @@ class SqliteStore:
             c,
             """INSERT OR REPLACE INTO nodes
                (id, type, name, qualified_name, display_name, file_path,
-                module, language, location, signature, docstring,
+                module, language, language_id, framework_id, location, signature, docstring,
                 code_preview, visibility, tags, metadata)
                VALUES
                (:id, :type, :name, :qualified_name, :display_name, :file_path,
-                :module, :language, :location, :signature, :docstring,
+                :module, :language, :language_id, :framework_id, :location, :signature, :docstring,
                 :code_preview, :visibility, :tags, :metadata)""",
             [
                 {
@@ -280,6 +323,8 @@ class SqliteStore:
                     "file_path": n.get("file_path", ""),
                     "module": n.get("module", ""),
                     "language": n.get("language", "python"),
+                    "language_id": n.get("language_id", n.get("language", "python")),
+                    "framework_id": n.get("framework_id"),
                     "location": json.dumps(n["location"]) if n.get("location") else None,
                     "signature": n.get("signature"),
                     "docstring": n.get("docstring"),
@@ -394,6 +439,7 @@ class SqliteStore:
         offset: int = 0,
         use_fts: bool = True,
         fuzzy: bool = True,
+        language_id: str | None = None,
     ) -> dict[str, Any]:
         """Search symbols in SQLite using exact, FTS5, LIKE, then fuzzy passes."""
         q = query.strip()
@@ -418,6 +464,7 @@ class SqliteStore:
             file_path=file_path,
             path_prefix=path_prefix,
             exclude_external=exclude_external,
+            language_id=language_id,
         )
         c = self.conn
 
@@ -552,6 +599,8 @@ class SqliteStore:
             "qualified_name": node.get("qualified_name", ""),
             "type": node["type"],
             "file_path": node.get("file_path", ""),
+            "language_id": node.get("language_id", node.get("language", "python")),
+            "framework_id": node.get("framework_id"),
             "score": round(max(0.0, min(float(score), 1.0)), 4),
             "match_sources": sources,
             "tags": node.get("tags", []),
@@ -572,6 +621,7 @@ class SqliteStore:
         file_path: str | None = None,
         path_prefix: str | None = None,
         exclude_external: bool = True,
+        language_id: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         where: list[str] = []
         params: list[Any] = []
@@ -598,6 +648,10 @@ class SqliteStore:
             normalized = path_prefix.replace("\\", "/").rstrip("/")
             where.append("file_path LIKE ?")
             params.append(f"{normalized}/%")
+        if language_id:
+            where.append("(language_id = ? OR (language_id IS NULL AND language = ?))")
+            params.append(language_id)
+            params.append(language_id)
         return where, params
 
     @classmethod

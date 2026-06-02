@@ -80,6 +80,7 @@ def search_symbols(
     offset: int = 0,
     use_fts: bool = True,
     fuzzy: bool = True,
+    language_id: str | None = None,
 ) -> dict:
     """Search for symbols by name, file path, or docstring.
 
@@ -103,6 +104,7 @@ def search_symbols(
             offset=offset,
             use_fts=use_fts,
             fuzzy=fuzzy,
+            language_id=language_id,
         )
 
     nodes = store.search_nodes(query)

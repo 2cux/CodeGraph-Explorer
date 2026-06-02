@@ -139,6 +139,10 @@ class EdgeMetadata(BaseModel):
     is_dynamic: bool = False
     reason: str | None = None
     evidence: dict[str, Any] | None = None
+    provenance: str | None = None
+    """How the edge was discovered — one of ``Provenance`` enum values:
+    ``ast``, ``import_resolver``, ``type_resolver``, ``framework_resolver``,
+    ``heuristic``, ``external_index``."""
 
 
 # ── Repo model ──────────────────────────────────────────────────────
@@ -172,6 +176,11 @@ class GraphNode(BaseModel):
     file_path: str = ""
     module: str = ""
     language: str = "python"
+    language_id: str = "python"
+    """Language identifier (e.g. ``python``, ``typescript``).
+    Added in Phase 1 multi-language refactoring."""
+    framework_id: str | None = None
+    """Framework identifier (e.g. ``fastapi``, ``django``) or ``None``."""
     location: Location | None = None
     signature: str | None = None
     docstring: str | None = None
