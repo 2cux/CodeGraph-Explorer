@@ -116,6 +116,18 @@ class IndexStateStore:
         }
         self.save(current)
 
+    def record_change_summary(self, summary: dict[str, int]) -> None:
+        """Record the last change classification summary."""
+        current = self.load()
+        current["last_change_summary"] = summary
+        self.save(current)
+
+    def record_incremental_stats(self, stats: dict) -> None:
+        """Record performance stats from the last incremental index run."""
+        current = self.load()
+        current["last_incremental_stats"] = stats
+        self.save(current)
+
     @staticmethod
     def _default_state() -> dict:
         return {
@@ -133,5 +145,23 @@ class IndexStateStore:
                 "enabled": False,
                 "started_at": None,
                 "debounce_ms": 500,
+            },
+            "last_change_summary": {
+                "none": 0,
+                "cosmetic": 0,
+                "structural": 0,
+                "added": 0,
+                "deleted": 0,
+            },
+            "last_incremental_stats": {
+                "changed_files": 0,
+                "reparsed_files": 0,
+                "dependent_files": 0,
+                "deleted_nodes": 0,
+                "inserted_nodes": 0,
+                "deleted_edges": 0,
+                "inserted_edges": 0,
+                "duration_ms": 0,
+                "full_replace": False,
             },
         }

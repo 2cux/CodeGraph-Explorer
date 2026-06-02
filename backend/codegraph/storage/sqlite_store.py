@@ -213,10 +213,15 @@ class SqliteStore:
 
     # ── Nodes ──────────────────────────────────────────────────────────
 
-    def save_nodes(self, nodes: list[dict]) -> None:
+    def save_nodes(self, nodes: list[dict], commit: bool = True) -> None:
         """Insert or replace a batch of nodes.
 
         Each dict should have keys matching the GraphNode model fields.
+
+        Args:
+            nodes: List of node dicts to upsert.
+            commit: If True (default), commit after saving. Set to False
+                    when calling inside a larger transaction.
         """
         c = self.conn
         safe_executemany(
@@ -251,7 +256,8 @@ class SqliteStore:
             ],
         )
         self._sync_fts(nodes)
-        c.commit()
+        if commit:
+            c.commit()
 
     def _sync_fts(self, nodes: list[dict]) -> None:
         if not self.has_fts_table():
@@ -476,8 +482,14 @@ class SqliteStore:
 
     # ── Edges ──────────────────────────────────────────────────────────
 
-    def save_edges(self, edges: list[dict]) -> None:
-        """Insert or replace a batch of edges."""
+    def save_edges(self, edges: list[dict], commit: bool = True) -> None:
+        """Insert or replace a batch of edges.
+
+        Args:
+            edges: List of edge dicts to upsert.
+            commit: If True (default), commit after saving. Set to False
+                    when calling inside a larger transaction.
+        """
         c = self.conn
         safe_executemany(
             c,
@@ -498,7 +510,8 @@ class SqliteStore:
                 for e in edges
             ],
         )
-        c.commit()
+        if commit:
+            c.commit()
 
     def query_edges(
         self, filters: dict | None = None
@@ -604,3 +617,131 @@ class SqliteStore:
         if self.has_fts_table():
             c.execute("DELETE FROM symbols_fts")
         c.commit()
+
+    # ── Incremental / patch operations ─────────────────────────────────
+
+    def delete_nodes_by_ids(self, node_ids: list[str]) -> int:
+        """Delete specific nodes and their FTS entries. Returns count removed.
+
+        Does NOT commit — caller must commit/rollback.
+        """
+        if not node_ids:
+            return 0
+        c = self.conn
+        # Delete FTS entries first
+        if self.has_fts_table():
+            for nid in node_ids:
+                c.execute("DELETE FROM symbols_fts WHERE symbol_id = ?", [nid])
+        # Delete nodes (use chunking for large lists)
+        for nid in node_ids:
+            c.execute("DELETE FROM nodes WHERE id = ?", [nid])
+        return len(node_ids)
+
+    def delete_edges_touching_nodes(self, node_ids: list[str]) -> int:
+        """Delete all edges where source OR target is in *node_ids*.
+
+        Does NOT commit — caller must commit/rollback.
+        Returns total count of edges removed.
+        """
+        if not node_ids:
+            return 0
+        c = self.conn
+        removed = 0
+        for nid in node_ids:
+            cur = c.execute(
+                "DELETE FROM edges WHERE source = ? OR target = ?", [nid, nid]
+            )
+            removed += cur.rowcount
+        return removed
+
+    def delete_symbols_fts(self, symbol_ids: list[str]) -> int:
+        """Delete specific FTS entries. Returns count removed.
+
+        Does NOT commit — caller must commit/rollback.
+        """
+        if not self.has_fts_table() or not symbol_ids:
+            return 0
+        c = self.conn
+        removed = 0
+        for sid in symbol_ids:
+            cur = c.execute("DELETE FROM symbols_fts WHERE symbol_id = ?", [sid])
+            removed += cur.rowcount
+        return removed
+
+    def upsert_symbols_fts(self, nodes: list[dict]) -> int:
+        """Insert or update FTS entries for the given nodes.
+
+        Public wrapper around ``_sync_fts``. Does NOT commit.
+        Returns count of nodes upserted.
+        """
+        self._sync_fts(nodes)
+        return len(nodes)
+
+    def dangling_edge_count(self) -> int:
+        """Count edges whose source or target doesn't exist in the nodes table."""
+        c = self.conn
+        row = c.execute(
+            "SELECT COUNT(*) AS cnt FROM edges "
+            "WHERE source NOT IN (SELECT id FROM nodes) "
+            "   OR target NOT IN (SELECT id FROM nodes)"
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def get_node_ids_by_files(self, file_paths: list[str]) -> list[str]:
+        """Get all node IDs belonging to the given file paths."""
+        if not file_paths:
+            return []
+        c = self.conn
+        node_ids: list[str] = []
+        for fp in file_paths:
+            rows = c.execute(
+                "SELECT id FROM nodes WHERE file_path = ?", [fp]
+            ).fetchall()
+            node_ids.extend(r["id"] for r in rows)
+        return node_ids
+
+    def get_dependent_files(
+        self, module_names: list[str],
+    ) -> list[str]:
+        """Find files that import from any of the given module names.
+
+        A file "depends on" a module if it has an ``imports`` edge whose
+        target is an import node with a qualified_name under that module.
+
+        Args:
+            module_names: List of module name prefixes, e.g. ``["app.api.auth"]``.
+
+        Returns:
+            Sorted list of unique file paths (relative) that depend on the modules.
+        """
+        if not module_names:
+            return []
+        c = self.conn
+        dependents: set[str] = set()
+        for mod in module_names:
+            # Find import nodes whose qualified_name starts with this module
+            like_pattern = f"{mod}.%"
+            rows = c.execute(
+                """SELECT DISTINCT e.source
+                   FROM edges e
+                   JOIN nodes n ON e.target = n.id
+                   WHERE e.type = 'imports'
+                     AND (n.qualified_name = ? OR n.qualified_name LIKE ?)""",
+                [mod, like_pattern],
+            ).fetchall()
+            for row in rows:
+                dependents.add(row["source"])
+        return sorted(dependents)
+
+    def node_count_by_files(self, file_paths: list[str]) -> int:
+        """Count total nodes across the given file paths."""
+        if not file_paths:
+            return 0
+        c = self.conn
+        total = 0
+        for fp in file_paths:
+            row = c.execute(
+                "SELECT COUNT(*) AS cnt FROM nodes WHERE file_path = ?", [fp]
+            ).fetchone()
+            total += row["cnt"] if row else 0
+        return total

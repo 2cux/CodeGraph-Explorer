@@ -461,6 +461,26 @@ def _build_index_status() -> dict[str, Any]:
             "edges": _store.edge_count(),
         }
 
+    # Include fingerprint health
+    fingerprint_health: dict[str, Any] | None = None
+    fp_path = cg_dir / "fingerprints.json"
+    if fp_path.exists():
+        try:
+            from codegraph.indexer.fingerprint import FingerprintStore
+            fp_store = FingerprintStore(cg_dir)
+            fps = fp_store.load()
+            fingerprint_health = {
+                "present": True,
+                "count": len(fps),
+            }
+        except Exception:
+            fingerprint_health = {"present": False}
+
+    # Include change_summary from state
+    last_change_summary = state.get("last_change_summary")
+    # Include incremental performance stats
+    last_incremental_stats = state.get("last_incremental_stats")
+
     status_block = {
         "status": result_status,
         "indexed_at": result.indexed_at,
@@ -472,6 +492,12 @@ def _build_index_status() -> dict[str, Any]:
     }
     if watch_status == "error":
         status_block["last_error"] = state.get("last_error")
+    if fingerprint_health is not None:
+        status_block["fingerprint_health"] = fingerprint_health
+    if last_change_summary is not None:
+        status_block["last_change_summary"] = last_change_summary
+    if last_incremental_stats is not None:
+        status_block["last_incremental_stats"] = last_incremental_stats
     return status_block
 
 

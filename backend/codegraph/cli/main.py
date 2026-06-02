@@ -16,7 +16,7 @@ from codegraph.graph import query as graph_query
 from codegraph.graph import impact as graph_impact
 from codegraph.indexer.graph_builder import build_index, build_index_from_paths
 from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
-from codegraph.indexer.status import detect_status, StatusResult
+from codegraph.indexer.status import detect_status, detect_status_with_classification, StatusResult
 from codegraph.storage.file_store import FileStore
 from codegraph.storage.sqlite_store import SqliteStore
 from codegraph.storage.state_store import IndexStateStore
@@ -267,10 +267,30 @@ def _run_incremental_index(
     no_sqlite: bool,
     state_store,  # IndexStateStore
 ) -> None:
-    """Incrementally update the index for changed / added / deleted files."""
+    """Incrementally update the index for changed / added / deleted files.
+
+    Uses true incremental SQLite patch — only affected nodes/edges are
+    deleted and re-inserted. Cross-file dependents are re-resolved.
+    """
+    from codegraph.indexer.incremental import (
+        run_incremental_index,
+        _find_direct_dependents,
+    )
+    from codegraph.indexer.fingerprint import FingerprintStore
+
     store = FileStore(output_dir)
     metadata = store.load_metadata()
-    status_result = detect_status(root_path, metadata)
+
+    # Try classification-based detection
+    fp_store = FingerprintStore(output_dir)
+    stored_fps = fp_store.load()
+
+    if stored_fps:
+        status_result = detect_status_with_classification(
+            root_path, metadata, fp_store,
+        )
+    else:
+        status_result = detect_status(root_path, metadata)
 
     if status_result.status == "missing":
         typer.echo("No existing index found. Run full index first:")
@@ -283,14 +303,40 @@ def _run_incremental_index(
         return
 
     typer.echo(f"Index status: stale")
-    total_changes = status_result.total_changes
 
-    if status_result.changed_files:
-        typer.echo(f"  Changed files: {len(status_result.changed_files)}")
-        for f in status_result.changed_files[:10]:
+    # Show change summary with classification
+    change_summary = status_result.change_summary
+    typer.echo(f"Change summary:")
+    typer.echo(f"  unchanged:  {change_summary['none']}")
+    typer.echo(f"  cosmetic:   {change_summary['cosmetic']}")
+    typer.echo(f"  structural: {change_summary['structural']}")
+    typer.echo(f"  added:      {change_summary['added']}")
+    typer.echo(f"  deleted:    {change_summary['deleted']}")
+    typer.echo()
+
+    # Check for full rebuild recommendation
+    structural_count = len(status_result.structural_files)
+    total_idx = metadata.file_count if metadata else 1
+    if structural_count > 30 or structural_count > 0.3 * max(total_idx, 1):
+        typer.echo(
+            f"Note: {structural_count} structural files changed "
+            f"({total_idx} indexed). Consider running:"
+        )
+        typer.echo(f"  codegraph init --force")
+        typer.echo()
+
+    if status_result.structural_files:
+        typer.echo(f"  Structural files: {len(status_result.structural_files)}")
+        for f in status_result.structural_files[:10]:
+            typer.echo(f"    ~ {f}")
+        if len(status_result.structural_files) > 10:
+            typer.echo(f"    ... and {len(status_result.structural_files) - 10} more")
+    if status_result.cosmetic_files:
+        typer.echo(f"  Cosmetic files: {len(status_result.cosmetic_files)} (skipped)")
+        for f in status_result.cosmetic_files[:5]:
             typer.echo(f"    - {f}")
-        if len(status_result.changed_files) > 10:
-            typer.echo(f"    ... and {len(status_result.changed_files) - 10} more")
+        if len(status_result.cosmetic_files) > 5:
+            typer.echo(f"    ... and {len(status_result.cosmetic_files) - 5} more")
     if status_result.added_files:
         typer.echo(f"  Added files: {len(status_result.added_files)}")
         for f in status_result.added_files[:10]:
@@ -304,63 +350,52 @@ def _run_incremental_index(
         if len(status_result.deleted_files) > 10:
             typer.echo(f"    ... and {len(status_result.deleted_files) - 10} more")
 
-    if total_changes == 0:
+    # Only structural + added + deleted need action
+    actionable = structural_count + len(status_result.added_files) + len(status_result.deleted_files)
+    if actionable == 0:
+        typer.echo("No structural changes to index. Only cosmetic changes detected — skipped.")
         return
 
-    # Load existing graph data
-    existing_nodes = store.load_nodes()
-    existing_edges = store.load_edges()
-    node_adapter = TypeAdapter(list[GraphNode])
-    edge_adapter = TypeAdapter(list[GraphEdge])
-
-    current_nodes = node_adapter.validate_python(existing_nodes)
-    current_edges = edge_adapter.validate_python(existing_edges)
-
-    # 1. Remove nodes/edges for deleted and changed files
-    files_to_remove = set(status_result.deleted_files) | set(status_result.changed_files)
-    removed_node_ids: set[str] = set()
-    if files_to_remove:
-        for f in files_to_remove:
-            removed_node_ids.update(
-                n.id for n in current_nodes if n.file_path == f
-            )
-        current_nodes = [n for n in current_nodes if n.file_path not in files_to_remove]
-        current_edges = [
-            e for e in current_edges
-            if e.source not in removed_node_ids and e.target not in removed_node_ids
-        ]
-
-    # 2. Re-index changed and added files
-    files_to_reindex: list[Path] = []
-    for rel in status_result.changed_files + status_result.added_files:
-        p = root_path / rel
-        if p.exists():
-            files_to_reindex.append(p)
-
-    if files_to_reindex:
-        typer.echo(f"Re-indexing {len(files_to_reindex)} file(s)...")
-        new_nodes, new_edges = build_index_from_paths(root_path, files_to_reindex)
-        current_nodes.extend(new_nodes)
-        current_edges.extend(new_edges)
-        typer.echo(f"  Added {len(new_nodes)} symbols, {len(new_edges)} relationships.")
-
-    # 3. Save updated artifacts via SQLite-first writer
-    try:
-        counts = write_incremental_update(
-            output_dir, current_nodes, current_edges, root_path,
-            removed_files=files_to_remove,
-            no_sqlite=no_sqlite, state_store=state_store,
+    # Find direct dependents for cross-file edge resolution
+    dependent_files: list[str] = []
+    sqlite_path = output_dir / "index.sqlite"
+    if structural_count > 0 and not no_sqlite and sqlite_path.exists():
+        dependent_files = _find_direct_dependents(
+            status_result.structural_files, sqlite_path,
         )
-    except SqliteWriteError as e:
-        typer.echo(f"Error: {e}", err=True)
+        if dependent_files:
+            typer.echo(f"  Dependent files: {len(dependent_files)} (re-resolving cross-file edges)")
+            for f in dependent_files[:5]:
+                typer.echo(f"    ↳ {f}")
+            if len(dependent_files) > 5:
+                typer.echo(f"    ... and {len(dependent_files) - 5} more")
+        typer.echo()
+
+    # Use the shared incremental index logic (true incremental SQLite patch)
+    result = run_incremental_index(
+        root_path, output_dir, store,
+        no_sqlite=no_sqlite, state_store=state_store,
+    )
+
+    if result.status == "error":
+        typer.echo(f"Error: {result.error}", err=True)
         raise typer.Exit(1)
 
+    typer.echo(f"Incremental index updated {actionable} files.")
     typer.echo(f"Updated index written to {output_dir / 'graph.json'}")
-    typer.echo(f"  Total files:    {len({n.file_path for n in current_nodes})}")
-    typer.echo(f"  Total symbols:  {counts['nodes']}")
-    typer.echo(f"  Total edges:    {counts['edges']}")
-    if not no_sqlite and counts.get("fts_symbols", 0) > 0:
-        typer.echo(f"  FTS symbols:    {counts['fts_symbols']}")
+    typer.echo(f"  Total symbols:  {result.total_symbols}")
+    typer.echo(f"  Total edges:    {result.total_edges}")
+    typer.echo(f"  Nodes removed:  {result.deleted_nodes_count}")
+    typer.echo(f"  Nodes inserted: {result.inserted_nodes_count}")
+    typer.echo(f"  Edges removed:  {result.deleted_edges_count}")
+    typer.echo(f"  Edges inserted: {result.inserted_edges_count}")
+    if result.reparsed_files > 0:
+        typer.echo(f"  Files re-parsed:{result.reparsed_files}")
+    if result.dependent_files > 0:
+        typer.echo(f"  Dependents:     {result.dependent_files}")
+    typer.echo(f"  Duration:       {result.duration_ms:.0f}ms")
+    if not no_sqlite:
+        typer.echo(f"  Write mode:     incremental patch (not full replace)")
 
 
 # ── status command ────────────────────────────────────────────────────
@@ -1228,6 +1263,68 @@ def doctor(
                         fail(str(e))
         except Exception as e:
             fail(f"Storage integrity check failed: {e}")
+    else:
+        warn("Skipped because .codegraph is missing")
+    typer.echo()
+
+    # 5c. Fingerprint health
+    typer.echo("5c. Fingerprint health")
+    if cg_dir.exists():
+        fp_path = cg_dir / "fingerprints.json"
+        if not fp_path.exists():
+            warn("fingerprints.json missing")
+            typer.echo(f"     Run: cd {project_root} && codegraph init --force")
+        else:
+            try:
+                from codegraph.indexer.fingerprint import FingerprintStore
+                fp_store = FingerprintStore(cg_dir)
+                fps = fp_store.load()
+                ok(f"fingerprints.json present ({len(fps)} entries)")
+
+                # Check for stale fingerprints
+                stale = [p for p in fps if not (project_root / p).exists()]
+                if stale:
+                    warn(f"{len(stale)} stale fingerprint(s) for deleted files")
+                else:
+                    ok("No stale fingerprints")
+
+                # Check coverage
+                if index_files.get("metadata.json"):
+                    from codegraph.indexer.scanner import scan_python_files, normalize_path
+                    current = {normalize_path(f.relative_to(project_root))
+                               for f in scan_python_files(project_root)}
+                    missing = current - set(fps.keys())
+                    if missing:
+                        warn(f"{len(missing)} file(s) have no fingerprint")
+                        typer.echo(f"     Run: codegraph init --force")
+                    else:
+                        ok("All indexed files have fingerprints")
+            except Exception as e:
+                fail(f"Fingerprint check failed: {e}")
+    else:
+        warn("Skipped because .codegraph is missing")
+    typer.echo()
+
+    # 5d. Incremental performance stats
+    typer.echo("5d. Incremental performance")
+    if cg_dir.exists():
+        state_store = IndexStateStore(cg_dir)
+        state = state_store.load()
+        inc_stats = state.get("last_incremental_stats")
+        if inc_stats and inc_stats.get("duration_ms", 0) > 0:
+            full_replace = inc_stats.get("full_replace", True)
+            mode = "full replace" if full_replace else "incremental patch"
+            ok(f"Last run: {inc_stats.get('changed_files', 0)} changed, "
+               f"{inc_stats.get('reparsed_files', 0)} re-parsed, "
+               f"{inc_stats.get('dependent_files', 0)} dependents")
+            typer.echo(f"     Nodes: {inc_stats.get('deleted_nodes', 0)} deleted, "
+                       f"{inc_stats.get('inserted_nodes', 0)} inserted")
+            typer.echo(f"     Edges: {inc_stats.get('deleted_edges', 0)} deleted, "
+                       f"{inc_stats.get('inserted_edges', 0)} inserted")
+            typer.echo(f"     Duration: {inc_stats.get('duration_ms', 0):.0f}ms")
+            typer.echo(f"     Write mode: {mode}")
+        else:
+            ok("No incremental stats recorded yet")
     else:
         warn("Skipped because .codegraph is missing")
     typer.echo()

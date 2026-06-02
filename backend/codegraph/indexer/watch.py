@@ -295,10 +295,31 @@ class WatchSyncManager:
                     status="fresh",
                     last_incremental_at=now_iso,
                 )
-                print(
-                    f"Index updated: {result.changed_count} changed, "
-                    f"{result.added_count} added, {result.deleted_count} deleted"
-                )
+                cs = result.change_summary or {}
+                cosmetic_skipped = cs.get("cosmetic", 0)
+                if cosmetic_skipped > 0 or result.cosmetic_count > 0:
+                    print(
+                        f"Index updated: {result.structural_count} structural, "
+                        f"{result.added_count} added, {result.deleted_count} deleted "
+                        f"({cosmetic_skipped or result.cosmetic_count} cosmetic changes skipped)"
+                    )
+                else:
+                    print(
+                        f"Index updated: {result.changed_count} changed, "
+                        f"{result.added_count} added, {result.deleted_count} deleted"
+                    )
+                if result.reparsed_files > 0:
+                    print(
+                        f"  ({result.reparsed_files} files re-parsed, "
+                        f"{result.inserted_nodes_count} nodes, "
+                        f"{result.inserted_edges_count} edges, "
+                        f"{result.duration_ms:.0f}ms)"
+                    )
+                if result.recommend_full_rebuild:
+                    print(
+                        f"Note: {result.structural_count} structural files changed. "
+                        f"Consider running 'codegraph init --force' for a full rebuild."
+                    )
             elif result.status == "fresh":
                 self._state_store.update_status(status="fresh")
             elif result.status == "missing":

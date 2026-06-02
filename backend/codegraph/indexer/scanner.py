@@ -96,3 +96,13 @@ def read_file_safe(path: Path, root: Path) -> str | None:
 def compute_fingerprint(path: Path) -> str:
     """Compute a SHA256 fingerprint of a file's content."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def compute_file_hashes(path: Path) -> "FileFingerprint":
+    """Compute all structural hashes for a Python source file.
+
+    Delegates to ``codegraph.indexer.fingerprint.compute_file_hashes``.
+    Returns a ``FileFingerprint`` with all hash fields.
+    """
+    from codegraph.indexer.fingerprint import compute_file_hashes as _compute
+    return _compute(path)

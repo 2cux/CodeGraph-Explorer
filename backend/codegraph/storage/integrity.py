@@ -59,6 +59,9 @@ def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
     # ── State ─────────────────────────────────────────────────────────
     _check_state(cg_dir / "state.json", nodes_json_count, edges_json_count, add)
 
+    # ── Fingerprints ──────────────────────────────────────────────────
+    _check_fingerprints(cg_dir, metadata.file_count if metadata else None, add)
+
     # ── SQLite ────────────────────────────────────────────────────────
     sqlite_nodes: int | None = None
     sqlite_edges: int | None = None
@@ -96,6 +99,16 @@ def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
                         f"symbols_fts row count differs from nodes", fts=fts_count, nodes=sqlite_nodes)
             if store.fts_warning:
                 add("warning", "sqlite.fts.warning", store.fts_warning)
+
+            # Dangling edge check
+            danglers = store.dangling_edge_count()
+            if danglers > 0:
+                add("warning", "sqlite.dangling_edges",
+                    f"{danglers} edge(s) reference non-existent nodes. "
+                    f"Run: codegraph init --force",
+                    dangling_edges=danglers)
+            else:
+                add("ok", "sqlite.dangling_edges", "No dangling edges detected")
         except Exception as e:
             add("error", "index.sqlite", f"index.sqlite unreadable: {e}")
         finally:
@@ -224,3 +237,73 @@ def _check_state(
     if isinstance(stats, dict):
         _compare_count("state.symbols", stats.get("symbols"), nodes_count, add)
         _compare_count("state.edges", stats.get("edges"), edges_count, add)
+
+
+def _check_fingerprints(
+    cg_dir: Path,
+    metadata_file_count: int | None,
+    add,
+) -> None:
+    """Check fingerprints.json health."""
+    from codegraph.indexer.fingerprint import FingerprintStore
+
+    fp_path = cg_dir / "fingerprints.json"
+    if not fp_path.exists():
+        add("warning", "fingerprints",
+            "fingerprints.json missing. Run: codegraph init --force")
+        return
+
+    fp_store = FingerprintStore(cg_dir)
+    try:
+        fps = fp_store.load()
+    except Exception:
+        add("warning", "fingerprints", "fingerprints.json unreadable")
+        return
+
+    fp_count = len(fps)
+    add("ok", "fingerprints.count", f"fingerprints.json entries={fp_count}",
+        count=fp_count)
+
+    # Compare count with metadata file count
+    if metadata_file_count is not None:
+        if fp_count == metadata_file_count:
+            add("ok", "fingerprints.vs_metadata",
+                f"fingerprint count matches metadata file_count ({fp_count})")
+        else:
+            add("warning", "fingerprints.vs_metadata",
+                f"fingerprint count ({fp_count}) != metadata file_count "
+                f"({metadata_file_count})")
+
+    # Check for stale fingerprints (file no longer exists)
+    stale_count = 0
+    missing_count = 0
+    for rel_path in fps:
+        abs_path = cg_dir.parent / rel_path
+        if not abs_path.exists():
+            stale_count += 1
+
+    if stale_count > 0:
+        add("warning", "fingerprints.stale",
+            f"{stale_count} fingerprint(s) for deleted files. "
+            f"Run: codegraph init --incremental",
+            stale=stale_count)
+
+    # Check for missing fingerprints (files exist but no fingerprint)
+    try:
+        from codegraph.indexer.scanner import scan_python_files, normalize_path
+        root = cg_dir.parent
+        current_files = scan_python_files(root)
+        current_rels = {normalize_path(f.relative_to(root)) for f in current_files}
+        fp_rels = set(fps.keys())
+        missing = current_rels - fp_rels
+        if missing:
+            missing_count = len(missing)
+            add("warning", "fingerprints.missing",
+                f"{missing_count} file(s) have no fingerprint. "
+                f"Run: codegraph init --force",
+                missing=missing_count)
+        else:
+            add("ok", "fingerprints.coverage",
+                f"All {len(current_rels)} files have fingerprints")
+    except Exception:
+        pass
