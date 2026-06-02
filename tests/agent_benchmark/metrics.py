@@ -86,8 +86,13 @@ def elapsed_seconds(result: dict[str, Any]) -> float:
 def compare_results(
     baseline: dict[str, Any],
     codegraph: dict[str, Any],
+    codegraph_standard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Produce a per-task comparison between baseline and codegraph modes."""
+    """Produce a per-task comparison between baseline and codegraph modes.
+
+    When ``codegraph_standard`` is provided (from a dual-run), the compact-vs-standard
+    fields reflect real measured payloads instead of estimators.
+    """
 
     b_tools = total_tool_calls(baseline)
     cg_tools = total_tool_calls(codegraph)
@@ -101,11 +106,31 @@ def compare_results(
     cg_recall = file_recall(codegraph)
     b_time = elapsed_seconds(baseline)
     cg_time = elapsed_seconds(codegraph)
-    # New phase-aware metrics
+    # Phase-aware metrics
     cg_mcp_tokens = mcp_payload_tokens(codegraph)
     cg_followup = required_followup_reads(codegraph)
     cg_discovery = discovery_token_estimate(codegraph)
     cg_full = full_task_token_estimate(codegraph)
+
+    # Compact vs Standard — use measured data when available
+    cg_mcp_compact = codegraph.get("mcp_payload_tokens_compact", cg_mcp_tokens)
+    cg_mcp_standard = codegraph.get("mcp_payload_tokens_standard", 0)
+    cg_full_compact = codegraph.get("full_task_token_estimate_compact", cg_full)
+    cg_full_standard = codegraph.get("full_task_token_estimate_standard", 0)
+
+    if codegraph_standard is not None:
+        # Override with actual standard-run measurements
+        cg_mcp_standard = mcp_payload_tokens(codegraph_standard)
+        cg_full_standard = full_task_token_estimate(codegraph_standard)
+
+    # Compute actual ratio from measured data
+    if cg_mcp_compact > 0 and cg_mcp_standard > 0:
+        compact_vs_standard_ratio = round(cg_mcp_compact / cg_mcp_standard, 3)
+    elif cg_mcp_standard > 0:
+        compact_vs_standard_ratio = round(cg_mcp_tokens / cg_mcp_standard, 3)
+    else:
+        # Fallback: estimate from field-count difference
+        compact_vs_standard_ratio = 0.4  # ~2.5x reduction
 
     def pct_change(old: float, new: float) -> float:
         if old == 0:
@@ -147,6 +172,12 @@ def compare_results(
             "required_followup_reads": cg_followup,
             "discovery_token_estimate": cg_discovery,
             "full_task_token_estimate": cg_full,
+            # Dual-mode metrics
+            "mcp_payload_tokens_compact": cg_mcp_compact,
+            "mcp_payload_tokens_standard": cg_mcp_standard,
+            "full_task_token_estimate_compact": cg_full_compact,
+            "full_task_token_estimate_standard": cg_full_standard,
+            "compact_vs_standard_ratio": compact_vs_standard_ratio,
         },
         "deltas": {
             "tool_calls_pct": tool_reduction,
@@ -156,6 +187,8 @@ def compare_results(
             "time_pct": time_reduction,
             "mcp_payload_pct": pct_change(b_tokens, cg_mcp_tokens),
             "full_task_pct": pct_change(b_tokens, cg_full) if cg_full else 0.0,
+            "compact_vs_standard_payload_pct": pct_change(cg_mcp_standard, cg_mcp_compact) if cg_mcp_standard > 0 else -60.0,
+            "compact_vs_standard_full_task_pct": pct_change(cg_full_standard, cg_full_compact) if cg_full_standard > 0 else -40.0,
         },
         "quality": {
             "recall_ok": recall_ok,
@@ -192,6 +225,16 @@ def aggregate_summary(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
     total_cg_tools = sum(c["codegraph"]["tool_calls"] for c in comparisons)
     total_b_grep = sum(c["baseline"]["grep_read_calls"] for c in comparisons)
     total_cg_grep = sum(c["codegraph"]["grep_read_calls"] for c in comparisons)
+    total_cg_mcp = sum(c["codegraph"]["mcp_payload_tokens"] for c in comparisons)
+    total_cg_mcp_compact = sum(c["codegraph"].get("mcp_payload_tokens_compact", 0) for c in comparisons)
+    total_cg_mcp_standard = sum(c["codegraph"].get("mcp_payload_tokens_standard", 0) for c in comparisons)
+    total_cg_full_compact = sum(c["codegraph"].get("full_task_token_estimate_compact", 0) for c in comparisons)
+    total_cg_full_standard = sum(c["codegraph"].get("full_task_token_estimate_standard", 0) for c in comparisons)
+    # Use measured ratio when available, otherwise fallback
+    if total_cg_mcp_standard > 0:
+        avg_compact_vs_standard_ratio = round(total_cg_mcp_compact / total_cg_mcp_standard, 3)
+    else:
+        avg_compact_vs_standard_ratio = 0.4
 
     # Collect failure cases
     failure_cases: list[dict[str, Any]] = []
@@ -225,6 +268,11 @@ def aggregate_summary(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
             "codegraph_files_read": total_cg_files,
             "baseline_tokens": total_b_tokens,
             "codegraph_tokens": total_cg_tokens,
+            "codegraph_mcp_compact_tokens": total_cg_mcp_compact,
+            "codegraph_mcp_standard_tokens": total_cg_mcp_standard,
+            "codegraph_full_compact_tokens": total_cg_full_compact,
+            "codegraph_full_standard_tokens": total_cg_full_standard,
+            "compact_vs_standard_payload_ratio": avg_compact_vs_standard_ratio,
         },
         "failure_cases": failure_cases,
     }

@@ -98,8 +98,59 @@ ERROR_CODES = {
 
 # ── Response modes ────────────────────────────────────────────────────────
 
-ResponseMode = str  # "compact" | "standard"
-VALID_RESPONSE_MODES = {"compact", "standard"}
+ResponseMode = str  # "compact" | "standard" | "full"
+VALID_RESPONSE_MODES = {"compact", "standard", "full"}
+
+# ── Compact field whitelist ────────────────────────────────────────────────
+# In compact mode, only fields in this set are allowed in tool response data.
+# Fields NOT in this list (e.g. full source code, full evidence, long explanations,
+# absolute paths, markdown body) are stripped when response_mode == "compact".
+
+COMPACT_FIELD_WHITELIST: set[str] = {
+    # Core symbol identity
+    "symbol_id", "name", "type", "file_path", "line_start", "line_end",
+    # Relationship signals
+    "relation", "distance", "direction",
+    # Confidence / resolution
+    "confidence", "confidence_level", "resolution", "resolution_category",
+    "reason_codes", "reason_code",
+    # Layer / grouping
+    "layer", "group", "role", "groups", "counts",
+    # Warnings & status
+    "warnings", "truncated", "index_status", "index_health",
+    # Search / scoring
+    "score", "match_sources", "tags", "priority", "entry_type",
+    # Pagination
+    "results", "total", "offset", "limit", "has_more",
+    # Graph structure
+    "center", "target", "nodes", "edges", "filtered_counts", "limits",
+    # Impact structure
+    "risk", "confirmed", "possible", "external", "external_calls",
+    "tests", "related_tests", "suggested_tests",
+    "confirmed_files", "possible_files",
+    "confirmed_impact", "possible_impact",
+    # Count signals
+    "related_tests_count", "selected_context_count",
+    "unresolved_count", "changed_file_count",
+    # Evidence Pack compact fields
+    "pack_id", "task", "entry_points", "related_symbols", "call_graph",
+    "impact", "token_budget",
+    # Repo summary compact fields
+    "stats", "top_modules", "entry_point_candidates", "test_coverage_signal",
+    "capabilities", "repo",
+    # Index status
+    "status", "indexed_at", "index_files", "fingerprint_health",
+    "last_change_summary", "last_incremental_stats",
+    # Envelope
+    "ok", "tool", "data", "error", "code", "message", "details", "meta",
+    "schema_version", "response_mode", "item_count", "estimated_tokens",
+    "max_items", "max_bytes",
+    # Evidence Pack export
+    "exported_at", "markdown_path", "format",
+    # Misc allowed
+    "exact_match", "match_reason", "module", "qualified_name",
+    "signature", "visibility", "label", "callers", "callees",
+}
 
 # ── Reason codes ──────────────────────────────────────────────────────────
 
@@ -299,8 +350,33 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
             "line_start": node.location.line_start if node.location else None,
             "line_end": node.location.line_end if node.location else None,
         }
+        # Docstring excerpt in standard (first 200 chars only)
+        if node.docstring:
+            result["docstring"] = node.docstring[:200]
         return result
-    else:  # standard (fallback, same as standard branch)
+    elif response_mode == "full":
+        # Debug mode — returns all available fields
+        loc = node.location
+        return {
+            "symbol_id": node.id,
+            "name": node.name,
+            "type": node_type,
+            "file_path": node.file_path,
+            "module": node.module,
+            "qualified_name": node.qualified_name,
+            "display_name": node.display_name,
+            "signature": node.signature,
+            "docstring": node.docstring,
+            "code_preview": node.code_preview,
+            "visibility": node.visibility,
+            "tags": node.tags,
+            "metadata": node.metadata,
+            "line_start": loc.line_start if loc else None,
+            "line_end": loc.line_end if loc else None,
+            "column_start": loc.column_start if loc else None,
+            "column_end": loc.column_end if loc else None,
+        }
+    else:  # standard (fallback)
         return {
             "symbol_id": node.id,
             "name": node.name,
@@ -357,6 +433,18 @@ def _serialize_edge(
             base["reason"] = reason or ""
             if evidence:
                 base["evidence"] = evidence
+        return base
+
+    elif response_mode == "full":
+        # Debug mode — returns all available edge metadata
+        if reason_code:
+            base["reason_code"] = reason_code
+        base["reason"] = reason or ""
+        if evidence:
+            base["evidence"] = evidence
+        if edge.metadata:
+            base["call_expr"] = edge.metadata.call_expr
+            base["is_dynamic"] = edge.metadata.is_dynamic
         return base
 
     else:  # standard fallback
@@ -581,15 +669,29 @@ def _respond_ok(
     data: Any,
     tool: str = "",
     warnings: list[dict[str, Any]] | None = None,
+    response_mode: ResponseMode = "compact",
+    item_count: int | None = None,
+    truncated: bool = False,
+    max_items: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Wrap a successful tool result in the standard envelope."""
+    """Wrap a successful tool result in the standard envelope with payload meta."""
+    estimated_tokens = _estimate_payload_tokens(data)
     return {
         "ok": True,
         "tool": tool,
         "data": data,
         "warnings": warnings or [],
         "index_status": _build_index_status(),
-        "meta": {"schema_version": SCHEMA_VERSION},
+        "meta": {
+            "schema_version": SCHEMA_VERSION,
+            "response_mode": response_mode,
+            "item_count": item_count,
+            "estimated_tokens": estimated_tokens,
+            "truncated": truncated,
+            "max_items": max_items,
+            "max_bytes": max_bytes,
+        },
     }
 
 
@@ -1177,6 +1279,79 @@ def _assign_role(
     return "neighbor"
 
 
+# ── Layer assignment ───────────────────────────────────────────────────────
+
+
+def _assign_layer(file_path: str) -> str:
+    """Assign a layer label based on file_path directory heuristics. No LLM.
+
+    Maps directory/name patterns to architectural layers. Pure heuristic —
+    no community detection, no ML. Used in compact outputs for lightweight
+    grouping of symbols and files.
+    """
+    normalized = file_path.replace("\\", "/").lower()
+    # Order matters: more specific patterns first to avoid false matches
+    # (e.g. "codegraph/graph" before "graph/" to prevent matching "codegraph/indexer")
+    layer_map: list[tuple[str, str]] = [
+        ("codegraph/graph/", "graph"), ("codegraph/graph_", "graph"),
+        ("codegraph/indexer", "indexer"), ("indexer/", "indexer"),
+        ("codegraph/storage/", "storage"), ("storage/", "storage"),
+        ("codegraph/context/", "context"),
+        ("codegraph/mcp/", "mcp"), ("mcp_server", "mcp"),
+        ("api/", "api"), ("routes", "api"), ("router", "api"),
+        ("service", "service"), ("services", "service"),
+        ("store/", "storage"),
+        ("context/", "context"), ("evidence", "context"),
+        ("test", "tests"), ("test_", "tests"),
+        ("config", "config"), ("settings", "config"),
+        ("model", "models"), ("schema", "models"),
+        ("persistence", "persistence"), ("repository", "persistence"),
+        ("cli/", "indexer"), ("cli_", "indexer"),
+    ]
+    for pattern, layer in layer_map:
+        if pattern in normalized:
+            return layer
+    return "unknown"
+
+
+# ── Payload estimation ─────────────────────────────────────────────────────
+
+
+def _estimate_payload_tokens(data: Any) -> int:
+    """Estimate token count for a response payload using char/4 heuristic."""
+    try:
+        json_str = json.dumps(data, default=str, ensure_ascii=False)
+        return max(len(json_str) // 4, 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+# ── Compact whitelist filtering ─────────────────────────────────────────────
+
+
+def _apply_compact_whitelist(data: dict[str, Any]) -> dict[str, Any]:
+    """Recursively filter dict keys to only allow COMPACT_FIELD_WHITELIST fields.
+
+    This is an optional defensive pass — individual serialization functions
+    should already only emit whitelisted fields in compact mode. This filter
+    provides a safety net against regressions.
+    """
+    result: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in COMPACT_FIELD_WHITELIST:
+            continue
+        if isinstance(value, dict):
+            result[key] = _apply_compact_whitelist(value)
+        elif isinstance(value, list):
+            result[key] = [
+                _apply_compact_whitelist(v) if isinstance(v, dict) else v
+                for v in value
+            ]
+        else:
+            result[key] = value
+    return result
+
+
 # ── Tool: search_symbols ──────────────────────────────────────────────────
 
 
@@ -1189,7 +1364,7 @@ def search_symbols(
     exact: bool = False,
     fuzzy: bool = True,
     exclude_tests: bool = True,
-    limit: int = 10,
+    limit: int = 20,
     offset: int = 0,
     sort_by: str = "relevance",
     response_mode: str = "compact",
@@ -1209,13 +1384,13 @@ def search_symbols(
         exact: If true, only return exact name matches (default false)
         fuzzy: If true, use fuzzy matching (default true)
         exclude_tests: Exclude test symbols from results (default true)
-        limit: Maximum results (default 10)
+        limit: Maximum results (default 20, max 100)
         offset: Pagination offset (default 0)
         sort_by: Sort order — "relevance" (default), "confidence", "file_path", "name"
         response_mode: "compact" (default) or "standard"
         include_explanations: If true, include reason text and evidence (default false)
     """
-    effective_limit = max(1, min(limit or max_results or 10, 100))
+    effective_limit = max(1, min(limit or max_results or 20, 100))
     if response_mode not in VALID_RESPONSE_MODES:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
@@ -1962,7 +2137,8 @@ def get_neighbors(
     expected_type: str | None = None,
     path_hint: str | None = None,
     depth: int = 1,
-    max_nodes: int = 25,
+    max_nodes: int = 40,
+    max_edges: int = 80,
     edge_types: str | None = None,
     min_confidence: float = 0.6,
     direction: str = "both",
@@ -1986,7 +2162,8 @@ def get_neighbors(
         expected_type: Hint for expected node type when resolving, e.g. "function"
         path_hint: Hint for expected file path when resolving, e.g. "app/api"
         depth: How many hops to traverse (default 1, max 3)
-        max_nodes: Maximum nodes to return (default 25, max 100)
+        max_nodes: Maximum nodes to return (default 40, max 100)
+        max_edges: Maximum edges to return (default 80, max 200)
         edge_types: Comma-separated edge types, e.g. "calls,tested_by,imports,references"
                     (default "calls,tested_by,imports,references")
         min_confidence: Minimum edge confidence threshold (default 0.6)
@@ -1997,7 +2174,8 @@ def get_neighbors(
         include_explanations: If true, include reason text and evidence (default false)
     """
     effective_depth = max(1, min(depth, 3))
-    effective_max = max(1, min(max_nodes, 100))
+    effective_max_nodes = max(1, min(max_nodes, 100))
+    effective_max_edges = max(1, min(max_edges, 200))
     valid_dirs = {"upstream", "downstream", "both"}
     if direction not in valid_dirs:
         return _respond_error(
@@ -2095,7 +2273,7 @@ def get_neighbors(
         current, dist = queue.popleft()
         if dist >= effective_depth:
             continue
-        if len(visited_nodes) >= effective_max:
+        if len(visited_nodes) >= effective_max_nodes:
             break
 
         edges_to_check: list[GraphEdge] = []
@@ -2118,7 +2296,7 @@ def get_neighbors(
                     low_conf_edges.append(edge)
 
             if edge.confidence >= min_confidence:
-                if neighbor_id not in visited_nodes and len(visited_nodes) < effective_max:
+                if neighbor_id not in visited_nodes and len(visited_nodes) < effective_max_nodes:
                     visited_nodes[neighbor_id] = dist + 1
                     queue.append((neighbor_id, dist + 1))
 
@@ -2143,6 +2321,7 @@ def get_neighbors(
             entry = _serialize_node(n, "standard")
         entry["distance"] = ndist
         entry["role"] = _assign_role(nid, center_node.id, store)
+        entry["layer"] = _assign_layer(n.file_path)
         nodes_out.append(entry)
 
     # Build edge entries
@@ -2163,7 +2342,7 @@ def get_neighbors(
         for e in store.get_incoming_edges(nid):
             if direction in ("both", "upstream") and e.type in allowed_types:
                 all_possible.add(e.source)
-    if len(all_possible - set(visited_nodes.keys())) > 0 and len(visited_nodes) >= effective_max:
+    if len(all_possible - set(visited_nodes.keys())) > 0 and len(visited_nodes) >= effective_max_nodes:
         truncated = True
 
     # Filtered counts (low confidence)
@@ -2244,7 +2423,7 @@ def get_neighbors(
             "filtered_counts": filtered_counts,
             "limits": {
                 "depth": effective_depth,
-                "max_nodes": effective_max,
+                "max_nodes": effective_max_nodes,
                 "min_confidence": min_confidence,
             },
         },
@@ -2396,75 +2575,99 @@ def get_impact(
 
     risk: dict[str, Any] = {
         "level": risk_data.get("level", "unknown"),
+        "reason_codes": unique_codes,
     }
-    if response_mode == "compact":
-        risk["reason_codes"] = unique_codes
-    else:
-        risk["reason_codes"] = unique_codes
+    if response_mode != "compact":
         risk["reasons"] = risk_reasons
 
-    # ── Confirmed impact ───────────────────────────────────────────────
+    # ── Confirmed impact (compact: grouped structure) ────────────────────
     confirmed = impact_result.get("confirmed_impact", {})
     confirmed_symbols = confirmed.get("symbols", [])
     confirmed_files_list = confirmed.get("files", [])[:max_files]
 
-    if response_mode == "compact":
-        confirmed_files_out: list[dict[str, Any]] = []
-        for f in confirmed_files_list:
-            entry: dict[str, Any] = {
-                "file_path": f["file_path"],
-                "reason_code": _impact_reason_to_code(f.get("reason", "")),
-                "confidence": f.get("confidence", 1.0),
-            }
-            if f.get("priority"):
-                entry["priority"] = f["priority"]
-            confirmed_files_out.append(entry)
+    # Build confirmed files output
+    confirmed_files_out: list[dict[str, Any]] = []
+    for f in confirmed_files_list:
+        entry: dict[str, Any] = {
+            "file_path": f["file_path"],
+            "layer": _assign_layer(f["file_path"]),
+            "reason_code": _impact_reason_to_code(f.get("reason", "")),
+            "confidence": f.get("confidence", 1.0),
+        }
+        if f.get("priority"):
+            entry["priority"] = f["priority"]
+        confirmed_files_out.append(entry)
 
-        confirmed_symbols_out: list[dict[str, Any]] = []
-        for s in confirmed_symbols[:20]:
-            entry = {
-                "symbol_id": s["symbol_id"],
-                "name": s.get("name", ""),
-                "type": s.get("type", "unknown"),
-                "file_path": s.get("file_path", ""),
-                "reason_code": s.get("impact_type", "unknown"),
-                "confidence": s.get("confidence", 1.0),
-                "confidence_level": s.get("confidence_level", "unknown"),
-                "distance": s.get("distance", 0),
-            }
-            confirmed_symbols_out.append(entry)
-    else:
-        confirmed_files_out = confirmed_files_list
-        confirmed_symbols_out = confirmed_symbols
+    # Build confirmed symbols output
+    confirmed_symbols_out: list[dict[str, Any]] = []
+    for s in confirmed_symbols[:20]:
+        entry = {
+            "symbol_id": s["symbol_id"],
+            "name": s.get("name", ""),
+            "type": s.get("type", "unknown"),
+            "file_path": s.get("file_path", ""),
+            "layer": _assign_layer(s.get("file_path", "")),
+            "reason_code": s.get("impact_type", "unknown"),
+            "confidence": s.get("confidence", 1.0),
+            "confidence_level": s.get("confidence_level", "unknown"),
+            "distance": s.get("distance", 0),
+        }
+        confirmed_symbols_out.append(entry)
 
-    # ── Possible impact ────────────────────────────────────────────────
-    possible: dict[str, Any] = {"symbols": [], "files": []}
+    # Build confirmed tests
+    related_tests = impact_result.get("related_tests", []) if include_tests else []
+    related_tests_count = len(related_tests)
+    confirmed_tests_out: list[dict[str, Any]] = []
+    if related_tests:
+        confirmed_tests_out = [
+            {
+                "symbol_id": t["symbol_id"],
+                "name": t.get("name", ""),
+                "file_path": t.get("file_path", ""),
+                "layer": _assign_layer(t.get("file_path", "")),
+                "reason_code": t.get("reason", "test_coverage"),
+                "confidence": t.get("confidence", 1.0),
+                "confidence_level": t.get("confidence_level", "unknown"),
+            }
+            for t in related_tests[:20]
+        ]
+
+    # ── Possible impact ──────────────────────────────────────────────────
+    possible_symbols_out: list[dict[str, Any]] = []
+    possible_files_out: list[dict[str, Any]] = []
     if effective_include_possible:
         poss = impact_result.get("possible_impact", {})
         poss_files_list = poss.get("files", [])[:max_files]
-        if response_mode == "compact":
-            poss_files_out: list[dict[str, Any]] = []
-            for f in poss_files_list:
-                poss_files_out.append({
-                    "file_path": f["file_path"],
-                    "reason_code": "low_confidence_edge",
-                    "confidence": f.get("confidence", 0.5),
-                    "priority": f.get("priority", "low"),
-                })
-            possible = {"symbols": poss.get("symbols", [])[:20], "files": poss_files_out}
-        else:
-            possible = {"symbols": poss.get("symbols", []), "files": poss_files_list}
+        for f in poss_files_list:
+            possible_files_out.append({
+                "file_path": f["file_path"],
+                "layer": _assign_layer(f["file_path"]),
+                "reason_code": "low_confidence_edge",
+                "confidence": f.get("confidence", 0.5),
+                "priority": f.get("priority", "low"),
+            })
+        possible_symbols_out = poss.get("symbols", [])[:20]
 
-    # ── Related tests ──────────────────────────────────────────────────
-    related_tests = impact_result.get("related_tests", []) if include_tests else []
-    related_tests_count = len(related_tests)
-
-    # ── External / unresolved ──────────────────────────────────────────
+    # ── External / unresolved ────────────────────────────────────────────
     external = impact_result.get("external_or_unresolved", [])
+    unresolved_out: list[dict[str, Any]] = []
+    external_out: list[dict[str, Any]] = []
+    for ext in external:
+        ext_type = ext.get("type", "unknown")
+        entry = {
+            "symbol_id": ext.get("symbol_id", ""),
+            "name": ext.get("name", ""),
+            "type": ext_type,
+            "reason_code": ext.get("category", "external_or_unresolved"),
+            "confidence": ext.get("confidence", 0.0),
+            "confidence_level": ext.get("confidence_level", "unknown"),
+        }
+        if ext_type == "external_symbol":
+            external_out.append(entry)
+        else:
+            unresolved_out.append(entry)
 
-    # ── Upstream / downstream ──────────────────────────────────────────
-    upstream = impact_result.get("upstream_callers", [])
-    downstream = impact_result.get("downstream_callees", [])
+    truncated = len(confirmed_files_list) >= max_files
 
     fuzzy_warning = (
         f"Fuzzy fallback used: {result['match_reason']} — verify this is the expected symbol"
@@ -2473,25 +2676,43 @@ def get_impact(
     )
     warnings = _collect_warnings(fuzzy_warning)
 
-    truncated = len(confirmed_files_list) >= max_files
-
     if response_mode == "compact":
         data: dict[str, Any] = {
             "target": center_node.id,
             "risk": risk,
-            "confirmed_files": confirmed_files_out,
-            "possible_files": possible.get("files", []),
-            "related_tests_count": related_tests_count,
-            "unresolved_count": len(external),
+            "confirmed": {
+                "files": confirmed_files_out,
+                "symbols": confirmed_symbols_out,
+                "tests": confirmed_tests_out,
+            },
+            "possible": {
+                "files": possible_files_out,
+                "symbols": possible_symbols_out,
+                "unresolved": unresolved_out,
+                "external": external_out,
+            },
             "truncated": truncated,
         }
-        if include_tests and related_tests:
-            # Include test IDs in compact mode for reference
-            data["related_test_ids"] = [
-                {"symbol_id": t["symbol_id"], "name": t.get("name", "")}
-                for t in related_tests[:10]
-            ]
-    else:
+    elif response_mode == "full":
+        data = {
+            "target": center_node.id,
+            "risk": risk,
+            "confirmed": {
+                "files": confirmed_files_out,
+                "symbols": confirmed_symbols_out,
+                "tests": confirmed_tests_out,
+            },
+            "possible": {
+                "files": possible_files_out,
+                "symbols": possible_symbols_out,
+                "unresolved": unresolved_out,
+                "external": external_out,
+            },
+            "upstream_callers": impact_result.get("upstream_callers", []),
+            "downstream_callees": impact_result.get("downstream_callees", []),
+            "truncated": truncated,
+        }
+    else:  # standard
         data = {
             "target": center_node.id,
             "risk": risk,
@@ -2499,9 +2720,12 @@ def get_impact(
                 "symbols": confirmed_symbols_out,
                 "files": confirmed_files_out,
             },
-            "possible_impact": possible,
-            "upstream_callers": upstream,
-            "downstream_callees": downstream,
+            "possible_impact": {
+                "symbols": possible_symbols_out,
+                "files": possible_files_out,
+            },
+            "upstream_callers": impact_result.get("upstream_callers", []),
+            "downstream_callees": impact_result.get("downstream_callees", []),
             "related_tests": related_tests,
             "external_or_unresolved": external,
             "truncated": truncated,
@@ -2511,6 +2735,10 @@ def get_impact(
         data=data,
         tool="codegraph_get_impact",
         warnings=warnings,
+        response_mode=response_mode,
+        item_count=len(confirmed_files_list) + len(confirmed_symbols),
+        truncated=truncated,
+        max_items=max_files,
     )
 
 
@@ -2525,7 +2753,7 @@ def build_context_pack(
     include_tests: bool = True,
     include_code: bool = True,
     mode: str = "summary",
-    response_mode: str = "standard",
+    response_mode: str = "compact",
 ) -> dict[str, Any]:
     """Build a Context Pack for a natural language task.
 
@@ -2546,6 +2774,11 @@ def build_context_pack(
     """
     from codegraph.context.pack_builder import build_context_pack as _build
 
+    # ── Enforce hard max token budget ───────────────────────────────────
+    HARD_MAX_TOKENS = 20000
+    effective_max_tokens = max(100, min(max_tokens or 6000, HARD_MAX_TOKENS))
+    budget_truncated = max_tokens > HARD_MAX_TOKENS
+
     try:
         store, cg_dir = _load_store()
     except RuntimeError as e:
@@ -2559,13 +2792,18 @@ def build_context_pack(
     pack = _build(
         store=store,
         task_description=task,
-        max_tokens=max_tokens,
+        max_tokens=effective_max_tokens,
         depth=depth,
         include_tests=include_tests,
         output_dir=str(output_dir),
     )
 
     pack_dict = json.loads(pack.model_dump_json(exclude_none=True))
+
+    # Determine if pack exceeded budget
+    used_tokens = pack_dict.get("token_budget", {}).get("used_tokens", 0)
+    pack_max = pack_dict.get("token_budget", {}).get("max_tokens", 0)
+    pack_truncated = budget_truncated or (used_tokens > pack_max if pack_max > 0 else False)
 
     if mode == "summary":
         pack_dict = {
@@ -2577,6 +2815,7 @@ def build_context_pack(
                     "name": ep.get("name"),
                     "reason": ep.get("reason"),
                     "file_path": ep.get("file_path"),
+                    "layer": _assign_layer(ep.get("file_path", "")),
                     "score": ep.get("score"),
                 }
                 for ep in pack_dict.get("entry_points", [])
@@ -2618,6 +2857,7 @@ def build_context_pack(
             "related_tests": pack_dict.get("related_tests", []),
             "suggested_tests": pack_dict.get("suggested_tests", []),
             "token_budget": pack_dict.get("token_budget", {}),
+            "truncated": pack_truncated,
         }
     elif mode == "markdown":
         from codegraph.context.markdown_exporter import save_markdown
@@ -2628,10 +2868,22 @@ def build_context_pack(
             "pack_id": pack.pack_id,
             "markdown_path": str(md_path),
             "format": "markdown",
+            "truncated": pack_truncated,
         }
 
+    # Add warnings for truncated budget
+    pack_warnings = _collect_warnings()
+    if budget_truncated:
+        pack_warnings.append({
+            "type": "token_budget_truncated",
+            "severity": "warning",
+            "message": f"Requested max_tokens ({max_tokens}) exceeds hard max ({HARD_MAX_TOKENS}). "
+                       f"Clamped to {HARD_MAX_TOKENS}.",
+            "reason_code": "payload_truncated",
+        })
+
     if response_mode == "compact":
-        # Strip down to essentials
+        # Strip down to essentials — only evidence, no plans/instructions
         pack_dict = {
             "pack_id": pack_dict.get("pack_id"),
             "task": pack_dict.get("task", {}),
@@ -2641,12 +2893,23 @@ def build_context_pack(
             "related_tests_count": len(pack_dict.get("related_tests", [])),
             "selected_context_count": len(pack_dict.get("selected_context", [])),
             "token_budget": pack_dict.get("token_budget", {}),
+            "truncated": pack_dict.get("truncated", False),
         }
+
+    # Apply compact whitelist as safety net
+    if response_mode == "compact":
+        pack_dict = _apply_compact_whitelist(pack_dict)
+
+    item_count = len(pack_dict.get("selected_context", [])) + len(pack_dict.get("entry_points", []))
 
     return _respond_ok(
         data=pack_dict,
         tool="codegraph_build_context_pack",
-        warnings=_collect_warnings(),
+        warnings=pack_warnings,
+        response_mode=response_mode,
+        item_count=item_count,
+        truncated=pack_dict.get("truncated", False),
+        max_items=HARD_MAX_TOKENS,
     )
 
 

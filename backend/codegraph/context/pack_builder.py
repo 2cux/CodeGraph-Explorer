@@ -356,6 +356,10 @@ def _build_ep_evidence(ep: EntryPoint, node: GraphNode | None) -> str:
 # ── Public API ───────────────────────────────────────────────────────
 
 
+# Hard max token budget for Evidence Pack — enforced at builder level
+HARD_MAX_TOKENS = 20000
+
+
 def build_context_pack(
     store: GraphStore,
     task_description: str,
@@ -382,6 +386,9 @@ def build_context_pack(
       9. Pack notes generation
       10. JSON + Markdown export
     """
+    # ── Step 0: Clamp max_tokens to hard max ───────────────────────────
+    max_tokens = max(100, min(max_tokens, HARD_MAX_TOKENS))
+
     # ── Step 1-2: Parse task → intent + keywords + strategy ──────────
     profile = analyze_task(task_description)
     intent = profile.primary_intent

@@ -314,8 +314,9 @@ class TestUnifiedEnvelope:
         assert result["tool"] == "codegraph_get_impact"
         assert "target" in result["data"]
         assert "risk" in result["data"]
-        assert "confirmed_files" in result["data"]  # compact mode
-        assert "related_tests_count" in result["data"]
+        assert "confirmed" in result["data"]  # compact mode: nested structure
+        assert "possible" in result["data"]   # compact mode: nested structure
+        assert "truncated" in result["data"]
 
     def test_get_impact_standard_has_full_structure(self, mcp_setup):
         from codegraph.mcp_server import get_impact
@@ -669,9 +670,10 @@ class TestGetImpact:
     def test_compact_has_confirmed_files(self, mcp_setup):
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login")
-        assert "confirmed_files" in result["data"]
-        assert "possible_files" in result["data"]
-        assert "related_tests_count" in result["data"]
+        assert "confirmed" in result["data"]
+        assert "possible" in result["data"]
+        assert "files" in result["data"]["confirmed"]
+        assert "truncated" in result["data"]
 
     def test_standard_has_full_structure(self, mcp_setup):
         from codegraph.mcp_server import get_impact
@@ -722,11 +724,12 @@ class TestGetImpact:
     def test_confirmed_files_have_fields(self, mcp_setup):
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login")
-        files = result["data"]["confirmed_files"]
+        files = result["data"]["confirmed"]["files"]
         for f in files:
             assert "file_path" in f
             assert "reason_code" in f
             assert "confidence" in f
+            assert "layer" in f  # new: layer assignment
 
     def test_external_not_in_confirmed_standard(self, mcp_setup):
         from codegraph.mcp_server import get_impact
@@ -736,16 +739,17 @@ class TestGetImpact:
         assert confirmed_ids.isdisjoint(external_ids)
 
     def test_impact_mode_conservative_default(self, mcp_setup):
-        """Default impact_mode is conservative — no possible impact."""
+        """Default impact_mode is conservative — possible section always present but empty."""
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login")
-        # conservative mode doesn't include possible by default
-        assert "possible_files" in result["data"]
+        assert "possible" in result["data"]
+        assert "files" in result["data"]["possible"]
 
     def test_impact_mode_balanced_includes_possible(self, mcp_setup):
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True)
-        assert "possible_files" in result["data"]
+        assert "possible" in result["data"]
+        assert "files" in result["data"]["possible"]
 
 
 # ── Test: repo_status ──────────────────────────────────────────────────────
@@ -892,13 +896,13 @@ class TestBuildContextPack:
 
     def test_summary_mode_has_selected_context(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = build_context_pack("add MFA", mode="summary")
+        result = build_context_pack("add MFA", mode="summary", response_mode="standard")
         if result["ok"]:
             assert "selected_context" in result["data"]
 
     def test_selected_context_items_have_evidence(self, mcp_setup):
         from codegraph.mcp_server import build_context_pack
-        result = build_context_pack("add MFA", mode="summary")
+        result = build_context_pack("add MFA", mode="summary", response_mode="standard")
         if result["ok"] and result["data"].get("selected_context"):
             for sc in result["data"]["selected_context"]:
                 assert "confidence" in sc
@@ -1436,33 +1440,32 @@ class TestImpactSeparation:
     """Round 3: get_impact confirmed/possible separation rules."""
 
     def test_siblings_not_in_confirmed(self, mcp_setup):
-        """Sibling symbols (same file, same type) should NOT be in confirmed_files."""
+        """Sibling symbols (same file, same type) should NOT be in confirmed."""
         from codegraph.mcp_server import get_impact
         # logout is a sibling of login in the same file
         result = get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True)
-        confirmed_files = [f["file_path"] for f in result["data"]["confirmed_files"]]
+        confirmed_files = [f["file_path"] for f in result["data"]["confirmed"]["files"]]
         # All confirmed files should be from call chain, not sibling heuristic
         for cf in confirmed_files:
-            # The file itself being in confirmed is fine (target file)
             pass
         # Siblings should not cause additional entries in confirmed
-        assert "confirmed_files" in result["data"]
+        assert "confirmed" in result["data"]
 
     def test_low_confidence_not_in_confirmed(self, mcp_setup):
         """Low confidence edges (< 0.6) should not appear in confirmed."""
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login", min_confidence=0.6)
-        confirmed = result["data"]["confirmed_files"]
+        confirmed = result["data"]["confirmed"]["files"]
         for f in confirmed:
             conf = f.get("confidence", 1.0)
             assert conf >= 0.6, f"Low confidence file in confirmed: {f['file_path']} (confidence={conf})"
 
     def test_possible_files_not_in_confirmed(self, mcp_setup):
-        """possible_files and confirmed_files should be disjoint sets."""
+        """possible files and confirmed files should be disjoint sets."""
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login", impact_mode="balanced", include_possible=True)
-        confirmed_paths = {f["file_path"] for f in result["data"]["confirmed_files"]}
-        possible_paths = {f["file_path"] for f in result["data"].get("possible_files", [])}
+        confirmed_paths = {f["file_path"] for f in result["data"]["confirmed"]["files"]}
+        possible_paths = {f["file_path"] for f in result["data"]["possible"]["files"]}
         overlap = confirmed_paths & possible_paths
         assert len(overlap) == 0, f"Paths appear in both confirmed and possible: {overlap}"
 
@@ -1486,3 +1489,289 @@ class TestImpactSeparation:
         result = get_symbol("app/api/auth.py::login", response_mode="verbose")
         assert not result["ok"]
         assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+
+# ── Test: Response Mode "full" ──────────────────────────────────────────────
+
+
+class TestResponseModeFull:
+    """full mode: returns all fields, must be explicitly requested."""
+
+    def test_full_mode_accepted(self, mcp_setup):
+        """full is a valid response_mode."""
+        from codegraph.mcp_server import get_symbol, get_neighbors
+        result = get_symbol("app/api/auth.py::login", response_mode="full")
+        assert result["ok"] is True
+
+    def test_full_mode_returns_all_node_fields(self, mcp_setup):
+        """full mode serialization includes code_preview, metadata, column info."""
+        from codegraph.mcp_server import get_symbol
+        result = get_symbol("app/api/auth.py::login", response_mode="full", include_source=True,
+                           include_relations=True)
+        if not result["ok"]:
+            return  # might not have matching fixture symbol
+        sym = result["data"]["symbol"]
+        # Full mode includes display_name, full docstring, code_preview
+        assert "display_name" in sym
+        assert "metadata" in sym
+        # Compare with compact — full should have more fields
+        result_c = get_symbol("app/api/auth.py::login", response_mode="compact",
+                             include_source=True, include_relations=True)
+        if result_c["ok"]:
+            sym_c = result_c["data"]["symbol"]
+            assert len(sym) >= len(sym_c), "full mode should have >= fields than compact"
+
+    def test_full_mode_returns_edge_metadata(self, mcp_setup):
+        """full mode edges include call_expr and is_dynamic."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", response_mode="full")
+        if result["ok"] and result["data"]["callers"]:
+            caller = result["data"]["callers"][0]
+            # full mode includes edge details inline
+            assert "confidence" in caller or "edge" in caller
+
+    def test_full_mode_not_default(self, mcp_setup):
+        """Default is compact, full must be explicitly requested."""
+        from codegraph.mcp_server import get_symbol
+        result = get_symbol("app/api/auth.py::login")
+        assert result["ok"] is True
+        # compact mode meta says "compact"
+        assert result["meta"]["response_mode"] == "compact"
+
+
+# ── Test: Compact Whitelist ──────────────────────────────────────────────────
+
+
+class TestCompactWhitelist:
+    """compact mode must not return forbidden fields."""
+
+    def test_compact_no_full_source(self, mcp_setup):
+        """compact mode never includes source code content."""
+        from codegraph.mcp_server import get_symbol
+        result = get_symbol("app/api/auth.py::login", include_source=True)
+        if result["ok"]:
+            sym = result["data"]["symbol"]
+            assert "code_preview" not in sym, "compact must not include code_preview"
+            assert "docstring" not in sym, "compact must not include docstring"
+            assert "metadata" not in sym, "compact must not include metadata"
+
+    def test_compact_no_full_evidence(self, mcp_setup):
+        """compact mode callers never include evidence dict."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", response_mode="compact")
+        if result["ok"] and result["data"]["callers"]:
+            for caller in result["data"]["callers"]:
+                if "edge" in caller:
+                    assert "evidence" not in caller["edge"], "compact edge must not have evidence"
+
+    def test_compact_no_long_explanation(self, mcp_setup):
+        """compact mode never includes long reason text."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", response_mode="compact",
+                            include_explanations=False)
+        if result["ok"] and result["data"]["callers"]:
+            for caller in result["data"]["callers"]:
+                assert "reason" not in caller, "compact must not include reason text"
+
+    def test_compact_has_only_whitelisted_fields(self, mcp_setup):
+        """Whitelist filtering safety net works."""
+        from codegraph.mcp_server import _apply_compact_whitelist, COMPACT_FIELD_WHITELIST
+        # Test whitelist filtering
+        data = {
+            "symbol_id": "test.py::func",
+            "name": "func",
+            "forbidden_field": "value",
+            "source_code": "def func(): pass",
+            "absolute_path": "/home/user/project/test.py",
+        }
+        filtered = _apply_compact_whitelist(data)
+        assert "symbol_id" in filtered
+        assert "name" in filtered
+        assert "forbidden_field" not in filtered
+        assert "source_code" not in filtered
+        assert "absolute_path" not in filtered
+
+    def test_compact_whitelist_is_recursive(self, mcp_setup):
+        """Whitelist filtering applies recursively to nested dicts/lists."""
+        from codegraph.mcp_server import _apply_compact_whitelist
+        data = {
+            "results": [
+                {"symbol_id": "a.py::f", "source_code": "bad", "confidence": 0.9},
+                {"symbol_id": "b.py::g", "raw_ast": "bad2", "confidence": 0.8},
+            ],
+            "forbidden_top": "value",
+        }
+        filtered = _apply_compact_whitelist(data)
+        assert "results" in filtered
+        assert "forbidden_top" not in filtered
+        for item in filtered["results"]:
+            assert "symbol_id" in item
+            assert "confidence" in item
+            assert "source_code" not in item
+            assert "raw_ast" not in item
+
+
+# ── Test: Layer Assignment ───────────────────────────────────────────────────
+
+
+class TestLayerAssignment:
+    """layer is assigned by file_path directory heuristic."""
+
+    def test_layer_from_directory_heuristic(self, mcp_setup):
+        from codegraph.mcp_server import _assign_layer
+        assert _assign_layer("app/api/auth.py") == "api"
+        assert _assign_layer("app/routes/users.py") == "api"
+        assert _assign_layer("app/services/auth_service.py") == "service"
+        assert _assign_layer("backend/codegraph/graph/query.py") == "graph"
+        assert _assign_layer("backend/codegraph/indexer/scanner.py") == "indexer"
+        assert _assign_layer("backend/codegraph/storage/sqlite_store.py") == "storage"
+        assert _assign_layer("backend/codegraph/mcp_server.py") == "mcp"
+        assert _assign_layer("tests/test_auth.py") == "tests"
+        assert _assign_layer("app/config/settings.py") == "config"
+        assert _assign_layer("app/models/user.py") == "models"
+        assert _assign_layer("app/store/token_store.py") == "storage"
+        assert _assign_layer("backend/codegraph/context/pack_builder.py") == "context"
+        assert _assign_layer("main.py") == "unknown"
+
+    def test_layer_in_neighbors_compact(self, mcp_setup):
+        """get_neighbors nodes include layer in compact mode."""
+        from codegraph.mcp_server import get_neighbors
+        result = get_neighbors("app/api/auth.py::login", response_mode="compact")
+        if result["ok"]:
+            for group_name, nodes in result["data"].get("groups", {}).items():
+                for node in nodes:
+                    assert "layer" in node, f"Node {node.get('symbol_id')} missing layer"
+
+    def test_layer_in_impact_compact(self, mcp_setup):
+        """get_impact confirmed files include layer."""
+        from codegraph.mcp_server import get_impact
+        result = get_impact("app/api/auth.py::login")
+        if result["ok"]:
+            for f in result["data"]["confirmed"]["files"]:
+                assert "layer" in f, f"File {f.get('file_path')} missing layer"
+
+    def test_layer_in_repo_summary(self, mcp_setup):
+        """repo_summary does not crash with layer assignment."""
+        from codegraph.mcp_server import repo_summary
+        result = repo_summary()
+        assert result["ok"] is True
+
+
+# ── Test: Payload Meta ───────────────────────────────────────────────────────
+
+
+class TestPayloadMeta:
+    """All responses include payload tracking in meta."""
+
+    def test_response_meta_has_estimated_tokens(self, mcp_setup):
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        assert result["ok"] is True
+        assert "estimated_tokens" in result["meta"]
+        assert result["meta"]["estimated_tokens"] > 0
+
+    def test_response_meta_has_response_mode(self, mcp_setup):
+        from codegraph.mcp_server import get_symbol
+        result = get_symbol("app/api/auth.py::login")
+        assert result["meta"]["response_mode"] == "compact"
+
+    def test_response_meta_has_item_count(self, mcp_setup):
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        assert "item_count" in result["meta"]
+
+    def test_impact_meta_has_truncated(self, mcp_setup):
+        from codegraph.mcp_server import get_impact
+        result = get_impact("app/api/auth.py::login")
+        assert "truncated" in result["meta"]
+        assert "max_items" in result["meta"]
+
+
+# ── Test: Truncation ─────────────────────────────────────────────────────────
+
+
+class TestTruncation:
+    """Tools enforce limits and mark truncation."""
+
+    def test_neighbors_truncated_when_over_max_nodes(self, mcp_setup):
+        """get_neighbors marks truncated when nodes exceed max."""
+        from codegraph.mcp_server import get_neighbors
+        result = get_neighbors("app/api/auth.py::login", max_nodes=1, depth=3)
+        if result["ok"]:
+            assert "truncated" in result["data"]
+
+    def test_impact_truncated_when_over_max_files(self, mcp_setup):
+        """get_impact marks truncated when files exceed max."""
+        from codegraph.mcp_server import get_impact
+        result = get_impact("app/api/auth.py::login", max_files=1)
+        if result["ok"]:
+            assert "truncated" in result["data"]
+
+    def test_context_pack_truncated_when_over_max_tokens(self, mcp_setup):
+        """build_context_pack clamps max_tokens and marks truncated."""
+        from codegraph.mcp_server import build_context_pack
+        # Ask for more than hard max
+        result = build_context_pack("add MFA", max_tokens=50000, mode="summary",
+                                   response_mode="compact")
+        if result["ok"]:
+            # Should be clamped and marked truncated
+            tok = result["data"].get("token_budget", {})
+            assert tok.get("max_tokens", 0) <= 20000, "Token budget should be clamped"
+            assert result["data"].get("truncated") in (True, False)
+
+
+# ── Test: Evidence Pack Forbidden Fields ─────────────────────────────────────
+
+
+class TestEvidencePackForbiddenFields:
+    """Evidence Pack must never include plans, instructions, or advice."""
+
+    def test_no_reading_plan_in_output(self, mcp_setup):
+        """build_context_pack must never produce reading_plan."""
+        from codegraph.mcp_server import build_context_pack
+        for mode in ["summary", "compact"]:
+            result = build_context_pack("add MFA", mode="summary",
+                                       response_mode="compact")
+            if result["ok"]:
+                assert "reading_plan" not in result["data"]
+                assert "reading_plan" not in result
+
+    def test_no_agent_instructions_in_output(self, mcp_setup):
+        """build_context_pack must never produce agent_instructions."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA", mode="summary",
+                                   response_mode="compact")
+        if result["ok"]:
+            assert "agent_instructions" not in result["data"]
+            assert "agent_instructions" not in result
+
+    def test_no_recommended_context_in_compact(self, mcp_setup):
+        """Compact mode strips recommended_context."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA", mode="summary",
+                                   response_mode="compact")
+        if result["ok"]:
+            assert "recommended_context" not in result["data"]
+            for key in result["data"]:
+                assert "plan" not in key.lower(), f"Forbidden key: {key}"
+
+    def test_compact_no_markdown_body(self, mcp_setup):
+        """compact mode never includes markdown body text."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA", mode="summary",
+                                   response_mode="compact")
+        if result["ok"]:
+            assert "markdown_body" not in result["data"]
+            assert "markdown_content" not in result["data"]
+
+    def test_no_implementation_plan_in_output(self, mcp_setup):
+        """Evidence pack must not include implementation_plan."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA", mode="summary",
+                                   response_mode="compact")
+        if result["ok"]:
+            assert "implementation_plan" not in result["data"]
+            assert "recommended_strategy" not in result["data"]
+            assert "do_first" not in result["data"]
+            assert "avoid" not in result["data"]
+            assert "validation_steps" not in result["data"]

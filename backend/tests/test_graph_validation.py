@@ -816,20 +816,29 @@ class TestMCPIntegration:
             mcp_mod._store = old_store
 
     def test_index_health_none_skipped(self):
-        """When no validation report exists, index_health is not set."""
+        """When no validation report exists, index_health is not set.
+
+        ``_build_index_status`` resolves ``.codegraph`` via
+        ``_find_codegraph_dir(_project_root)``, so both ``_project_root``
+        and ``_cg_dir`` must point into the same temp tree.
+        """
         import codegraph.mcp_server as mcp_mod
         old_cg_dir = getattr(mcp_mod, '_cg_dir', None)
+        old_project_root = getattr(mcp_mod, '_project_root', None)
 
         try:
-            # Use a path that definitely has no validation report
             import tempfile
             with tempfile.TemporaryDirectory() as td:
-                cg_dir = Path(td) / ".codegraph"
+                root_dir = Path(td) / "project"
+                root_dir.mkdir()
+                cg_dir = root_dir / ".codegraph"
                 cg_dir.mkdir()
+                mcp_mod._project_root = str(root_dir)
                 mcp_mod._cg_dir = cg_dir
 
                 status = mcp_mod._build_index_status()
-                # Should not have index_health (no report)
+                # Should not have index_health (no validation report in temp dir)
                 assert "index_health" not in status
         finally:
             mcp_mod._cg_dir = old_cg_dir
+            mcp_mod._project_root = old_project_root
