@@ -89,6 +89,26 @@ def write_full_index(
                     "added": 0, "deleted": 0,
                 })
 
+            # Run graph validation
+            try:
+                from codegraph.graph.validation import (
+                    validate_graph, save_validation_report,
+                )
+                val_store = SqliteStore(sqlite_path)
+                val_store.initialize()
+                report = validate_graph(
+                    cg_dir=output_dir, project_root=root_path, store=val_store,
+                )
+                save_validation_report(output_dir, report)
+                if report["status"] == "error":
+                    if state_store is not None:
+                        state_store.update_status(
+                            "error", last_error="Graph validation found fatal issues"
+                        )
+                val_store.close()
+            except Exception:
+                pass  # validation is non-fatal for the write path
+
             return {
                 "nodes": len(json_nodes),
                 "edges": len(json_edges),
@@ -540,6 +560,21 @@ def write_incremental_patch(
             )
             if removed_files:
                 state_store.record_deleted_files(list(removed_files))
+
+        # 9. Lightweight graph validation
+        try:
+            from codegraph.graph.validation import (
+                validate_graph, save_validation_report,
+            )
+            val_store = SqliteStore(sqlite_path)
+            val_store.initialize()
+            report = validate_graph(
+                cg_dir=output_dir, project_root=root_path, store=val_store,
+            )
+            if report["status"] != "ok":
+                save_validation_report(output_dir, report)
+        except Exception:
+            pass  # validation is non-fatal
 
         return {
             "nodes": len(json_nodes),

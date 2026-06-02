@@ -498,6 +498,24 @@ def _build_index_status() -> dict[str, Any]:
         status_block["last_change_summary"] = last_change_summary
     if last_incremental_stats is not None:
         status_block["last_incremental_stats"] = last_incremental_stats
+
+    # Include graph validation health
+    index_health: dict[str, Any] | None = None
+    if cg_dir is not None:
+        try:
+            from codegraph.graph.validation import load_validation_report
+            vr = load_validation_report(cg_dir)
+            if vr is not None:
+                index_health = {
+                    "status": vr["status"],
+                    "generated_at": vr.get("generated_at"),
+                    "issue_counts": vr.get("issue_counts", {}),
+                }
+        except Exception:
+            pass
+    if index_health is not None:
+        status_block["index_health"] = index_health
+
     return status_block
 
 
@@ -537,6 +555,25 @@ def _collect_warnings(
             message=fuzzy_warning,
             reason_code="fuzzy_name_match",
         ))
+
+    # Add index_health warning if validation found issues
+    index_health = index_status.get("index_health")
+    if index_health and index_health.get("status") != "ok":
+        health_status = index_health["status"]
+        severity = "warning" if health_status == "warning" else "error"
+        issue_counts = index_health.get("issue_counts", {})
+        warnings.append(build_warning(
+            "index_health",
+            message=(
+                f"Graph validation status is '{health_status}' "
+                f"({issue_counts.get('warnings', 0)} warnings, "
+                f"{issue_counts.get('fatal', 0)} fatal). "
+                f"Run: codegraph doctor"
+            ),
+            evidence=issue_counts,
+            reason_code=f"index_health_{health_status}",
+        ))
+
     return warnings
 
 

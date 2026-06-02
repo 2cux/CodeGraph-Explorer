@@ -1329,6 +1329,78 @@ def doctor(
         warn("Skipped because .codegraph is missing")
     typer.echo()
 
+    # 5e. Graph health (validation)
+    typer.echo("5e. Graph health")
+    if cg_dir.exists():
+        try:
+            from codegraph.graph.validation import (
+                validate_graph, load_validation_report,
+                save_validation_report,
+            )
+
+            report = load_validation_report(cg_dir)
+            if report is None:
+                # Run fresh validation if no cached report
+                sqlite_path = cg_dir / "index.sqlite"
+                if sqlite_path.exists():
+                    sql_store = SqliteStore(sqlite_path)
+                    sql_store.initialize()
+                    report = validate_graph(
+                        cg_dir=cg_dir, project_root=project_root,
+                        store=sql_store,
+                    )
+                    save_validation_report(cg_dir, report)
+                    sql_store.close()
+                else:
+                    warn("No SQLite index to validate")
+
+            if report:
+                status = report.get("status", "unknown")
+                if status == "ok":
+                    ok(f"Graph validation: {status}")
+                elif status == "warning":
+                    warn(f"Graph validation: {status}")
+                else:
+                    fail(f"Graph validation: {status}")
+
+                issue_counts = report.get("issue_counts", {})
+                typer.echo(
+                    f"     Auto-corrected: {issue_counts.get('auto_corrected', 0)}"
+                )
+                typer.echo(
+                    f"     Dropped:        {issue_counts.get('dropped', 0)}"
+                )
+                typer.echo(
+                    f"     Warnings:       {issue_counts.get('warnings', 0)}"
+                )
+                typer.echo(
+                    f"     Fatal:          {issue_counts.get('fatal', 0)}"
+                )
+
+                stats = report.get("stats", {})
+                typer.echo(
+                    f"     Orphan ratio:       {stats.get('orphan_ratio', 0):.1%}"
+                )
+                typer.echo(
+                    f"     External ratio:     {stats.get('external_ratio', 0):.1%}"
+                )
+                typer.echo(
+                    f"     Low-conf edge ratio:{stats.get('low_confidence_ratio', 0):.1%}"
+                )
+
+                suggested = report.get("suggested_fix")
+                if suggested:
+                    typer.echo(f"     Fix: {suggested}")
+                else:
+                    typer.echo(
+                        f"     Report: {cg_dir / 'validation_report.json'}"
+                    )
+        except Exception as e:
+            warn(f"Could not run graph validation: {e}")
+    else:
+        warn("Skipped because .codegraph is missing")
+    typer.echo()
+
     # 6. MCP config paths
     typer.echo("6. MCP configuration")
     from codegraph.configure import (

@@ -60,6 +60,11 @@ WARNING_TYPES: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "description": "No index found for the project.",
     },
+    "index_health": {
+        "type": "index_health",
+        "severity": "warning",
+        "description": "Graph validation found issues. Run: codegraph doctor.",
+    },
 }
 
 

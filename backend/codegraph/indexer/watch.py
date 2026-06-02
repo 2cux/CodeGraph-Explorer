@@ -325,6 +325,34 @@ class WatchSyncManager:
             elif result.status == "missing":
                 print("Warning: No index found. Run 'codegraph init' first.")
 
+            # Lightweight graph validation after sync
+            if result.status == "updated":
+                try:
+                    from codegraph.graph.validation import (
+                        validate_graph, save_validation_report,
+                    )
+                    from codegraph.storage.sqlite_store import SqliteStore
+
+                    sqlite_path = self._cg_dir / "index.sqlite"
+                    if sqlite_path.exists():
+                        val_store = SqliteStore(sqlite_path)
+                        val_store.initialize()
+                        report = validate_graph(
+                            cg_dir=self._cg_dir,
+                            project_root=self.repo_root,
+                            store=val_store,
+                        )
+                        if report["status"] != "ok":
+                            save_validation_report(self._cg_dir, report)
+                            if report["status"] == "error":
+                                self._state_store.update_status(
+                                    "error",
+                                    last_error="Graph validation found fatal issues",
+                                )
+                        val_store.close()
+                except Exception:
+                    pass  # non-fatal
+
             self._state_store.clear_pending_changes()
 
             if self.on_sync:

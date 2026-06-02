@@ -300,6 +300,29 @@ def run_incremental_index(
     }
     state_store.record_incremental_stats(incremental_stats)
 
+    # ── Graph validation after incremental update ─────────────────────
+    try:
+        from codegraph.graph.validation import (
+            validate_graph, save_validation_report,
+        )
+        from codegraph.storage.sqlite_store import SqliteStore
+
+        val_store = SqliteStore(output_dir / "index.sqlite")
+        val_store.initialize()
+        report = validate_graph(
+            cg_dir=output_dir, project_root=root_path, store=val_store,
+        )
+        if report["status"] == "error":
+            save_validation_report(output_dir, report)
+            state_store.update_status(
+                "error", last_error="Graph validation found fatal issues"
+            )
+        elif report["status"] == "warning":
+            save_validation_report(output_dir, report)
+        val_store.close()
+    except Exception:
+        pass  # non-fatal
+
     # ── Build result ──────────────────────────────────────────────────
     result = IncrementalResult(
         status="updated",
