@@ -35,5 +35,11 @@ benchmark:
 benchmark-gate:
 	python -m tests.agent_benchmark.gate
 
+test:
+	pytest backend/tests/
+
+mcp-check:
+	codegraph serve --mcp --check
+
 demo: install configure init status
 	codegraph context "add MFA to login flow"

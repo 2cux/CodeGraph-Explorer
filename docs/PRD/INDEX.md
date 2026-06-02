@@ -15,7 +15,7 @@
 | 4 | [04-graph-schema.md](04-graph-schema.md) | §12 | Graph Schema（Node/Edge/Confidence） | **实现索引器/图模型时必读** |
 | 5 | [05-evidence-pack-schema.md](05-evidence-pack-schema.md) | §13 | Evidence Pack Schema（可选快照，summary-only） | **实现 Evidence Pack 导出时必读** |
 | 6 | [06-evidence-pack-generation.md](06-evidence-pack-generation.md) | §14–15 | Evidence Pack 生成逻辑、排序规则、Token 控制、Markdown 导出 | **实现 Evidence Pack 逻辑时必读** |
-| 7 | [07-api-and-dashboard.md](07-api-and-dashboard.md) | §16–17 | Local API 设计 + Dashboard 6 页面需求（证据验证界面） | **实现 API 和前端时必读** |
+| 7 | [07-api-and-dashboard.md](07-api-and-dashboard.md) | §16–17 | Local API 设计 + Dashboard 需求（Dashboard 已移出 MVP 范围，保留作为历史参考） | **实现 API 时必读** |
 | 8 | [08-indexing-and-impact.md](08-indexing-and-impact.md) | §18–19 | 代码索引逻辑 + Impact 分析逻辑（1-hop only） | **实现索引器和影响分析时必读** |
 | 9 | [09-rules-and-acceptance.md](09-rules-and-acceptance.md) | §20–21 | MCP 工具质量规则 + Evidence Pack 边界 + 验收标准 | **确认实现完整性时必读** |
 | 10 | [10-development-plan.md](10-development-plan.md) | §22–25 | 6 个 Phase 开发顺序 + 最终交付物 + 产品定义 | **制定开发计划时必读** |
@@ -34,7 +34,7 @@
 | Phase 2: 查询引擎 | [08-indexing-and-impact.md](08-indexing-and-impact.md) |
 | Phase 3: MCP 工具 | [03-commands.md](03-commands.md) |
 | Phase 4: CLI | [03-commands.md](03-commands.md) |
-| Phase 5: Dashboard | [07-api-and-dashboard.md](07-api-and-dashboard.md) |
+| Phase 5: Dashboard | [07-api-and-dashboard.md](07-api-and-dashboard.md) — Dashboard 已移出 MVP 范围 |
 | Phase 6: Evidence Pack | [05-evidence-pack-schema.md](05-evidence-pack-schema.md), [06-evidence-pack-generation.md](06-evidence-pack-generation.md) |
 
 ### 如果你在做质量验证

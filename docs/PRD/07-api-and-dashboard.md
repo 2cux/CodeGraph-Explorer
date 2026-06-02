@@ -1,6 +1,10 @@
 # 16. Local API 设计
 
-API 是内部能力，供 MCP 工具、CLI 命令和 Dashboard 使用。
+API 是内部能力，供 MCP 工具和 CLI 命令使用。
+
+> **注意：Dashboard 在 MVP 阶段已移出范围。** 以下 Dashboard 需求部分（§17）
+> 保留作为历史参考，不在当前版本实现。当前版本定位为 MCP-first backend tool，
+> 主要通过 MCP 协议和 CLI 命令提供代码图谱查询能力。
 
 ## 16.1 必须实现的 API
 
@@ -87,7 +91,11 @@ GET /api/graph/subgraph?symbol_id=src/app/api/auth.py::login&depth=2
 
 ---
 
-# 17. Dashboard 需求
+# 17. Dashboard 需求（已移出 MVP 范围）
+
+> **Dashboard 在当前版本中不实现。** 以下内容保留作为历史设计参考。
+> 当前版本为 MCP-first backend tool，Agent 通过 MCP 工具查询图谱，
+> 开发者通过 CLI 命令和 Evidence Pack 验证结果。
 
 Dashboard 是证据验证界面，不是主产品入口。
 

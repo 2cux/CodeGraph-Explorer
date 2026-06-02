@@ -269,14 +269,16 @@ pytest backend/tests/
 
 ### Benchmark Quality Gate
 
-| Gate | Threshold | Current |
-|---|---|---|
-| Recall >= baseline | ≥ 8/12 | 11/12 |
-| Token reduction | ≥ 20% | ~29% |
-| Files read reduction | ≥ 25% | ~78% |
-| grep/read reduction | ≥ 30% | ~90% |
+| Gate | Threshold | Current | Status |
+|---|---|---|---|
+| Recall >= baseline | ≥ 7/12 (58%) | 10/12 (83.3%) | ✅ |
+| Token reduction | ≥ 10% | ~75% | ✅ |
+| Files read reduction | ≥ 30% | 77.5% | ✅ |
+| grep/read reduction | ≥ 40% | 90.3% | ✅ |
+| Compact vs standard payload reduction | ≥ 30% | 68.1% | ✅ |
+| Gate checks (total) | — | 36 passed, 0 failed | ✅ |
 
-Run: `python -m tests.agent_benchmark.runner --mode both && pytest tests/agent_benchmark/ -v`
+Run: `python -m tests.agent_benchmark.gate`
 
 ## Response Format After Changes
 

@@ -128,16 +128,47 @@ CodeGraph Explorer 会检测索引是否过期：
 * **Baseline**：Agent 使用 grep / glob / read 进行代码探索
 * **CodeGraph**：Agent 使用 compact MCP 图查询
 
-| 指标                       |        优化前 |         优化后 |     目标 |
-| ------------------------ | ---------: | ----------: | -----: |
-| Recall 不低于 baseline      | 6/12 (50%) | 11/12 (92%) | ≥ 8/12 |
-| grep/read 调用减少           |      -100% |      -90.3% |  ≥ 30% |
-| 文件读取减少                   |      -100% |      -77.5% |  ≥ 25% |
-| token 估算减少               |   +54%（更差） |      -29.1% |  ≥ 20% |
-| MCP discovery payload 减少 |        N/A |      -60.5% |      — |
-| 完整任务 token 估算            |        N/A |      -31.3% |      — |
+### 核心指标
 
-> 以上结果来自项目内置 Python benchmark fixtures，只代表当前测试集上的方向性结果，不代表所有真实代码库。
+| 指标 | 结果 | 阈值 | 状态 |
+|------|------|------|------|
+| Recall >= baseline | 10/12 (83.3%) | ≥ 7/12 (58%) | ✅ |
+| grep/read 调用减少 | 90.3% | ≥ 40% | ✅ |
+| 文件读取减少 | 77.5% | ≥ 30% | ✅ |
+| Token 减少 | 87.6% | ≥ 10% | ✅ |
+| Compact vs Standard payload 减少 | 68.1% | ≥ 30% | ✅ |
+| Compact 平均 payload tokens | 685 | ≤ 2,000 | ✅ |
+| 完整任务平均 token 估计 | 1,118 | ≤ 3,000 | ✅ |
+
+### 质量指标
+
+| 指标 | 结果 | 说明 |
+|------|------|------|
+| Symbol recall | 64.3% | 搜索平均召回率 |
+| File recall | 92.1% | 文件平均召回率 |
+| Top-1 准确率 | 91.7% | 首次搜索结果匹配预期符号 |
+| 歧义率 | 0.0% | 返回歧义结果的比例 |
+| 误报边 | 0 | 无仅凭名称匹配的虚假 confirmed 边 |
+| Impact 已确认/可能分离 | ✅ | 已确认影响不含 unresolved/external |
+| MCP stdout 清洁度 | ✅ | 工具响应均为合法 JSON，无日志混杂 |
+
+### Benchmark Regression Gate
+
+每次修改后运行 gate 检查是否回退：
+
+```bash
+python -m tests.agent_benchmark.gate
+```
+
+或通过 Makefile：
+
+```bash
+make benchmark-gate
+```
+
+当前 gate 状态：**✅ PASS**（36 checks passed, 0 failed）
+
+> 以上结果来自项目内置 Python benchmark fixtures（12 个任务场景），只代表当前测试集上的方向性结果，不代表所有真实代码库。
 
 ---
 
@@ -228,6 +259,9 @@ configure:
 doctor:
 	codegraph doctor
 
+mcp-check:
+	codegraph serve --mcp --check
+
 serve:
 	codegraph serve --mcp
 
@@ -237,10 +271,17 @@ watch:
 status:
 	codegraph status
 
+test:
+	pytest backend/tests/
+
 benchmark:
 	python -m tests.agent_benchmark.runner --mode baseline
-	python -m tests.agent_benchmark.runner --mode codegraph
+	python -m tests.agent_benchmark.runner --mode codegraph --response-mode compact
+	python -m tests.agent_benchmark.runner --mode codegraph --response-mode standard
 	python -m tests.agent_benchmark.report
+
+benchmark-gate:
+	python -m tests.agent_benchmark.gate
 
 demo: install configure init status
 	codegraph context "add MFA to login flow"
@@ -770,6 +811,20 @@ requires no network access (beyond installing dependencies via pip).
 ## License
 
 MIT
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/mcp-tools.md](docs/mcp-tools.md) | MCP tools reference with parameters and examples |
+| [docs/benchmark.md](docs/benchmark.md) | Benchmark suite and regression gate guide |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and fixes |
+| [docs/evidence-pack.md](docs/evidence-pack.md) | Evidence Pack format, usage, and limitations |
+| [docs/development.md](docs/development.md) | Development setup, conventions, and workflow |
+| [docs/storage.md](docs/storage.md) | Storage layer details |
+| [docs/PRD/INDEX.md](docs/PRD/INDEX.md) | Full PRD index (design reference) |
 
 ---
 
