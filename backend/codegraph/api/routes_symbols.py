@@ -271,7 +271,8 @@ async def get_callees(
 
     callees = graph_query.get_callees(store, normalized)
     items = []
-    for callee_id, edge_type in callees:
+    for entry in callees:
+        callee_id = entry["symbol_id"]
         callee_node = store.get_node(callee_id)
         items.append(
             {
@@ -279,7 +280,9 @@ async def get_callees(
                 "name": callee_node.name if callee_node else callee_id,
                 "type": callee_node.type.value if callee_node and isinstance(callee_node.type, NodeType) else (str(callee_node.type) if callee_node else "unknown"),
                 "file_path": callee_node.file_path if callee_node else "",
-                "edge_type": edge_type,
+                "edge_type": entry["edge_type"],
+                "resolution": entry.get("resolution", "unknown"),
+                "confidence": entry.get("confidence", 0.0),
             }
         )
 
@@ -299,7 +302,8 @@ async def get_callers(
 
     callers = graph_query.get_callers(store, normalized)
     items = []
-    for caller_id, edge_type in callers:
+    for entry in callers:
+        caller_id = entry["symbol_id"]
         caller_node = store.get_node(caller_id)
         items.append(
             {
@@ -307,7 +311,9 @@ async def get_callers(
                 "name": caller_node.name if caller_node else caller_id,
                 "type": caller_node.type.value if caller_node and isinstance(caller_node.type, NodeType) else (str(caller_node.type) if caller_node else "unknown"),
                 "file_path": caller_node.file_path if caller_node else "",
-                "edge_type": edge_type,
+                "edge_type": entry["edge_type"],
+                "resolution": entry.get("resolution", "unknown"),
+                "confidence": entry.get("confidence", 0.0),
             }
         )
 

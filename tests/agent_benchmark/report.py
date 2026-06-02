@@ -56,11 +56,24 @@ def generate_report() -> str:
     baseline = load_results("baseline")
     codegraph = load_results("codegraph")
 
-    if not baseline or not codegraph:
-        print("Missing result files. Run both baseline and codegraph first:")
-        print("  python -m tests.agent_benchmark.runner --mode baseline")
-        print("  python -m tests.agent_benchmark.runner --mode codegraph")
-        return ""
+    missing = []
+    if not baseline:
+        missing.append("results_baseline.json")
+    if not codegraph:
+        missing.append("results_codegraph.json")
+
+    if missing:
+        print("Missing benchmark result files:")
+        for m in missing:
+            if "baseline" in m:
+                print("  python -m tests.agent_benchmark.runner --mode baseline")
+            if "codegraph" in m:
+                print("  python -m tests.agent_benchmark.runner --mode codegraph")
+        print("Then re-run:")
+        print("  python -m tests.agent_benchmark.report")
+        print("Or run all at once:")
+        print("  make benchmark")
+        return "MISSING_RESULTS"
 
     # Build lookup by task_id
     cg_map: dict[str, dict[str, Any]] = {r["task_id"]: r for r in codegraph}
@@ -248,8 +261,11 @@ def _pct_str(old: float, new: float) -> str:
 def main() -> None:
     print("Generating benchmark report...")
     report = generate_report()
-    if not report:
-        print("Failed to generate report.")
+    if not report or report == "MISSING_RESULTS":
+        if report == "MISSING_RESULTS":
+            pass  # Error messages already printed in generate_report()
+        else:
+            print("Failed to generate report.")
         sys.exit(1)
 
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)

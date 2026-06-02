@@ -176,7 +176,8 @@ async def trigger_indexing(body: IndexRequest | None = None):
 
     Body: {"mode": "force"} or {"mode": "incremental"}
     """
-    from codegraph.cli.main import _save_index_artifacts
+    from codegraph.storage.writer import write_full_index, write_incremental_update
+    from codegraph.storage.state_store import IndexStateStore
 
     mode = body.mode if body else "force"
     cg_dir = get_codegraph_dir()
@@ -229,24 +230,38 @@ async def trigger_indexing(body: IndexRequest | None = None):
             current_nodes.extend(new_nodes)
             current_edges.extend(new_edges)
 
-        _save_index_artifacts(cg_dir, current_nodes, current_edges, root_path)
+        state_store = IndexStateStore(cg_dir)
+        files_to_remove = set(status_result.deleted_files) | set(status_result.changed_files)
+        try:
+            counts = write_incremental_update(
+                cg_dir, current_nodes, current_edges, root_path,
+                removed_files=files_to_remove, state_store=state_store,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Index write failed: {e}")
 
         return IndexResponse(
             status="ok",
             message=f"Incrementally updated index — {status_result.total_changes} file(s) affected.",
             file_count=len({n.file_path for n in current_nodes}),
-            symbol_count=len(current_nodes),
-            edge_count=len(current_edges),
+            symbol_count=counts["nodes"],
+            edge_count=counts["edges"],
         )
 
     # mode == "force" — full rebuild
     nodes, edges = build_index(root_path)
-    _save_index_artifacts(cg_dir, nodes, edges, root_path)
+    state_store = IndexStateStore(cg_dir)
+    try:
+        counts = write_full_index(
+            cg_dir, nodes, edges, root_path, state_store=state_store,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Index write failed: {e}")
 
     return IndexResponse(
         status="ok",
         message="Full index rebuilt successfully.",
         file_count=len({n.file_path for n in nodes}),
-        symbol_count=len(nodes),
-        edge_count=len(edges),
+        symbol_count=counts["nodes"],
+        edge_count=counts["edges"],
     )

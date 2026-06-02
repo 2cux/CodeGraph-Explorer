@@ -9,7 +9,81 @@ from typing import Any
 
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
 from codegraph.graph.store import GraphStore
-from codegraph.graph.models import EdgeType, NodeType
+from codegraph.graph.models import EdgeType, NodeType, Resolution, GraphEdge
+
+# ── Resolution tier helpers ─────────────────────────────────────────────────
+
+# Resolutions that produce confirmed edges (import-based, same-file, etc.)
+_CONFIRMED_RESOLUTIONS: set[Resolution] = {
+    Resolution.same_file_exact,
+    Resolution.self_method_resolved,
+    Resolution.class_method_resolved,
+    Resolution.imported_function_exact,
+    Resolution.imported_function_alias,
+    Resolution.imported_module_attribute,
+    Resolution.relative_import_resolved,
+    Resolution.import_resolved,
+    Resolution.parameter_type_hint_resolved,
+    Resolution.local_instance_resolved,
+    Resolution.module_instance_resolved,
+    Resolution.constructor_call_resolved,
+    Resolution.self_attribute_instance_resolved,
+    Resolution.type_hint_resolved,
+    Resolution.exact_ast_match,
+    Resolution.fastapi_route_decorator,
+    Resolution.flask_route_decorator,
+    Resolution.framework_route_resolved,
+}
+
+# Resolutions that are possible / low-confidence candidates
+_POSSIBLE_RESOLUTIONS: set[Resolution] = {
+    Resolution.name_match_candidate,
+    Resolution.filename_heuristic,
+    Resolution.docstring_reference,
+    Resolution.test_name_heuristic,
+    Resolution.test_file_heuristic,
+    Resolution.suggested_test,
+    Resolution.attribute_guess,
+    Resolution.same_module_fallback,
+    Resolution.django_view_heuristic,
+}
+
+# Resolutions that are unresolved / external
+_UNRESOLVED_RESOLUTIONS: set[Resolution] = {
+    Resolution.dynamic_getattr,
+    Resolution.reflection_call,
+    Resolution.unknown_external,
+    Resolution.decorator_unknown,
+    Resolution.import_not_found,
+    Resolution.external_symbol,
+    Resolution.unresolved,
+}
+
+
+def is_confirmed_resolution(resolution: Resolution) -> bool:
+    """True if the resolution is in the confirmed tier."""
+    return resolution in _CONFIRMED_RESOLUTIONS
+
+
+def is_possible_resolution(resolution: Resolution) -> bool:
+    """True if the resolution is in the possible / low-confidence tier."""
+    return resolution in _POSSIBLE_RESOLUTIONS
+
+
+def is_unresolved_resolution(resolution: Resolution) -> bool:
+    """True if the resolution is in the unresolved / external tier."""
+    return resolution in _UNRESOLVED_RESOLUTIONS
+
+
+def classify_edge_resolution(resolution: Resolution) -> str:
+    """Classify a resolution into 'confirmed', 'possible', or 'unresolved'."""
+    if resolution in _CONFIRMED_RESOLUTIONS:
+        return "confirmed"
+    if resolution in _POSSIBLE_RESOLUTIONS:
+        return "possible"
+    if resolution in _UNRESOLVED_RESOLUTIONS:
+        return "unresolved"
+    return "unresolved"
 
 # Sensitive paths that indicate higher risk
 _SENSITIVE_KEYWORDS = [
@@ -32,6 +106,7 @@ def transitive_callers(
     """Traverse up the call chain finding transitive callers.
 
     Returns ``(caller_id, distance, edge_confidence)`` sorted by distance.
+    Skips edges with unresolved-tier resolutions (name_match_candidate, etc.).
     """
     seen: dict[str, int] = {node_id: 0}
     # Track the edge confidence that led to each node
@@ -45,6 +120,10 @@ def transitive_callers(
             continue
         for edge in store.get_incoming_edges(current):
             if edge.type == EdgeType.calls and edge.source not in seen:
+                # Skip unresolved-tier edges — they must not be traversed
+                edge_res = edge.metadata.resolution if edge.metadata else None
+                if edge_res is not None and is_unresolved_resolution(edge_res):
+                    continue
                 seen[edge.source] = dist + 1
                 node_confidence[edge.source] = edge.confidence
                 queue.append((edge.source, dist + 1))
@@ -60,6 +139,7 @@ def transitive_callees(
     """Traverse down the call chain finding transitive callees.
 
     Returns ``(callee_id, distance, edge_confidence)`` sorted by distance.
+    Skips edges with unresolved-tier resolutions (name_match_candidate, etc.).
     """
     seen: dict[str, int] = {node_id: 0}
     node_confidence: dict[str, float] = {}
@@ -72,6 +152,10 @@ def transitive_callees(
             continue
         for edge in store.get_outgoing_edges(current):
             if edge.type == EdgeType.calls and edge.target not in seen:
+                # Skip unresolved-tier edges — they must not be traversed
+                edge_res = edge.metadata.resolution if edge.metadata else None
+                if edge_res is not None and is_unresolved_resolution(edge_res):
+                    continue
                 seen[edge.target] = dist + 1
                 node_confidence[edge.target] = edge.confidence
                 queue.append((edge.target, dist + 1))
@@ -412,32 +496,41 @@ def analyze_impact(
 
     # ── External / unresolved ─────────────────────────────────────────────
     external_or_unresolved: list[dict] = []
+    _seen_external: set[str] = set()
+
+    def _add_external(edge: GraphEdge, target_id: str, role: str) -> None:
+        """Add an entry to external_or_unresolved, deduplicating by symbol_id."""
+        if target_id in _seen_external:
+            return
+        _seen_external.add(target_id)
+        edge_res = edge.metadata.resolution if edge.metadata else None
+        res_str = edge_res.value if edge_res else "unknown"
+        ext_type = classify_edge_resolution(edge_res) if edge_res else "unresolved"
+        external_or_unresolved.append({
+            "symbol_id": target_id,
+            "name": target_id,
+            "type": "external_symbol",
+            "resolution": res_str,
+            "category": ext_type,
+            "reason": f"{'External or unresolved call target' if role == 'target' else 'External or unresolved caller'} (resolution: {res_str}).",
+            "confidence": edge.confidence,
+            "confidence_level": get_confidence_level(edge.confidence),
+        })
+
     for edge in store.get_outgoing_edges(node_id):
         if edge.type != EdgeType.calls:
             continue
         target_node = store.get_node(edge.target)
-        if target_node is None or target_node.type == NodeType.external_symbol:
-            external_or_unresolved.append({
-                "symbol_id": edge.target,
-                "name": edge.target,
-                "type": "external_symbol",
-                "reason": "External or unresolved call target.",
-                "confidence": edge.confidence,
-                "confidence_level": get_confidence_level(edge.confidence),
-            })
+        edge_res = edge.metadata.resolution if edge.metadata else None
+        if target_node is None or target_node.type == NodeType.external_symbol or (edge_res is not None and is_unresolved_resolution(edge_res)):
+            _add_external(edge, edge.target, "target")
     for edge in store.get_incoming_edges(node_id):
         if edge.type != EdgeType.calls:
             continue
         source_node = store.get_node(edge.source)
-        if source_node is None or source_node.type == NodeType.external_symbol:
-            external_or_unresolved.append({
-                "symbol_id": edge.source,
-                "name": edge.source,
-                "type": "external_symbol",
-                "reason": "External or unresolved caller.",
-                "confidence": edge.confidence,
-                "confidence_level": get_confidence_level(edge.confidence),
-            })
+        edge_res = edge.metadata.resolution if edge.metadata else None
+        if source_node is None or source_node.type == NodeType.external_symbol or (edge_res is not None and is_unresolved_resolution(edge_res)):
+            _add_external(edge, edge.source, "source")
 
     # ── Tests ──────────────────────────────────────────────────────────────
     related_tests: list[dict] = []

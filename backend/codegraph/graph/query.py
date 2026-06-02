@@ -1,28 +1,64 @@
 """Graph query operations — callers, callees, symbol search, subgraph, and stats."""
 
 from codegraph.graph.store import GraphStore
-from codegraph.graph.models import GraphNode, GraphEdge, EdgeType
+from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, Resolution
+from codegraph.graph.impact import classify_edge_resolution
 
 
 # ── Callers / Callees ──────────────────────────────────────────────────
 
 
-def get_callers(store: GraphStore, node_id: str) -> list[tuple[str, str]]:
-    """Return all callers of a symbol ``(caller_id, edge_type)``."""
-    callers: list[tuple[str, str]] = []
+def get_callers(store: GraphStore, node_id: str) -> list[dict]:
+    """Return all callers of a symbol with resolution and confidence info.
+
+    Returns list of dicts with keys: symbol_id, edge_type, resolution,
+    resolution_category, confidence, confidence_level.
+    """
+    callers: list[dict] = []
     for edge in store.get_incoming_edges(node_id):
         if edge.type == EdgeType.calls:
-            callers.append((edge.source, edge.type.value))
+            res = edge.metadata.resolution if edge.metadata else None
+            callers.append({
+                "symbol_id": edge.source,
+                "edge_type": edge.type.value,
+                "resolution": res.value if res else "unknown",
+                "resolution_category": classify_edge_resolution(res) if res else "unresolved",
+                "confidence": edge.confidence,
+                "confidence_level": _conf_level(edge.confidence),
+            })
     return callers
 
 
-def get_callees(store: GraphStore, node_id: str) -> list[tuple[str, str]]:
-    """Return all callees called by the given symbol ``(callee_id, edge_type)``."""
-    callees: list[tuple[str, str]] = []
+def get_callees(store: GraphStore, node_id: str) -> list[dict]:
+    """Return all callees called by the given symbol with resolution and confidence info.
+
+    Returns list of dicts with keys: symbol_id, edge_type, resolution,
+    resolution_category, confidence, confidence_level.
+    """
+    callees: list[dict] = []
     for edge in store.get_outgoing_edges(node_id):
         if edge.type == EdgeType.calls:
-            callees.append((edge.target, edge.type.value))
+            res = edge.metadata.resolution if edge.metadata else None
+            callees.append({
+                "symbol_id": edge.target,
+                "edge_type": edge.type.value,
+                "resolution": res.value if res else "unknown",
+                "resolution_category": classify_edge_resolution(res) if res else "unresolved",
+                "confidence": edge.confidence,
+                "confidence_level": _conf_level(edge.confidence),
+            })
     return callees
+
+
+def _conf_level(confidence: float) -> str:
+    """Map confidence to a level string."""
+    if confidence >= 0.80:
+        return "high"
+    if confidence >= 0.60:
+        return "medium"
+    if confidence >= 0.40:
+        return "low"
+    return "unknown"
 
 
 # ── Search ─────────────────────────────────────────────────────────────

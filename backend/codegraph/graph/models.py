@@ -63,6 +63,7 @@ class Resolution(str, Enum):
     fastapi_route_decorator = "fastapi_route_decorator"
     flask_route_decorator = "flask_route_decorator"
     django_view_heuristic = "django_view_heuristic"
+    framework_route_resolved = "framework_route_resolved"
 
     # ── Test discovery ──────────────────────────────────────────────
     direct_test_call = "direct_test_call"
@@ -70,6 +71,18 @@ class Resolution(str, Enum):
     test_name_heuristic = "test_name_heuristic"
     test_file_heuristic = "test_file_heuristic"
     suggested_test = "suggested_test"
+
+    # ── Possible / low-confidence candidates ────────────────────────
+    name_match_candidate = "name_match_candidate"
+    filename_heuristic = "filename_heuristic"
+    docstring_reference = "docstring_reference"
+
+    # ── Unresolved / external / dynamic ─────────────────────────────
+    dynamic_getattr = "dynamic_getattr"
+    reflection_call = "reflection_call"
+    unknown_external = "unknown_external"
+    decorator_unknown = "decorator_unknown"
+    import_not_found = "import_not_found"
 
     # ── Model / config / persistence detection ──────────────────────
     pydantic_model_detected = "pydantic_model_detected"

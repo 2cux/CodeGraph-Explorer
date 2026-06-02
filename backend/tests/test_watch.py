@@ -311,13 +311,13 @@ def greet(name: str) -> str:
     return f"Hello {name}"
 """, encoding="utf-8")
 
-        from codegraph.cli.main import _save_index_artifacts
+        from codegraph.storage.writer import write_full_index
         from codegraph.indexer.graph_builder import build_index
 
         nodes, edges = build_index(tmp_path)
         cg_dir = tmp_path / ".codegraph"
         cg_dir.mkdir()
-        _save_index_artifacts(cg_dir, nodes, edges, tmp_path)
+        write_full_index(cg_dir, nodes, edges, tmp_path)
         return cg_dir
 
     def test_incremental_detects_modified_file(self, tmp_path):

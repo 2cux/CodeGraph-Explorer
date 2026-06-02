@@ -19,8 +19,8 @@ class TestGetCallers:
     def test_returns_callers(self, populated_store):
         callers = get_callers(populated_store, "app/api/auth.py::login")
         assert len(callers) == 1
-        assert callers[0][0] == "main.py::main"
-        assert callers[0][1] == "calls"
+        assert callers[0]["symbol_id"] == "main.py::main"
+        assert callers[0]["edge_type"] == "calls"
 
     def test_no_callers(self, populated_store):
         callers = get_callers(populated_store, "nonexistent")
@@ -35,7 +35,7 @@ class TestGetCallees:
     def test_returns_callees(self, populated_store):
         callees = get_callees(populated_store, "app/api/auth.py::login")
         assert len(callees) == 1
-        assert callees[0][0] == "app/store/token_store.py::save_token"
+        assert callees[0]["symbol_id"] == "app/store/token_store.py::save_token"
 
     def test_no_callees(self, populated_store):
         callees = get_callees(populated_store, "app/store/token_store.py::save_token")

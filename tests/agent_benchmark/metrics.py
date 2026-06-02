@@ -230,6 +230,51 @@ def aggregate_summary(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def edge_quality_metrics(store: Any) -> dict[str, Any]:
+    """Analyze edge quality for false-edge detection (P0-2).
+
+    Returns stats about confirmed vs possible vs unresolved edges,
+    and detects name-only confirmed edges that should not exist.
+    """
+    from codegraph.graph.models import EdgeType, Resolution
+    from codegraph.graph.impact import classify_edge_resolution
+
+    call_edges = [e for e in store.all_edges() if getattr(e.type, 'value', str(e.type)) == 'calls']
+
+    confirmed = 0
+    possible = 0
+    unresolved = 0
+    name_only_confirmed: list[str] = []
+
+    for e in call_edges:
+        res = e.metadata.resolution if e.metadata else None
+        category = classify_edge_resolution(res) if res else "unresolved"
+
+        if category == "confirmed":
+            confirmed += 1
+            # Detect name-only edges that might be incorrectly confirmed
+            if res == Resolution.name_match_candidate:
+                name_only_confirmed.append(
+                    f"{e.source} -> {e.target} (conf={e.confidence:.2f})"
+                )
+        elif category == "possible":
+            possible += 1
+        else:
+            unresolved += 1
+
+    total = len(call_edges)
+    return {
+        "total_call_edges": total,
+        "confirmed_edges": confirmed,
+        "possible_edges": possible,
+        "unresolved_edges": unresolved,
+        "confirmed_ratio": round(confirmed / total, 4) if total > 0 else 0.0,
+        "name_only_confirmed_count": len(name_only_confirmed),
+        "name_only_confirmed": name_only_confirmed[:10],
+        "false_edge_free": len(name_only_confirmed) == 0,
+    }
+
+
 def _analyze_failures(
     baseline: dict[str, Any],
     codegraph: dict[str, Any],

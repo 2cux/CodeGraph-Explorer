@@ -4,16 +4,19 @@ Performs diff-based indexing: detect changed/added/deleted files,
 patch the existing node/edge sets, and save updated artifacts.
 """
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from codegraph.graph.models import GraphEdge, GraphNode, IndexMetadata
+from codegraph.graph.models import GraphEdge, GraphNode
 from codegraph.indexer.graph_builder import build_index_from_paths
-from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
 from codegraph.indexer.status import detect_status, StatusResult
 from codegraph.storage.file_store import FileStore
+from codegraph.storage.state_store import IndexStateStore
+from codegraph.storage.writer import (
+    write_incremental_update,
+    SqliteWriteError,
+)
 
 
 class IncrementalResult:
@@ -65,6 +68,7 @@ def run_incremental_index(
     output_dir: Path,
     store: FileStore,
     no_sqlite: bool = False,
+    state_store: IndexStateStore | None = None,
 ) -> IncrementalResult:
     """Run incremental index update and return structured result.
 
@@ -138,8 +142,22 @@ def run_incremental_index(
         current_nodes.extend(new_nodes)
         current_edges.extend(new_edges)
 
-    # 3. Save updated artifacts
-    _save_index_artifacts(output_dir, current_nodes, current_edges, root_path, no_sqlite)
+    # 3. Save updated artifacts via SQLite-first writer
+    if state_store is None:
+        state_store = IndexStateStore(output_dir)
+
+    try:
+        counts = write_incremental_update(
+            output_dir, current_nodes, current_edges, root_path,
+            removed_files=files_to_remove,
+            no_sqlite=no_sqlite, state_store=state_store,
+        )
+    except SqliteWriteError:
+        return IncrementalResult(
+            status="error",
+            status_result=status_result,
+            error="SQLite write failed. Re-run with --no-sqlite or check disk space.",
+        )
 
     return IncrementalResult(
         status="updated",
@@ -147,80 +165,9 @@ def run_incremental_index(
         nodes_removed=nodes_removed,
         nodes_added=len(new_nodes),
         edges_added=len(new_edges),
-        total_symbols=len(current_nodes),
-        total_edges=len(current_edges),
+        total_symbols=counts["nodes"],
+        total_edges=counts["edges"],
         total_files=len({n.file_path for n in current_nodes}),
     )
 
 
-def _save_index_artifacts(
-    output_dir: Path,
-    nodes: list[GraphNode],
-    edges: list[GraphEdge],
-    root_path: Path,
-    no_sqlite: bool = False,
-) -> None:
-    """Save graph.json, nodes.json, edges.json, metadata.json, and optionally SQLite."""
-    from codegraph.graph.models import FileEntry, RepoInfo, CodeGraph
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    node_adapter = TypeAdapter(list[GraphNode])
-    edge_adapter = TypeAdapter(list[GraphEdge])
-
-    metadata = IndexMetadata(
-        schema_version="1.0.0",
-        indexer_version="1.0.0",
-        root_path=str(root_path),
-        indexed_at=now_iso,
-        file_count=len({n.file_path for n in nodes}),
-        symbol_count=len(nodes),
-        edge_count=len(edges),
-        files=[],
-    )
-    all_files = scan_python_files(root_path)
-    for f in all_files:
-        rel = f.relative_to(root_path).as_posix()
-        metadata.files.append(FileEntry(
-            path=rel,
-            fingerprint=compute_fingerprint(f),
-            indexed_at=now_iso,
-        ))
-
-    store = FileStore(output_dir)
-    store.save_nodes(node_adapter.dump_python(nodes))
-    store.save_edges(edge_adapter.dump_python(edges))
-    store.save_metadata(metadata)
-
-    repo_name = root_path.name
-    graph = CodeGraph(
-        schema_version="1.0.0",
-        repo=RepoInfo(
-            repo_id=f"local:{repo_name}",
-            name=repo_name,
-            root_path=str(root_path),
-            languages=["python"],
-            indexed_at=now_iso,
-            file_count=metadata.file_count,
-            symbol_count=metadata.symbol_count,
-        ),
-        nodes=nodes,
-        edges=edges,
-    )
-    graph_path = output_dir / "graph.json"
-    graph_path.write_text(
-        graph.model_dump_json(indent=2, exclude_none=True),
-        encoding="utf-8",
-    )
-
-    if not no_sqlite:
-        try:
-            from codegraph.storage.sqlite_store import SqliteStore
-            sqlite_path = output_dir / "index.sqlite"
-            sql_store = SqliteStore(sqlite_path)
-            sql_store.initialize()
-            sql_store.clear()
-            sql_store.save_nodes(node_adapter.dump_python(nodes))
-            sql_store.save_edges(edge_adapter.dump_python(edges))
-            sql_store.close()
-        except Exception:
-            pass

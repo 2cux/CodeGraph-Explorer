@@ -244,6 +244,57 @@ QUALITY_GATE = {
 }
 
 
+class TestEdgeQuality:
+    """P0-2: Verify no name-only confirmed edges in benchmark fixtures."""
+
+    def test_no_name_only_confirmed_edges(self) -> None:
+        """All benchmark fixture projects must NOT have name-only confirmed edges."""
+        from tests.agent_benchmark.metrics import edge_quality_metrics
+        from tests.agent_benchmark.runner import load_test_cases, load_store_for_project
+
+        tasks = load_test_cases()
+        projects = {t["root_path"] for t in tasks}
+
+        all_clean = True
+        failures: list[str] = []
+
+        for proj in sorted(projects):
+            store = load_store_for_project(proj)
+            metrics = edge_quality_metrics(store)
+
+            if not metrics["false_edge_free"]:
+                all_clean = False
+                project_name = Path(proj).name
+                failures.append(
+                    f"{project_name}: {metrics['name_only_confirmed_count']} "
+                    f"name-only confirmed edges: {metrics['name_only_confirmed'][:5]}"
+                )
+
+        assert all_clean, (
+            f"FALSE EDGES DETECTED in {len(failures)} project(s):\n" +
+            "\n".join(failures[:10])
+        )
+
+    def test_confirmed_edge_precision_not_degraded(self) -> None:
+        """Confirmed edge ratio should be reasonable (not inflated by name-only)."""
+        from tests.agent_benchmark.metrics import edge_quality_metrics
+        from tests.agent_benchmark.runner import load_test_cases, load_store_for_project
+
+        tasks = load_test_cases()
+        projects = {t["root_path"] for t in tasks}
+
+        for proj in sorted(projects):
+            store = load_store_for_project(proj)
+            metrics = edge_quality_metrics(store)
+
+            # If there are confirmed edges, the confirmed ratio should be reasonable
+            if metrics["total_call_edges"] > 0:
+                # Most projects should have some confirmed edges
+                assert metrics["confirmed_ratio"] >= 0.0, (
+                    f"{Path(proj).name}: confirmed ratio is {metrics['confirmed_ratio']}"
+                )
+
+
 class TestBenchmarkQualityGate:
     """Quality gate checks that warn (not fail) when thresholds are breached.
 

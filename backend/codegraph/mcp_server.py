@@ -57,6 +57,7 @@ ZERO_TELEMETRY_STATEMENT = (
 from codegraph.graph import impact as graph_impact
 from codegraph.graph import query as graph_query
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
+from codegraph.graph.impact import classify_edge_resolution
 from codegraph.graph.models import CodeGraph, EdgeType, GraphEdge, GraphNode, NodeType, Resolution
 from codegraph.graph.store import GraphStore
 from codegraph.graph.warnings import build_warning, build_stale_index_warning
@@ -417,7 +418,6 @@ def _build_index_status() -> dict[str, Any]:
 
     index_files = {
         "graph_json": (cg_dir / "graph.json").exists(),
-        "symbols_json": (cg_dir / "symbols.json").exists(),
         "sqlite": (cg_dir / "index.sqlite").exists(),
         "metadata_json": (cg_dir / "metadata.json").exists(),
     }
@@ -1461,16 +1461,16 @@ def _traverse_callers(
                 entry = _serialize_node(caller_node, response_mode)
                 entry["distance"] = dist + 1
                 if response_mode == "compact":
+                    edge_res = edge.metadata.resolution if edge.metadata else None
                     edge_info = {
                         "confidence": round(edge.confidence, 4),
                         "resolution": (
-                            edge.metadata.resolution.value
-                            if edge.metadata and hasattr(edge.metadata.resolution, "value")
+                            edge_res.value
+                            if edge_res is not None and hasattr(edge_res, "value")
                             else "unresolved"
                         ),
-                        "reason_code": _resolution_to_reason_code(
-                            edge.metadata.resolution if edge.metadata else None
-                        ),
+                        "resolution_category": classify_edge_resolution(edge_res) if edge_res is not None else "unresolved",
+                        "reason_code": _resolution_to_reason_code(edge_res),
                     }
                     entry.update(edge_info)
                 else:
@@ -1674,6 +1674,7 @@ def _traverse_callees(
             callee_node = store.get_node(edge.target)
 
             if callee_node is None or callee_node.type == NodeType.external_symbol:
+                edge_res = edge.metadata.resolution if edge.metadata else None
                 ext_entry: dict[str, Any] = {
                     "symbol_id": edge.target,
                     "name": edge.target,
@@ -1683,6 +1684,8 @@ def _traverse_callees(
                 }
                 if response_mode == "compact":
                     ext_entry["confidence"] = round(edge.confidence, 4)
+                    ext_entry["resolution"] = edge_res.value if edge_res is not None and hasattr(edge_res, "value") else "unresolved"
+                    ext_entry["resolution_category"] = classify_edge_resolution(edge_res) if edge_res is not None else "unresolved"
                     ext_entry["reason_code"] = "external_call"
                 else:
                     ext_entry["edge"] = _serialize_edge(edge, response_mode, include_explanations)
@@ -1695,15 +1698,15 @@ def _traverse_callees(
                 entry = _serialize_node(callee_node, response_mode)
                 entry["distance"] = dist + 1
                 if response_mode == "compact":
+                    edge_res = edge.metadata.resolution if edge.metadata else None
                     entry["confidence"] = round(edge.confidence, 4)
                     entry["resolution"] = (
-                        edge.metadata.resolution.value
-                        if edge.metadata and hasattr(edge.metadata.resolution, "value")
+                        edge_res.value
+                        if edge_res is not None and hasattr(edge_res, "value")
                         else "unresolved"
                     )
-                    entry["reason_code"] = _resolution_to_reason_code(
-                        edge.metadata.resolution if edge.metadata else None
-                    )
+                    entry["resolution_category"] = classify_edge_resolution(edge_res) if edge_res is not None else "unresolved"
+                    entry["reason_code"] = _resolution_to_reason_code(edge_res)
                 else:
                     entry["edge"] = _serialize_edge(edge, response_mode, include_explanations)
                 internal.append(entry)

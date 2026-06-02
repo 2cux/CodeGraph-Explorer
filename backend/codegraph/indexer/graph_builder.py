@@ -218,11 +218,28 @@ def _resolve_external_edges(edges: list[GraphEdge], nodes: list[GraphNode]) -> l
                 qual_to_id[node.qualified_name] = node.id
                 qual_type[node.qualified_name] = node.type
 
+    # Resolution types that should NOT be rewritten to internal node IDs.
+    # These are low-confidence / name-only matches — rewriting them would
+    # incorrectly upgrade a weak signal to look like a confirmed edge.
+    _NO_REWRITE_RESOLUTIONS: set[Resolution] = {
+        Resolution.name_match_candidate,
+        Resolution.unknown_external,
+        Resolution.external_symbol,
+        Resolution.unresolved,
+        Resolution.filename_heuristic,
+        Resolution.docstring_reference,
+    }
+
     for edge in edges:
         key = (edge.type.value if hasattr(edge.type, 'value') else str(edge.type))
         if key != "calls":
             continue
         if not edge.target.startswith("external:"):
+            continue
+
+        # Don't rewrite low-confidence edges — they must stay as external:
+        edge_res = edge.metadata.resolution if edge.metadata else None
+        if edge_res in _NO_REWRITE_RESOLUTIONS:
             continue
 
         qual_name = edge.target[len("external:"):]

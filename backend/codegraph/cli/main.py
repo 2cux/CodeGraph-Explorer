@@ -19,6 +19,14 @@ from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
 from codegraph.indexer.status import detect_status, StatusResult
 from codegraph.storage.file_store import FileStore
 from codegraph.storage.sqlite_store import SqliteStore
+from codegraph.storage.state_store import IndexStateStore
+from codegraph.storage.writer import (
+    write_full_index,
+    write_incremental_update,
+    repair_json_from_sqlite,
+    SqliteWriteError,
+)
+from codegraph.storage.integrity import check_storage_integrity
 
 app = typer.Typer(
     name="codegraph",
@@ -126,81 +134,6 @@ def _type_label(node_type: NodeType) -> str:
 # ── index command ────────────────────────────────────────────────────
 
 
-def _save_index_artifacts(
-    output_dir: Path,
-    nodes: list[GraphNode],
-    edges: list[GraphEdge],
-    root_path: Path,
-    no_sqlite: bool = False,
-) -> None:
-    """Save graph.json, nodes.json, edges.json, metadata.json, and optionally SQLite."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    node_adapter = TypeAdapter(list[GraphNode])
-    edge_adapter = TypeAdapter(list[GraphEdge])
-
-    # Build metadata
-    metadata = IndexMetadata(
-        schema_version="1.0.0",
-        indexer_version="1.0.0",
-        root_path=str(root_path),
-        indexed_at=now_iso,
-        file_count=len({n.file_path for n in nodes}),
-        symbol_count=len(nodes),
-        edge_count=len(edges),
-        files=[],
-    )
-    # Compute fingerprints for all source files
-    all_files = scan_python_files(root_path)
-    for f in all_files:
-        rel = f.relative_to(root_path).as_posix()
-        metadata.files.append(FileEntry(
-            path=rel,
-            fingerprint=compute_fingerprint(f),
-            indexed_at=now_iso,
-        ))
-
-    # JSON file output
-    store = FileStore(output_dir)
-    store.save_nodes(node_adapter.dump_python(nodes))
-    store.save_edges(edge_adapter.dump_python(edges))
-    store.save_metadata(metadata)
-
-    # Full graph output
-    repo_name = root_path.name
-    graph = CodeGraph(
-        schema_version="1.0.0",
-        repo=RepoInfo(
-            repo_id=f"local:{repo_name}",
-            name=repo_name,
-            root_path=str(root_path),
-            languages=["python"],
-            indexed_at=now_iso,
-            file_count=metadata.file_count,
-            symbol_count=metadata.symbol_count,
-        ),
-        nodes=nodes,
-        edges=edges,
-    )
-    graph_path = output_dir / "graph.json"
-    graph_path.write_text(
-        graph.model_dump_json(indent=2, exclude_none=True),
-        encoding="utf-8",
-    )
-
-    # SQLite output
-    if not no_sqlite:
-        try:
-            sqlite_path = output_dir / "index.sqlite"
-            sql_store = SqliteStore(sqlite_path)
-            sql_store.initialize()
-            sql_store.clear()
-            sql_store.save_nodes(node_adapter.dump_python(nodes))
-            sql_store.save_edges(edge_adapter.dump_python(edges))
-            sql_store.close()
-        except Exception:
-            pass  # SQLite is best-effort
-
-
 @app.command()
 def init(
     root: str = typer.Argument(
@@ -216,7 +149,7 @@ def init(
     ),
     no_sqlite: bool = typer.Option(
         False, "--no-sqlite",
-        help="Skip SQLite output",
+        help="Skip SQLite output (JSON-only fallback)",
     ),
 ) -> None:
     """Initialize local code graph index. One-time setup, then MCP Server works directly.
@@ -232,10 +165,10 @@ def init(
     output_dir = root_path / ".codegraph"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    store = FileStore(output_dir)
+    state_store = IndexStateStore(output_dir)
 
     if incremental:
-        _run_incremental_index(root_path, output_dir, store, no_sqlite)
+        _run_incremental_index(root_path, output_dir, no_sqlite, state_store)
         return
 
     if not force and (output_dir / "nodes.json").exists():
@@ -247,12 +180,21 @@ def init(
 
     typer.echo(f"Found {len(nodes)} symbols and {len(edges)} relationships.")
 
-    _save_index_artifacts(output_dir, nodes, edges, root_path, no_sqlite)
+    try:
+        counts = write_full_index(
+            output_dir, nodes, edges, root_path,
+            no_sqlite=no_sqlite, state_store=state_store,
+        )
+    except SqliteWriteError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
     typer.echo(f"Index written to {output_dir / 'graph.json'}")
     typer.echo(f"  Files indexed: {len({n.file_path for n in nodes})}")
-    typer.echo(f"  Symbols:       {len(nodes)}")
-    typer.echo(f"  Edges:         {len(edges)}")
+    typer.echo(f"  Symbols:       {counts['nodes']}")
+    typer.echo(f"  Edges:         {counts['edges']}")
+    if not no_sqlite and counts.get("fts_symbols", 0) > 0:
+        typer.echo(f"  FTS symbols:   {counts['fts_symbols']}")
 
 
 @app.command(name="index", hidden=True)
@@ -322,10 +264,11 @@ def update() -> None:
 def _run_incremental_index(
     root_path: Path,
     output_dir: Path,
-    store: FileStore,
     no_sqlite: bool,
+    state_store,  # IndexStateStore
 ) -> None:
     """Incrementally update the index for changed / added / deleted files."""
+    store = FileStore(output_dir)
     metadata = store.load_metadata()
     status_result = detect_status(root_path, metadata)
 
@@ -401,13 +344,23 @@ def _run_incremental_index(
         current_edges.extend(new_edges)
         typer.echo(f"  Added {len(new_nodes)} symbols, {len(new_edges)} relationships.")
 
-    # 3. Save updated artifacts
-    _save_index_artifacts(output_dir, current_nodes, current_edges, root_path, no_sqlite)
+    # 3. Save updated artifacts via SQLite-first writer
+    try:
+        counts = write_incremental_update(
+            output_dir, current_nodes, current_edges, root_path,
+            removed_files=files_to_remove,
+            no_sqlite=no_sqlite, state_store=state_store,
+        )
+    except SqliteWriteError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
     typer.echo(f"Updated index written to {output_dir / 'graph.json'}")
-    typer.echo(f"  Total files:   {len({n.file_path for n in current_nodes})}")
-    typer.echo(f"  Total symbols:  {len(current_nodes)}")
-    typer.echo(f"  Total edges:    {len(current_edges)}")
+    typer.echo(f"  Total files:    {len({n.file_path for n in current_nodes})}")
+    typer.echo(f"  Total symbols:  {counts['nodes']}")
+    typer.echo(f"  Total edges:    {counts['edges']}")
+    if not no_sqlite and counts.get("fts_symbols", 0) > 0:
+        typer.echo(f"  FTS symbols:    {counts['fts_symbols']}")
 
 
 # ── status command ────────────────────────────────────────────────────
@@ -555,8 +508,8 @@ def explain(
             "type": node.type.value,
             "file_path": node.file_path,
             "signature": node.signature,
-            "callers": [{"node_id": c[0]} for c in callers],
-            "callees": [{"node_id": c[0]} for c in callees],
+            "callers": [{"node_id": c["symbol_id"]} for c in callers],
+            "callees": [{"node_id": c["symbol_id"]} for c in callees],
         }, indent=2, ensure_ascii=False))
         return
 
@@ -573,7 +526,8 @@ def explain(
 
     if callers:
         typer.echo(f"Callers ({len(callers)}):")
-        for caller_id, _ in callers:
+        for entry in callers:
+            caller_id = entry["symbol_id"]
             caller_node = store.get_node(caller_id)
             if caller_node:
                 caller_loc = _format_location(caller_node)
@@ -586,7 +540,8 @@ def explain(
 
     if callees:
         typer.echo(f"Callees ({len(callees)}):")
-        for callee_id, _ in callees:
+        for entry in callees:
+            callee_id = entry["symbol_id"]
             callee_node = store.get_node(callee_id)
             if callee_node:
                 callee_loc = _format_location(callee_node)
@@ -1081,6 +1036,10 @@ def doctor(
         None, "--root", "-r",
         help="Project root to check (defaults to CODEGRAPH_PROJECT_ROOT or CWD)",
     ),
+    repair: bool = typer.Option(
+        False, "--repair",
+        help="Repair JSON inconsistencies from SQLite (SQLite is source of truth)",
+    ),
 ) -> None:
     """Diagnose CodeGraph setup and report any issues.
 
@@ -1210,7 +1169,6 @@ def doctor(
     typer.echo("5b. Storage integrity")
     if cg_dir.exists():
         try:
-            from codegraph.storage.integrity import check_storage_integrity
             integrity = check_storage_integrity(cg_dir)
             for check in integrity["checks"]:
                 status = check["status"]
@@ -1221,6 +1179,53 @@ def doctor(
                     warn(message)
                 else:
                     fail(message)
+
+            # Show counts summary
+            counts = integrity.get("counts", {})
+            typer.echo("")
+            typer.echo(f"     Counts summary:")
+            typer.echo(f"       SQLite nodes:  {counts.get('sqlite_nodes', 'N/A')}")
+            typer.echo(f"       SQLite edges:  {counts.get('sqlite_edges', 'N/A')}")
+            typer.echo(f"       JSON nodes:    {counts.get('json_nodes', 'N/A')}")
+            typer.echo(f"       JSON edges:    {counts.get('json_edges', 'N/A')}")
+            typer.echo(f"       FTS symbols:   {counts.get('fts_symbols', 'N/A')}")
+            typer.echo(f"       Metadata sym:  {counts.get('metadata_symbols', 'N/A')}")
+            typer.echo(f"       Metadata edges:{counts.get('metadata_edges', 'N/A')}")
+
+            # Consistency verdict
+            consistency = integrity.get("consistency", "unknown")
+            if consistency == "ok":
+                ok(f"Consistency: {consistency}")
+            elif consistency == "warning":
+                warn(f"Consistency: {consistency}")
+            else:
+                fail(f"Consistency: {consistency}")
+
+            suggestion = integrity.get("suggestion")
+            if suggestion:
+                typer.echo(f"     Suggestion: {suggestion}")
+
+            # --repair logic
+            if repair:
+                typer.echo("")
+                typer.echo("--- Repair ---")
+                if consistency == "ok":
+                    typer.echo("Storage is already consistent. No repair needed.")
+                else:
+                    try:
+                        repair_counts = repair_json_from_sqlite(cg_dir, project_root)
+                        typer.echo(f"Repair complete. JSON files rebuilt from SQLite.")
+                        typer.echo(f"  Nodes: {repair_counts['nodes']}")
+                        typer.echo(f"  Edges: {repair_counts['edges']}")
+                        # Re-run integrity check
+                        integrity2 = check_storage_integrity(cg_dir)
+                        consistency2 = integrity2.get("consistency", "unknown")
+                        if consistency2 == "ok":
+                            ok(f"Post-repair consistency: {consistency2}")
+                        else:
+                            warn(f"Post-repair consistency: {consistency2}")
+                    except SqliteWriteError as e:
+                        fail(str(e))
         except Exception as e:
             fail(f"Storage integrity check failed: {e}")
     else:

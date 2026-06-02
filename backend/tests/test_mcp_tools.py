@@ -208,7 +208,6 @@ def mcp_setup(full_store: GraphStore, tmp_path: Path, monkeypatch) -> GraphStore
         metadata.model_dump_json(indent=2), encoding="utf-8"
     )
     (tmp_path / "graph.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "symbols.json").write_text("[]", encoding="utf-8")
 
     yield full_store
     _teardown_mcp_globals()

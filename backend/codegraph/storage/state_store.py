@@ -93,6 +93,29 @@ class IndexStateStore:
         current["watch"]["enabled"] = False
         self.save(current)
 
+    def record_deleted_files(self, deleted_files: list[str]) -> None:
+        """Append to the deleted_files tracking list."""
+        current = self.load()
+        existing = set(current.get("deleted_files", []))
+        existing.update(deleted_files)
+        current["deleted_files"] = sorted(existing)
+        self.save(current)
+
+    def clear_deleted_files(self) -> None:
+        """Clear the deleted_files tracking list."""
+        current = self.load()
+        current["deleted_files"] = []
+        self.save(current)
+
+    def record_stats(self, symbols: int, edges: int) -> None:
+        """Record node/edge counts from SQLite into state.json."""
+        current = self.load()
+        current["stats"] = {
+            "symbols": symbols,
+            "edges": edges,
+        }
+        self.save(current)
+
     @staticmethod
     def _default_state() -> dict:
         return {
@@ -100,6 +123,7 @@ class IndexStateStore:
             "last_indexed_at": None,
             "last_incremental_at": None,
             "last_error": None,
+            "deleted_files": [],
             "pending_changes": {
                 "changed": [],
                 "added": [],

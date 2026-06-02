@@ -1,4 +1,8 @@
-"""Storage integrity checks for .codegraph artifacts."""
+"""Storage integrity checks for .codegraph artifacts.
+
+Compares SQLite, JSON, FTS, metadata, and state counts.
+SQLite is the source of truth; JSON should mirror SQLite.
+"""
 
 from __future__ import annotations
 
@@ -11,12 +15,23 @@ from codegraph.storage.sqlite_store import SUPPORTED_SCHEMA_VERSION, SqliteStore
 
 
 def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
-    """Compare JSON, SQLite, and metadata/state counts without repairing them."""
+    """Compare SQLite, JSON, metadata, state, and FTS counts.
+
+    Returns:
+        dict with keys:
+          - status: "ok" | "warning" | "error"
+          - consistency: "ok" | "warning" | "error"
+          - suggestion: str | None (repair hint if inconsistent)
+          - checks: list[dict] — individual check results
+          - counts: dict — sqlite_nodes, sqlite_edges, json_nodes,
+                    json_edges, fts_symbols, metadata_symbols, metadata_edges
+    """
     checks: list[dict[str, Any]] = []
 
     def add(status: str, name: str, message: str, **details: Any) -> None:
         checks.append({"status": status, "name": name, "message": message, **details})
 
+    # ── JSON counts ───────────────────────────────────────────────────
     nodes_json_count = _json_count(cg_dir / "nodes.json")
     edges_json_count = _json_count(cg_dir / "edges.json")
     if nodes_json_count is None:
@@ -28,6 +43,7 @@ def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
     else:
         add("ok", "edges.json", f"edges.json edges={edges_json_count}", count=edges_json_count)
 
+    # ── Metadata ──────────────────────────────────────────────────────
     metadata_path = cg_dir / "metadata.json"
     raw_metadata = _load_json_object(metadata_path)
     metadata = _load_metadata(metadata_path)
@@ -40,7 +56,13 @@ def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
         _compare_count("metadata.edge_count", metadata.edge_count, edges_json_count, add)
         add("ok", "build_version", f"indexer_version={metadata.indexer_version}")
 
-    _check_state_counts(cg_dir / "state.json", nodes_json_count, edges_json_count, add)
+    # ── State ─────────────────────────────────────────────────────────
+    _check_state(cg_dir / "state.json", nodes_json_count, edges_json_count, add)
+
+    # ── SQLite ────────────────────────────────────────────────────────
+    sqlite_nodes: int | None = None
+    sqlite_edges: int | None = None
+    fts_count: int | None = None
 
     sqlite_path = cg_dir / "index.sqlite"
     if not sqlite_path.exists():
@@ -70,7 +92,8 @@ def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
             else:
                 add("ok", "sqlite.fts", f"symbols_fts rows={fts_count}", count=fts_count)
                 if fts_count != sqlite_nodes:
-                    add("warning", "sqlite.fts_count", "symbols_fts row count differs from nodes", fts=fts_count, nodes=sqlite_nodes)
+                    add("warning", "sqlite.fts_count",
+                        f"symbols_fts row count differs from nodes", fts=fts_count, nodes=sqlite_nodes)
             if store.fts_warning:
                 add("warning", "sqlite.fts.warning", store.fts_warning)
         except Exception as e:
@@ -78,9 +101,40 @@ def check_storage_integrity(cg_dir: Path) -> dict[str, Any]:
         finally:
             store.close()
 
+    # ── Consistency verdict ───────────────────────────────────────────
     status_order = {"ok": 0, "warning": 1, "error": 2}
     overall = max((c["status"] for c in checks), key=lambda s: status_order[s], default="ok")
-    return {"status": overall, "checks": checks}
+
+    has_errors = any(c["status"] == "error" for c in checks)
+    has_warnings = any(c["status"] == "warning" for c in checks)
+    if has_errors:
+        consistency = "error"
+        suggestion = "codegraph init --force"
+    elif has_warnings:
+        consistency = "warning"
+        suggestion = "codegraph doctor --repair  (or codegraph init --force)"
+    else:
+        consistency = "ok"
+        suggestion = None
+
+    return {
+        "status": overall,
+        "consistency": consistency,
+        "suggestion": suggestion,
+        "checks": checks,
+        "counts": {
+            "sqlite_nodes": sqlite_nodes,
+            "sqlite_edges": sqlite_edges,
+            "json_nodes": nodes_json_count,
+            "json_edges": edges_json_count,
+            "fts_symbols": fts_count,
+            "metadata_symbols": metadata.symbol_count if metadata else None,
+            "metadata_edges": metadata.edge_count if metadata else None,
+        },
+    }
+
+
+# ── Internal helpers ──────────────────────────────────────────────────
 
 
 def _json_count(path: Path) -> int | None:
@@ -130,7 +184,13 @@ def _compare_count(name: str, left: int | None, right: int | None, add) -> None:
         add("error", name, f"{name} mismatch: {left} != {right}", left=left, right=right)
 
 
-def _check_state_counts(state_path: Path, nodes_count: int | None, edges_count: int | None, add) -> None:
+def _check_state(
+    state_path: Path,
+    nodes_count: int | None,
+    edges_count: int | None,
+    add,
+) -> None:
+    """Check state.json for status and stats consistency."""
     if not state_path.exists():
         add("warning", "state", "state.json missing")
         return
@@ -139,9 +199,28 @@ def _check_state_counts(state_path: Path, nodes_count: int | None, edges_count: 
     except Exception:
         add("warning", "state", "state.json unreadable")
         return
-    stats = state.get("stats") if isinstance(state, dict) else None
-    if not isinstance(stats, dict):
-        add("warning", "state.counts", "state.json has no stats counts")
+
+    if not isinstance(state, dict):
+        add("warning", "state", "state.json is not a valid object")
         return
-    _compare_count("state.symbols", stats.get("symbols"), nodes_count, add)
-    _compare_count("state.edges", stats.get("edges"), edges_count, add)
+
+    state_status = state.get("status", "unknown")
+    last_indexed = state.get("last_indexed_at")
+    deleted_files = state.get("deleted_files", [])
+
+    add("ok", "state.status", f"state status={state_status}")
+    if last_indexed:
+        add("ok", "state.last_indexed", f"state last_indexed_at={last_indexed}")
+    else:
+        add("warning", "state.last_indexed", "state has no last_indexed_at")
+
+    if deleted_files:
+        add("ok", "state.deleted_files", f"state deleted_files={len(deleted_files)}")
+    else:
+        add("ok", "state.deleted_files", "state deleted_files=0")
+
+    # Check stats if present
+    stats = state.get("stats")
+    if isinstance(stats, dict):
+        _compare_count("state.symbols", stats.get("symbols"), nodes_count, add)
+        _compare_count("state.edges", stats.get("edges"), edges_count, add)

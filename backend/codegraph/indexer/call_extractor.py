@@ -476,7 +476,7 @@ class _CallCollector(ast.NodeVisitor):
         if target_id:
             conf = get_confidence(resolution)
             reason = self._build_call_reason(resolution, call_expr, target_id)
-            evidence = self._build_call_evidence(resolution, call_expr, target_id)
+            evidence = self._build_call_evidence(resolution, call_expr, target_id, node)
             self.edges.append(GraphEdge(
                 id=self._next_edge_id(),
                 type=EdgeType.calls,
@@ -527,6 +527,8 @@ class _CallCollector(ast.NodeVisitor):
             return f"Direct call to same-file function `{expr}`."
         if resolution == Resolution.self_method_resolved:
             return f"Same-class method call `{expr}`."
+        if resolution == Resolution.class_method_resolved:
+            return f"Class constructor or method call `{expr}`."
         if resolution == Resolution.imported_function_exact:
             return f"Resolved `{expr}` via from-import."
         if resolution == Resolution.imported_function_alias:
@@ -545,20 +547,33 @@ class _CallCollector(ast.NodeVisitor):
             return f"Resolved `{expr}` via constructor-chain call."
         if resolution == Resolution.self_attribute_instance_resolved:
             return f"Resolved `{expr}` via self.attr instance variable."
+        if resolution == Resolution.name_match_candidate:
+            return f"Name-only match for `{expr}` — no import evidence, treat as possible."
+        if resolution == Resolution.unknown_external:
+            return f"Unresolved external call `{expr}` — no matching import or same-file definition."
         if resolution == Resolution.external_symbol:
-            return f"Unresolved external call `{expr}` — treated as third-party."
+            return f"External symbol `{expr}` — treated as third-party."
         if resolution == Resolution.unresolved:
             return f"Could not resolve `{expr}`."
         return f"Resolved `{expr}` (resolution: {resolution.value})."
 
     def _build_call_evidence(self, resolution: Resolution, call_expr: str | None,
-                             target_id: str) -> dict:
-        """Build evidence dict for this call edge."""
+                             target_id: str, node: ast.Call | None = None) -> dict:
+        """Build evidence dict for this call edge.
+
+        Every confirmed edge includes: call_site, source_file, source_line,
+        target, and resolution. Import-based edges additionally include
+        import_chain info.
+        """
         evidence: dict = {
-            "source_location": {
-                "file_path": self.rel,
-            },
+            "resolution": resolution.value,
+            "source_file": self.rel,
+            "target": target_id,
         }
+        if node is not None:
+            evidence["call_site"] = f"{self.rel}:{node.lineno}"
+            evidence["source_line"] = node.lineno
+
         if resolution == Resolution.imported_function_exact:
             evidence["import_resolution"] = "from-import exact name"
             evidence["matched_symbol_id"] = target_id
@@ -571,14 +586,25 @@ class _CallCollector(ast.NodeVisitor):
         elif resolution == Resolution.relative_import_resolved:
             evidence["import_resolution"] = "relative import"
             evidence["matched_symbol_id"] = target_id
+        elif resolution == Resolution.constructor_call_resolved:
+            evidence["import_resolution"] = "imported class constructor"
+            evidence["matched_symbol_id"] = target_id
+        elif resolution == Resolution.class_method_resolved:
+            evidence["resolution_method"] = "same-file class constructor or method"
+            evidence["matched_symbol_id"] = target_id
         elif resolution == Resolution.self_method_resolved:
             evidence["resolution_method"] = "same-class self.method()"
             evidence["matched_symbol_id"] = target_id
         elif resolution == Resolution.same_file_exact:
             evidence["resolution_method"] = "same-file function"
             evidence["matched_symbol_id"] = target_id
+        elif resolution == Resolution.name_match_candidate:
+            evidence["resolution_method"] = "name-only match (low confidence, not confirmed)"
+            evidence["matched_symbol_id"] = target_id
+        elif resolution == Resolution.unknown_external:
+            evidence["resolution_method"] = "unknown external / unresolved"
         elif resolution == Resolution.external_symbol:
-            evidence["resolution_method"] = "external / unresolved"
+            evidence["resolution_method"] = "external / third-party symbol"
         if call_expr:
             evidence["call_expr"] = call_expr
         return evidence
@@ -586,12 +612,17 @@ class _CallCollector(ast.NodeVisitor):
     # ── name call resolution ───────────────────────────────────────
 
     def _resolve_name_call(self, name: str) -> tuple[str, Resolution]:
-        """Resolve a plain name call: ``func()``."""
-        current_class = self._class_stack[-1] if self._class_stack else None
+        """Resolve a plain name call: ``func()``.
 
-        # Don't generate calls edges for class constructors like ``ClassName()``
-        if name in self.ctx.classes:
-            return "", Resolution.unresolved
+        Resolution priority:
+          1. Same-file top-level function → same_file_exact (0.95)
+          2. Same-class method (implicit self) → self_method_resolved (0.90)
+          3. Same-file class constructor → class_method_resolved (0.80)
+          4. Imported function (non-PascalCase) → import resolution (0.88-0.90)
+          5. Imported class constructor (PascalCase) → constructor_call_resolved (0.75)
+          6. Name-only fallthrough → name_match_candidate (0.35, NOT confirmed)
+        """
+        current_class = self._class_stack[-1] if self._class_stack else None
 
         # Same-file top-level function
         if name in self.ctx.functions:
@@ -601,18 +632,27 @@ class _CallCollector(ast.NodeVisitor):
         if current_class and name in self.ctx.methods.get(current_class, set()):
             return f"{self.rel}::{current_class}.{name}", Resolution.self_method_resolved
 
-        # Cross-file import — check if the name looks like a class (PascalCase heuristic)
+        # Same-file class constructor: ClassName() → class.__init__ or class itself
+        if name in self.ctx.classes:
+            init_method = f"{self.rel}::{name}.__init__"
+            if name in self.ctx.methods and "__init__" in self.ctx.methods[name]:
+                return init_method, Resolution.class_method_resolved
+            return f"{self.rel}::{name}", Resolution.same_file_exact
+
+        # Cross-file import resolution
         target = self.ctx.imports.resolve_name(name)
         if target:
-            # Heuristic: PascalCase names are likely classes, not callable functions.
-            # PEP 8: class names use CapWords convention.  Skip calls edges for them.
             if name[0].isupper():
-                return "", Resolution.unresolved
+                # PascalCase imported name — likely a class constructor call.
+                # Connect to the class itself (not __init__, since we can't
+                # verify the external class's methods at extract time).
+                return f"external:{target}", Resolution.constructor_call_resolved
             kind = self.ctx.imports.resolve_name_kind(name)
             return f"external:{target}", kind
 
-        # Unresolved — treated as external symbol
-        return f"external:{name}", Resolution.external_symbol
+        # Name-only fallthrough — no import evidence, not same-file.
+        # Must NOT enter confirmed impact. Uses name_match_candidate (0.35).
+        return f"external:{name}", Resolution.name_match_candidate
 
     # ── attribute call resolution ──────────────────────────────────
 
@@ -683,4 +723,5 @@ class _CallCollector(ast.NodeVisitor):
         if target:
             return f"external:{target}", Resolution.imported_module_attribute
 
-        return "", Resolution.unresolved
+        # Fallthrough — unknown external attribute call
+        return "", Resolution.unknown_external

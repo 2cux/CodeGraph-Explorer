@@ -46,6 +46,7 @@ RESOLUTION_CONFIDENCE: dict[Resolution, float] = {
     Resolution.fastapi_route_decorator: 0.95,
     Resolution.flask_route_decorator: 0.90,
     Resolution.django_view_heuristic: 0.65,
+    Resolution.framework_route_resolved: 0.92,
 
     # ── Test discovery ──────────────────────────────────────────────
     Resolution.direct_test_call: 0.90,
@@ -74,6 +75,18 @@ RESOLUTION_CONFIDENCE: dict[Resolution, float] = {
     Resolution.field_name_match: 0.80,
     Resolution.call_graph_neighbor: 0.85,
     Resolution.impact_neighbor: 0.80,
+
+    # ── Possible / low-confidence candidates ────────────────────────
+    Resolution.name_match_candidate: 0.35,
+    Resolution.filename_heuristic: 0.45,
+    Resolution.docstring_reference: 0.40,
+
+    # ── Unresolved / external / dynamic ─────────────────────────────
+    Resolution.dynamic_getattr: 0.15,
+    Resolution.reflection_call: 0.15,
+    Resolution.unknown_external: 0.30,
+    Resolution.decorator_unknown: 0.20,
+    Resolution.import_not_found: 0.25,
 
     # ── Fallbacks ───────────────────────────────────────────────────
     Resolution.attribute_guess: 0.55,

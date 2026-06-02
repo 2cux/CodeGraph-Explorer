@@ -194,9 +194,9 @@ pytest backend/tests/
 
 ## Database Rules
 
-- SQLite 数据库文件存储在 `.codegraph/index.sqlite`。
-- 数据库文件是索引产物，任何时候都可以通过 `codegraph index --force` 重建。
-- 不要在数据库迁移中破坏 `.codegraph/graph.json` 和 `.codegraph/symbols.json`，它们是互备存储。
+- SQLite 数据库文件（`.codegraph/index.sqlite`）是 MCP 查询主存储。
+- JSON 文件（`.codegraph/nodes.json`、`.codegraph/edges.json`、`.codegraph/graph.json`）是从 SQLite 导出的备份，用于 debug/fallback。
+- 不要在数据库迁移中破坏这些文件。如有不一致，运行 `codegraph doctor --repair` 从 SQLite 重建 JSON。
 - Evidence Pack 导出文件（JSON + Markdown）存储在 `.codegraph/evidence_packs/`。
 
 ## Backend Rules
