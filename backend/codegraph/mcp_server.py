@@ -3175,6 +3175,18 @@ def repo_summary(
         "low_confidence_ratio": low_conf_ratio,
     }
 
+    # Language breakdown
+    lang_files: dict[str, set[str]] = {}
+    lang_symbols: dict[str, int] = {}
+    for n in nodes:
+        lid = n.language_id or n.language or "unknown"
+        lang_files.setdefault(lid, set()).add(n.file_path)
+        lang_symbols[lid] = lang_symbols.get(lid, 0) + 1
+    language_breakdown = {
+        lid: {"files": len(lang_files.get(lid, set())), "symbols": lang_symbols.get(lid, 0)}
+        for lid in sorted(set(list(lang_files.keys()) + list(lang_symbols.keys())))
+    }
+
     idx = _build_index_status()
     idx_health = idx.get("index_health")
     index_info = {
@@ -3187,6 +3199,7 @@ def repo_summary(
     if response_mode == "compact":
         data: dict[str, Any] = {
             "stats": stats,
+            "language_breakdown": language_breakdown,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules[:5]],
             "entry_point_candidates": entry_candidates[:5],
             "test_coverage_signal": {
@@ -3200,6 +3213,7 @@ def repo_summary(
         data = {
             "repo": repo_info,
             "stats": stats,
+            "language_breakdown": language_breakdown,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules],
             "entry_point_candidates": entry_candidates,
             "test_coverage_signal": {

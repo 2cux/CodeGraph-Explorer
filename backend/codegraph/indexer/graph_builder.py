@@ -5,7 +5,7 @@ from typing import Any
 
 from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata, NodeType, Resolution
 from codegraph.graph.confidence import get_confidence
-from codegraph.indexer.scanner import scan_python_files, read_file, normalize_path
+from codegraph.indexer.scanner import scan_python_files, scan_supported_files, read_file, normalize_path
 from codegraph.indexer.parser_python import parse_file
 from codegraph.indexer.symbol_extractor import extract_symbols
 from codegraph.indexer.call_extractor import extract_calls
@@ -410,6 +410,48 @@ def _next_eid(counter: list[int]) -> str:
 
 # ── Phase 1: Language abstraction pipeline ─────────────────────────────
 
+# ── Extractor / Resolver factory ──────────────────────────────────────────
+# Lazy-import per language so optional dependencies (e.g. tree-sitter)
+# are only required when a file of that language is actually encountered.
+
+_EXTRACTOR_FACTORIES: dict[str, Any] = {}
+_RESOLVER_FACTORIES: dict[str, Any] = {}
+
+
+def _get_extractor(lang_id: str) -> Any | None:
+    """Return a :class:`LanguageExtractor` for *lang_id*, or ``None``."""
+    if lang_id not in _EXTRACTOR_FACTORIES:
+        if lang_id == "python":
+            from codegraph.language_support.python.extractor import PythonExtractor
+            _EXTRACTOR_FACTORIES[lang_id] = PythonExtractor()
+        elif lang_id == "typescript":
+            from codegraph.language_support.ts_js.extractor import TypeScriptExtractor
+            _EXTRACTOR_FACTORIES[lang_id] = TypeScriptExtractor()
+        elif lang_id == "javascript":
+            from codegraph.language_support.ts_js.extractor import JavaScriptExtractor
+            _EXTRACTOR_FACTORIES[lang_id] = JavaScriptExtractor()
+        else:
+            return None
+    return _EXTRACTOR_FACTORIES[lang_id]
+
+
+def _get_resolver(lang_id: str) -> Any | None:
+    """Return a :class:`Resolver` for *lang_id*, or ``None``."""
+    if lang_id not in _RESOLVER_FACTORIES:
+        if lang_id == "python":
+            from codegraph.language_support.python.resolver import PythonResolver
+            _RESOLVER_FACTORIES[lang_id] = PythonResolver()
+        elif lang_id == "typescript":
+            from codegraph.language_support.ts_js.resolver import TypeScriptResolver
+            _RESOLVER_FACTORIES[lang_id] = TypeScriptResolver()
+        elif lang_id == "javascript":
+            from codegraph.language_support.ts_js.resolver import JavaScriptResolver
+            _RESOLVER_FACTORIES[lang_id] = JavaScriptResolver()
+        else:
+            return None
+    return _RESOLVER_FACTORIES[lang_id]
+
+
 def build_index_v2(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
     """Build the code graph using the language abstraction layer.
 
@@ -417,63 +459,64 @@ def build_index_v2(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
     the language of each file, then routes to the appropriate extractor
     and resolver.
 
-    This produces identical output to :func:`build_index_from_paths` for
-    Python files, with the addition of ``provenance`` on every edge and
-    ``language_id`` / ``framework_id`` on every node.
+    Supported languages (Phase 2):
+    - Python (.py, .pyi) — production
+    - TypeScript (.ts, .tsx) — beta
+    - JavaScript (.js, .jsx, .mjs, .cjs) — beta
 
-    Unsupported files are skipped without error.
+    Unsupported files are skipped without error.  Parser errors are captured
+    as diagnostics and do not fail the index.
     """
     from codegraph.language_support.registry import get_registry
-    from codegraph.language_support.python.extractor import PythonExtractor
-    from codegraph.language_support.python.resolver import PythonResolver
 
     registry = get_registry()
-    python_extractor = PythonExtractor()
-    python_resolver = PythonResolver()
 
-    # Scan for supported files (currently only .py)
-    files: list[Path] = []
-    for py_file in scan_python_files(root):
-        if registry.is_supported(py_file):
-            files.append(py_file)
+    # Scan for all supported files (not just .py)
+    files = scan_supported_files(root, registry)
 
     if not files:
         return [], []
 
-    # Phase 1a: Per-file extraction
-    extractor_results: list[Any] = []
+    # Phase 1a: Per-file extraction, grouped by language
+    extractor_results_by_lang: dict[str, list[Any]] = {}
     all_nodes: list[GraphNode] = []
     all_edges: list[GraphEdge] = []
 
     for path in files:
         rel = _rel_path(root, path)
 
-        # Detect language and route to appropriate extractor
         lang_id = registry.detect(rel)
         if lang_id is None:
-            continue  # unsupported file — skip without error
+            continue
 
-        if lang_id == "python":
-            result = python_extractor.extract(
+        extractor = _get_extractor(lang_id)
+        if extractor is None:
+            continue
+
+        try:
+            result = extractor.extract(
                 file_path=str(path),
                 project_root=str(root),
             )
-            extractor_results.append(result)
+        except Exception:
+            # A single broken extractor must not fail the whole index
+            continue
 
-            # Collect symbols from this extraction
-            all_nodes.extend(result.symbols)
+        extractor_results_by_lang.setdefault(lang_id, []).append(result)
+        all_nodes.extend(result.symbols)
+        if hasattr(result, '_raw_edges'):
+            all_edges.extend(result._raw_edges)
 
-            # Collect raw edges (attached by the extractor for transport)
-            if hasattr(result, '_raw_edges'):
-                all_edges.extend(result._raw_edges)
-
-    # Phase 1b: Cross-file resolution
-    if extractor_results:
-        resolved = python_resolver.resolve(extractor_results)
-
-        # Merge resolved confirmed edges into the edge set
-        # (ResolvedEdge → GraphEdge conversion)
-        all_edges = _merge_resolved_edges(all_edges, resolved)
+    # Phase 1b: Cross-file resolution per language
+    for lang_id, results in extractor_results_by_lang.items():
+        resolver = _get_resolver(lang_id)
+        if resolver is None:
+            continue
+        try:
+            resolved = resolver.resolve(results)
+            all_edges = _merge_resolved_edges(all_edges, resolved)
+        except Exception:
+            continue
 
     # Deduplicate
     all_edges = _deduplicate_edges(all_edges)

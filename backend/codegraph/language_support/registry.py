@@ -162,6 +162,8 @@ def get_registry() -> LanguageRegistry:
 
     Default registrations:
     - ``python``: ``.py``, ``.pyi`` — production
+    - ``typescript``: ``.ts``, ``.tsx`` — beta
+    - ``javascript``: ``.js``, ``.jsx``, ``.mjs``, ``.cjs`` — beta
     """
     global _registry
     if _registry is None:
@@ -171,6 +173,20 @@ def get_registry() -> LanguageRegistry:
             extensions=[".py", ".pyi"],
             filenames=[],
             support_level=SupportLevel.PRODUCTION,
+            enabled=True,
+        ))
+        _registry.register(LanguageRegistration(
+            language_id="typescript",
+            extensions=[".ts", ".tsx"],
+            filenames=[],
+            support_level=SupportLevel.BETA,
+            enabled=True,
+        ))
+        _registry.register(LanguageRegistration(
+            language_id="javascript",
+            extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            filenames=[],
+            support_level=SupportLevel.BETA,
             enabled=True,
         ))
     return _registry

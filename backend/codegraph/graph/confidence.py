@@ -42,6 +42,30 @@ RESOLUTION_CONFIDENCE: dict[Resolution, float] = {
     Resolution.class_method_resolved: 0.80,
     Resolution.type_hint_resolved: 0.75,
 
+    # ── TS/JS import resolution ─────────────────────────────────────
+    Resolution.imported_symbol_exact: 0.90,
+    Resolution.imported_alias_exact: 0.88,
+    Resolution.default_import_exact: 0.90,
+    Resolution.namespace_import_exact: 0.85,
+    Resolution.relative_import_exact: 0.90,
+    Resolution.barrel_export_resolved: 0.80,
+    Resolution.this_method_exact: 0.90,
+    Resolution.class_method_exact: 0.80,
+    Resolution.require_exact: 0.88,
+    Resolution.module_exports_exact: 0.85,
+
+    # ── TS/JS possible / low-confidence ────────────────────────────
+    Resolution.object_method_unknown: 0.35,
+    Resolution.dynamic_property_access: 0.25,
+    Resolution.callback_candidate: 0.30,
+
+    # ── TS/JS unresolved / external ─────────────────────────────────
+    Resolution.package_external: 0.50,
+    Resolution.dynamic_import: 0.20,
+    Resolution.require_unknown: 0.20,
+    Resolution.computed_property: 0.15,
+    Resolution.any_unknown: 0.15,
+
     # ── Route / entry-point detection ───────────────────────────────
     Resolution.fastapi_route_decorator: 0.95,
     Resolution.flask_route_decorator: 0.90,

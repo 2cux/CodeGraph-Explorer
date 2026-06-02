@@ -77,6 +77,48 @@ def scan_python_files(root: Path, collect_warnings: list[dict] | None = None) ->
     return sorted(files)
 
 
+def scan_supported_files(root: Path, registry: "LanguageRegistry | None" = None,
+                         collect_warnings: list[dict] | None = None) -> list[Path]:
+    """Discover all source files under *root* whose language is registered.
+
+    Uses the ``LanguageRegistry`` singleton by default, or a caller-provided
+    instance. Supports any language whose file extension is registered.
+
+    Symlink safety checks are applied; out-of-root symlinks are skipped.
+    """
+    if registry is None:
+        from codegraph.language_support.registry import get_registry
+        registry = get_registry()
+
+    files: list[Path] = []
+
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        parts = path.relative_to(root).parts
+        if any(part in EXCLUDE_DIRS for part in parts):
+            continue
+
+        # Check if the file extension is supported
+        if not registry.is_supported(path):
+            continue
+
+        # Symlink safety check
+        is_safe, warning_msg = _is_safe_path(path, root)
+        if not is_safe:
+            if collect_warnings is not None:
+                collect_warnings.append({
+                    "type": "symlink_outside_root",
+                    "severity": "warning",
+                    "message": warning_msg or "Skipped: path outside repo root.",
+                    "file": normalize_path(str(path)),
+                })
+            continue
+        files.append(path)
+
+    return sorted(files)
+
+
 def read_file(path: Path) -> str:
     """Read and return the text content of a source file."""
     return path.read_text(encoding="utf-8")

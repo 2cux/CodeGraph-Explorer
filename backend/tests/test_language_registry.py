@@ -225,6 +225,96 @@ class TestLanguageRegistry:
         assert lr.get("typescript").support_level == SupportLevel.BETA
 
 
+class TestTypeScriptJavaScriptDetection:
+    """Phase 2: TypeScript / JavaScript beta support."""
+
+    def test_detect_typescript_ts(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="typescript", extensions=[".ts", ".tsx"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("src/components/Button.ts") == "typescript"
+
+    def test_detect_typescript_tsx(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="typescript", extensions=[".ts", ".tsx"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("src/components/Button.tsx") == "typescript"
+
+    def test_detect_javascript_js(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="javascript", extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("src/index.js") == "javascript"
+
+    def test_detect_javascript_jsx(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="javascript", extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("src/App.jsx") == "javascript"
+
+    def test_detect_javascript_mjs(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="javascript", extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("src/module.mjs") == "javascript"
+
+    def test_detect_javascript_cjs(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="javascript", extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("src/module.cjs") == "javascript"
+
+    def test_ts_support_level_beta(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="typescript", extensions=[".ts", ".tsx"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.get("typescript").support_level == SupportLevel.BETA
+
+    def test_js_support_level_beta(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="javascript", extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.get("javascript").support_level == SupportLevel.BETA
+
+    def test_unsupported_extension_returns_none(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="typescript", extensions=[".ts", ".tsx"]
+        ))
+        assert lr.detect("README.md") is None
+        assert lr.detect("main.py") is None
+        assert lr.detect("Dockerfile") is None
+
+    def test_default_singleton_includes_ts_js(self):
+        reset_registry()
+        reg = get_registry()
+        assert reg.detect("app.ts") == "typescript"
+        assert reg.detect("app.tsx") == "typescript"
+        assert reg.detect("app.js") == "javascript"
+        assert reg.detect("app.jsx") == "javascript"
+        assert reg.detect("app.mjs") == "javascript"
+        assert reg.detect("app.cjs") == "javascript"
+        assert reg.get("typescript").support_level == SupportLevel.BETA
+        assert reg.get("javascript").support_level == SupportLevel.BETA
+        assert reg.get("python").support_level == SupportLevel.PRODUCTION
+
+
 class TestSingletonRegistry:
     def test_get_registry_returns_same_instance(self):
         r1 = get_registry()

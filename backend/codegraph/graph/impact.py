@@ -30,6 +30,17 @@ _CONFIRMED_RESOLUTIONS: set[Resolution] = {
     Resolution.self_attribute_instance_resolved,
     Resolution.type_hint_resolved,
     Resolution.exact_ast_match,
+    # TS/JS confirmed resolutions
+    Resolution.imported_symbol_exact,
+    Resolution.imported_alias_exact,
+    Resolution.default_import_exact,
+    Resolution.namespace_import_exact,
+    Resolution.relative_import_exact,
+    Resolution.barrel_export_resolved,
+    Resolution.this_method_exact,
+    Resolution.class_method_exact,
+    Resolution.require_exact,
+    Resolution.module_exports_exact,
     Resolution.fastapi_route_decorator,
     Resolution.flask_route_decorator,
     Resolution.framework_route_resolved,
@@ -46,6 +57,9 @@ _POSSIBLE_RESOLUTIONS: set[Resolution] = {
     Resolution.attribute_guess,
     Resolution.same_module_fallback,
     Resolution.django_view_heuristic,
+    # TS/JS possible resolutions
+    Resolution.object_method_unknown,
+    Resolution.callback_candidate,
 }
 
 # Resolutions that are unresolved / external
@@ -57,6 +71,13 @@ _UNRESOLVED_RESOLUTIONS: set[Resolution] = {
     Resolution.import_not_found,
     Resolution.external_symbol,
     Resolution.unresolved,
+    # TS/JS unresolved / external
+    Resolution.dynamic_property_access,
+    Resolution.package_external,
+    Resolution.dynamic_import,
+    Resolution.require_unknown,
+    Resolution.computed_property,
+    Resolution.any_unknown,
 }
 
 

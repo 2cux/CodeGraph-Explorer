@@ -59,6 +59,30 @@ class Resolution(str, Enum):
     same_module_fallback = "same_module_fallback"
     type_hint_resolved = "type_hint_resolved"
 
+    # ── TS/JS import resolution ─────────────────────────────────────
+    imported_symbol_exact = "imported_symbol_exact"
+    imported_alias_exact = "imported_alias_exact"
+    default_import_exact = "default_import_exact"
+    namespace_import_exact = "namespace_import_exact"
+    relative_import_exact = "relative_import_exact"
+    barrel_export_resolved = "barrel_export_resolved"
+    this_method_exact = "this_method_exact"
+    class_method_exact = "class_method_exact"
+    require_exact = "require_exact"
+    module_exports_exact = "module_exports_exact"
+
+    # ── TS/JS possible / low-confidence ────────────────────────────
+    object_method_unknown = "object_method_unknown"
+    dynamic_property_access = "dynamic_property_access"
+    callback_candidate = "callback_candidate"
+
+    # ── TS/JS unresolved / external ─────────────────────────────────
+    package_external = "package_external"
+    dynamic_import = "dynamic_import"
+    require_unknown = "require_unknown"
+    computed_property = "computed_property"
+    any_unknown = "any_unknown"
+
     # ── Route / entry-point detection ───────────────────────────────
     fastapi_route_decorator = "fastapi_route_decorator"
     flask_route_decorator = "flask_route_decorator"
