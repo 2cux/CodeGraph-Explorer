@@ -413,23 +413,52 @@ def get_index_status(project_root: str | Path) -> dict[str, Any]:
         pass
 
     # ── Hook status ────────────────────────────────────────────────────
-    hook_config: dict[str, Any] = state.get("hook", {})
-    hook_status: dict[str, Any] = {
-        "installed": hook_config.get("installed", False),
-        "auto_update_on_commit": hook_config.get(
-            "auto_update_on_commit", True,
-        ),
-        "last_run_at": hook_config.get("last_run_at"),
-        "last_run_status": (
-            "success"
-            if hook_config.get("last_run_exit_code") == 0
-            else "error"
-            if hook_config.get("last_run_exit_code") is not None
-            else None
-        ),
-        "total_runs": hook_config.get("total_runs", 0),
-        "total_failures": hook_config.get("total_failures", 0),
-    }
+    try:
+        from codegraph.hooks.manager import HookManager
+        manager_status = HookManager.status(root)
+        hook_status: dict[str, Any] = {
+            "state": manager_status.get("state"),
+            "installed": manager_status.get("installed", False),
+            "auto_update_on_commit": manager_status.get(
+                "auto_update_on_commit", True,
+            ),
+            "valid": manager_status.get("valid", False),
+            "issues": manager_status.get("issues", []),
+            "hook_path": manager_status.get("hook_path"),
+            "last_run_at": manager_status.get("last_run_at"),
+            "last_run_status": (
+                "success"
+                if manager_status.get("last_run_exit_code") == 0
+                else "error"
+                if manager_status.get("last_run_exit_code") is not None
+                else None
+            ),
+            "total_runs": manager_status.get("total_runs", 0),
+            "total_failures": manager_status.get("total_failures", 0),
+        }
+    except Exception:
+        hook_config: dict[str, Any] = state.get("hook", {})
+        hook_status = {
+            "state": "disabled"
+            if not hook_config.get("auto_update_on_commit", True)
+            else "enabled"
+            if hook_config.get("installed", False)
+            else "missing",
+            "installed": hook_config.get("installed", False),
+            "auto_update_on_commit": hook_config.get(
+                "auto_update_on_commit", True,
+            ),
+            "last_run_at": hook_config.get("last_run_at"),
+            "last_run_status": (
+                "success"
+                if hook_config.get("last_run_exit_code") == 0
+                else "error"
+                if hook_config.get("last_run_exit_code") is not None
+                else None
+            ),
+            "total_runs": hook_config.get("total_runs", 0),
+            "total_failures": hook_config.get("total_failures", 0),
+        }
 
     # ── Build result ────────────────────────────────────────────────────
     result: dict[str, Any] = {

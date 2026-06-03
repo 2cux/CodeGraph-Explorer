@@ -220,12 +220,13 @@ class HookManager:
         git_dir = HookManager._find_git_dir(project_root)
         hook_path = git_dir / "hooks" / HOOK_NAME if git_dir else None
 
+        hook_exists = bool(hook_path and hook_path.exists())
         has_managed_block = False
         python_valid = False
         root_valid = False
         issues: list[str] = []
 
-        if hook_path and hook_path.exists():
+        if hook_exists:
             content = hook_path.read_text(encoding="utf-8")
             has_managed_block = SENTINEL_START in content
 
@@ -240,6 +241,8 @@ class HookManager:
                     issues.append(
                         f"Python path in hook does not exist: {python_path}",
                     )
+                else:
+                    issues.append("CODEGRAPH_PYTHON is missing from hook")
 
                 # Check project root validity
                 hook_root = HookManager._extract_field(
@@ -251,6 +254,8 @@ class HookManager:
                     issues.append(
                         f"CODEGRAPH_PROJECT_ROOT in hook does not exist: {hook_root}",
                     )
+                else:
+                    issues.append("CODEGRAPH_PROJECT_ROOT is missing from hook")
 
         if not git_dir:
             issues.append("Not a git repository")
@@ -262,10 +267,21 @@ class HookManager:
             )
 
         valid = len(issues) == 0
+        auto_update = hook_config.get("auto_update_on_commit", True)
+        if not auto_update:
+            state = "disabled"
+        elif not has_managed_block:
+            state = "missing"
+        elif valid:
+            state = "enabled"
+        else:
+            state = "invalid"
 
         return {
+            "state": state,
             "installed": has_managed_block,
             "hook_path": str(hook_path) if hook_path else None,
+            "hook_exists": hook_exists,
             "has_managed_block": has_managed_block,
             "auto_update_on_commit": hook_config.get(
                 "auto_update_on_commit", True,

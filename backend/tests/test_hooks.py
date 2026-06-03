@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -241,6 +242,13 @@ class TestHookTemplate:
         script = build_unix_hook_script("/usr/bin/python3", "/home/user/project")
         assert "|| true" in script
 
+    def test_unix_template_uses_project_root_and_logs_python_failure(self):
+        """Unix template cd's into the project root and logs invalid Python."""
+        script = build_unix_hook_script("/usr/bin/python3", "/home/user/project")
+        assert 'cd "$CODEGRAPH_PROJECT_ROOT"' in script
+        assert "CODEGRAPH_HOOK_LOG" in script
+        assert "Python path in hook does not exist" in script
+
     def test_windows_template_contains_sentinels(self):
         """Windows template includes managed block sentinel comments."""
         script = build_windows_hook_script(
@@ -255,6 +263,17 @@ class TestHookTemplate:
             "C:\\Python\\python.exe", "C:\\project",
         )
         assert "exit /b 0" in script
+
+    def test_windows_template_quotes_paths_and_uses_project_root(self):
+        """Windows template quotes paths for Git Bash/cmd path compatibility."""
+        script = build_windows_hook_script(
+            "C:\\Program Files\\Python\\python.exe",
+            "C:\\项目 示例\\repo",
+        )
+        assert 'set "CODEGRAPH_PYTHON=C:/Program Files/Python/python.exe"' in script
+        assert 'set "CODEGRAPH_PROJECT_ROOT=C:/项目 示例/repo"' in script
+        assert 'cd /d "%CODEGRAPH_PROJECT_ROOT%"' in script
+        assert "CODEGRAPH_HOOK_LOG" in script
 
 
 # ══ HookManager ═══════════════════════════════════════════════════════════
@@ -318,6 +337,22 @@ class TestHookManagerInstall:
         HookManager.install(root, force=True)
         content = (root / ".git" / "hooks" / "post-commit").read_text("utf-8")
         assert content.count(SENTINEL_START) == 1  # still only one
+
+    def test_install_force_refreshes_managed_block_content(self, tmp_path: Path):
+        """install(force=True) refreshes stale Python/root fields."""
+        root = _init_git_repo(tmp_path)
+        _make_dot_codegraph(root)
+        HookManager.install(root)
+        hook_path = root / ".git" / "hooks" / "post-commit"
+        content = hook_path.read_text("utf-8")
+        hook_path.write_text(
+            content.replace("CODEGRAPH_PYTHON=", "CODEGRAPH_PYTHON_STALE="),
+            encoding="utf-8",
+        )
+        HookManager.install(root, force=True)
+        refreshed = hook_path.read_text("utf-8")
+        assert "CODEGRAPH_PYTHON=" in refreshed
+        assert "CODEGRAPH_PYTHON_STALE=" not in refreshed
 
     def test_install_preserves_user_hook_content(self, tmp_path: Path):
         """Installing does not overwrite user's own hook content outside the block."""
@@ -433,6 +468,7 @@ class TestHookManagerStatus:
         status = HookManager.status(root)
         assert status["installed"] is True
         assert status["valid"] is True
+        assert status["state"] == "enabled"
 
     def test_status_includes_run_stats(self, tmp_path: Path):
         """status() includes run statistics from state."""
@@ -460,6 +496,7 @@ class TestHookManagerStatus:
         status = HookManager.status(root)
         assert status["installed"] is False
         assert status["has_managed_block"] is False
+        assert status["state"] == "missing"
 
     def test_status_auto_update_disabled(self, tmp_path: Path):
         """status() reflects auto_update_on_commit setting."""
@@ -469,6 +506,26 @@ class TestHookManagerStatus:
         store.update_hook_config(auto_update_on_commit=False)
         status = HookManager.status(root)
         assert status["auto_update_on_commit"] is False
+        assert status["state"] == "disabled"
+
+    def test_status_detects_invalid_python_path(self, tmp_path: Path):
+        """status() reports invalid when the managed Python path is stale."""
+        root = _init_git_repo(tmp_path)
+        _make_dot_codegraph(root)
+        HookManager.install(root)
+        hook_path = root / ".git" / "hooks" / "post-commit"
+        content = hook_path.read_text("utf-8")
+        hook_path.write_text(
+            content.replace(
+                HookManager._extract_field(content, "CODEGRAPH_PYTHON") or "",
+                str(root / "missing-python.exe"),
+            ),
+            encoding="utf-8",
+        )
+        status = HookManager.status(root)
+        assert status["state"] == "invalid"
+        assert status["valid"] is False
+        assert any("Python path" in issue for issue in status["issues"])
 
 
 # ══ CLI: hooks commands ════════════════════════════════════════════════════
@@ -511,6 +568,7 @@ class TestCliHooks:
         data = json.loads(result.stdout)
         assert "installed" in data
         assert "auto_update_on_commit" in data
+        assert "state" in data
 
     def test_hooks_install_no_git(self, tmp_path: Path):
         """codegraph hooks install in a non-git directory fails."""
@@ -711,6 +769,25 @@ class TestCliInitHook:
         # The hook wasn't installed previously, so it shouldn't exist
         assert not hook_path.exists()
 
+    def test_maybe_install_hook_force_refreshes_existing_block(self, tmp_path: Path):
+        """init --force path can refresh stale hook Python/project fields."""
+        root = _init_git_repo(tmp_path)
+        _make_dot_codegraph(root)
+        from codegraph.cli.main import _maybe_install_hook
+        store = IndexStateStore(root / ".codegraph")
+        _maybe_install_hook(root, no_hook=False, state_store=store)
+        hook_path = root / ".git" / "hooks" / "post-commit"
+        stale = hook_path.read_text("utf-8").replace(
+            "CODEGRAPH_PROJECT_ROOT=", "CODEGRAPH_PROJECT_ROOT_STALE=",
+        )
+        hook_path.write_text(stale, encoding="utf-8")
+
+        _maybe_install_hook(root, no_hook=False, state_store=store, force=True)
+
+        refreshed = hook_path.read_text("utf-8")
+        assert "CODEGRAPH_PROJECT_ROOT=" in refreshed
+        assert "CODEGRAPH_PROJECT_ROOT_STALE=" not in refreshed
+
 
 # ══ Hook logger ═══════════════════════════════════════════════════════════
 
@@ -737,6 +814,57 @@ class TestHookLogger:
         logger1 = get_hook_logger(log_dir)
         logger2 = get_hook_logger(log_dir)
         assert logger1 is logger2
+
+
+class TestCliSyncFailureHandling:
+    """Tests for hook-triggered sync failure handling."""
+
+    def test_sync_uses_env_project_root_and_logs_missing_index(self, tmp_path: Path):
+        """sync exits 0 and writes hooks.log when env root has no index."""
+        root = _init_git_repo(tmp_path)
+        result = runner.invoke(
+            __import__("codegraph.cli.main", fromlist=["app"]).app,
+            ["sync", "--incremental", "--quiet", "--trigger", "post-commit"],
+            env={"CODEGRAPH_PROJECT_ROOT": str(root)},
+        )
+        assert result.exit_code == 0
+        log_path = root / ".codegraph" / "logs" / "hooks.log"
+        assert log_path.exists()
+        assert "Sync failed" in log_path.read_text("utf-8")
+        state = IndexStateStore(root / ".codegraph").load()
+        assert state["status"] == "error"
+        assert state["last_error"]
+
+    def test_sync_records_successful_hook_run(self, tmp_path: Path, monkeypatch):
+        """hook-triggered sync records run stats and marks index fresh."""
+        root = _init_git_repo(tmp_path)
+        _make_dot_codegraph(root)
+
+        import codegraph.indexer.incremental as incremental_mod
+
+        def fake_incremental(*args, **kwargs):
+            return SimpleNamespace(
+                status="fresh",
+                error=None,
+                reparsed_files=1,
+                inserted_nodes_count=2,
+                inserted_edges_count=3,
+            )
+
+        monkeypatch.setattr(
+            incremental_mod, "run_incremental_index", fake_incremental,
+        )
+        result = runner.invoke(
+            __import__("codegraph.cli.main", fromlist=["app"]).app,
+            ["sync", "--incremental", "--quiet", "--trigger", "post-commit"],
+            env={"CODEGRAPH_PROJECT_ROOT": str(root)},
+        )
+        assert result.exit_code == 0
+        store = IndexStateStore(root / ".codegraph")
+        cfg = store.get_hook_config()
+        assert cfg["total_runs"] == 1
+        assert cfg["total_failures"] == 0
+        assert store.load()["status"] == "fresh"
 
 
 # ══ Windows path compatibility ════════════════════════════════════════════
@@ -789,6 +917,18 @@ class TestEdgeCases:
         hook = status["hook"]
         assert "installed" in hook
         assert "auto_update_on_commit" in hook
+        assert "state" in hook
+
+    def test_get_index_status_uses_actual_hook_file_state(self, tmp_path: Path):
+        """repo status detects a missing hook even if state.json is stale."""
+        root = _init_git_repo(tmp_path)
+        _make_dot_codegraph(root)
+        HookManager.install(root)
+        (root / ".git" / "hooks" / "post-commit").unlink()
+        from codegraph.indexer.status import get_index_status
+        status = get_index_status(root)
+        assert status["hook"]["installed"] is False
+        assert status["hook"]["state"] == "missing"
 
     def test_repo_status_mcp_includes_hook_fields(self, tmp_path: Path):
         """repo_status MCP response includes hook_installed/hook_auto_update."""
@@ -807,6 +947,7 @@ class TestEdgeCases:
             data = response["data"]
             assert "hook_installed" in data
             assert "hook_auto_update" in data
+            assert "hook_state" in data
         finally:
             if saved_root is not None:
                 mcp_mod._project_root = saved_root

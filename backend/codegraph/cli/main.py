@@ -141,6 +141,7 @@ def _maybe_install_hook(
     root_path: Path,
     no_hook: bool,
     state_store: IndexStateStore,
+    force: bool = False,
 ) -> None:
     """Auto-install the git post-commit hook after a successful init.
 
@@ -165,11 +166,11 @@ def _maybe_install_hook(
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
         from codegraph.hooks.template import SENTINEL_START
-        if SENTINEL_START in content:
+        if SENTINEL_START in content and not force:
             return  # Already installed, nothing to do
 
     # Install the hook
-    result = HookManager.install(root_path)
+    result = HookManager.install(root_path, force=force)
     if result["installed"]:
         typer.echo()
         typer.echo(
@@ -255,7 +256,7 @@ def init(
     if not no_sqlite and counts.get("fts_symbols", 0) > 0:
         typer.echo(f"  FTS symbols:   {counts['fts_symbols']}")
 
-    _maybe_install_hook(root_path, no_hook, state_store)
+    _maybe_install_hook(root_path, no_hook, state_store, force=force)
 
 
 @app.command(name="index", hidden=True)
@@ -2090,14 +2091,18 @@ def sync_cmd(
         from codegraph.indexer.incremental import run_incremental_index
 
         result = run_incremental_index(
-            project_root, cg_dir, None, state_store=state_store,
+            project_root, cg_dir, FileStore(cg_dir), state_store=state_store,
         )
+        if result.status == "missing":
+            raise RuntimeError("No index metadata found. Run 'codegraph init' first.")
+        if result.status == "error":
+            raise RuntimeError(result.error or "Incremental sync failed")
 
         duration_ms = (time_module.monotonic() - start_time) * 1000
         _log(
-            f"Sync complete: {result.get('reparsed_files', 0)} files "
-            f"re-parsed, {result.get('inserted_nodes', 0)} nodes, "
-            f"{result.get('inserted_edges', 0)} edges "
+            f"Sync complete: {result.reparsed_files} files "
+            f"re-parsed, {result.inserted_nodes_count} nodes, "
+            f"{result.inserted_edges_count} edges "
             f"({duration_ms:.0f}ms)",
         )
 
@@ -2111,6 +2116,7 @@ def sync_cmd(
         try:
             state_store = IndexStateStore(cg_dir)
             state_store.record_hook_run(exit_code=1, duration_ms=duration_ms)
+            state_store.update_status("error", last_error=str(exc))
         except Exception:
             pass
     finally:
@@ -2233,6 +2239,7 @@ def hooks_status(
         return
 
     typer.echo("Hook status:")
+    typer.echo(f"  State:                  {status['state']}")
     typer.echo(f"  Installed:              {status['installed']}")
     typer.echo(f"  Auto-update on commit:  {status['auto_update_on_commit']}")
     typer.echo(f"  Hook path:              {status['hook_path'] or 'N/A'}")
@@ -2353,6 +2360,12 @@ def _resolve_project_root() -> Path | None:
 
     Returns the project root (parent of .codegraph), or None.
     """
+    env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT")
+    if env_root:
+        env_path = Path(env_root).resolve()
+        if env_path.is_dir():
+            return env_path
+
     start = Path.cwd()
     for parent in [start] + list(start.parents):
         if (parent / ".codegraph").is_dir():

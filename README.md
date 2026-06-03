@@ -314,6 +314,58 @@ codegraph configure remove all
 
 ---
 
+## Auto-update By Default
+
+Run this once in a Git repository:
+
+```bash
+codegraph init
+```
+
+By default, `codegraph init` will:
+
+- Build the initial local index in `.codegraph/`
+- Install a managed Git `post-commit` hook
+- Incrementally update the index after every commit
+
+After that, the normal Git workflow is enough:
+
+```bash
+git add .
+git commit -m "your change"
+codegraph status
+codegraph doctor
+```
+
+The post-commit hook is non-blocking. If an update fails, Git commit still
+finishes successfully and CodeGraph writes a warning to
+`.codegraph/logs/hooks.log`. Use `codegraph doctor` to diagnose the issue and
+get the repair command, usually `codegraph hooks install --force` or
+`codegraph init --force`.
+
+To turn off commit-time auto-update:
+
+```bash
+codegraph init --no-hook
+codegraph config set auto_update_on_commit false
+codegraph hooks uninstall
+```
+
+To inspect or repair hook state:
+
+```bash
+codegraph hooks status
+codegraph doctor
+codegraph hooks install --force
+```
+
+`post-commit` auto-update runs after commits. If you want the index to update
+when files are saved before committing, use watch mode instead:
+
+```bash
+codegraph watch
+```
+
 ## Makefile
 
 ```makefile

@@ -134,7 +134,7 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "confirmed_files", "possible_files",
     "confirmed_impact", "possible_impact",
     # Hook / auto-update status
-    "hook_installed", "hook_auto_update", "hook_status", "hook",
+    "hook_installed", "hook_auto_update", "hook_state", "hook_status", "hook",
     # Count signals
     "related_tests_count", "selected_context_count",
     "unresolved_count", "changed_file_count",
@@ -557,14 +557,15 @@ def _serialize_edge_full(
 # ── Unified Response Format ───────────────────────────────────────────────
 
 
-def _build_index_status() -> dict[str, Any]:
+def _build_index_status(project_root: str | None = None) -> dict[str, Any]:
     """Build the index_status block shared by all tool responses.
 
     Uses the lite ``get_index_status()`` path — reads persistent
     metadata only (state.json, metadata.json, fingerprints.json,
     validation_report.json).  No file scanning, no hashing.
     """
-    cg_dir = _find_codegraph_dir(_project_root)
+    root_hint = project_root or globals().get("_project_root")
+    cg_dir = _find_codegraph_dir(root_hint)
     if cg_dir is None:
         return {
             "status": "missing",
@@ -587,13 +588,14 @@ def _build_index_status() -> dict[str, Any]:
 
     # Enrich with live store stats when available
     stats = lite.get("stats", {"files": 0, "symbols": 0, "edges": 0})
-    if _store is not None:
-        nodes = _store.all_nodes()
+    store_obj = globals().get("_store")
+    if store_obj is not None:
+        nodes = store_obj.all_nodes()
         files = {n.file_path for n in nodes if n.file_path}
         stats = {
             "files": len(files),
             "symbols": len(nodes),
-            "edges": _store.edge_count(),
+            "edges": store_obj.edge_count(),
         }
 
     # Build backward-compatible status block
@@ -627,6 +629,9 @@ def _build_index_status() -> dict[str, Any]:
 
     if lite.get("last_incremental_stats"):
         status_block["last_incremental_stats"] = lite["last_incremental_stats"]
+
+    if lite.get("hook"):
+        status_block["hook"] = lite["hook"]
 
     if lite.get("index_health"):
         status_block["index_health"] = lite["index_health"]
@@ -3064,7 +3069,7 @@ def repo_status(
         response_mode: "compact" (default) or "standard"
     """
     project_root = root or _project_root
-    index_status = _build_index_status()
+    index_status = _build_index_status(project_root)
 
     if index_status["status"] == "missing":
         return _respond_ok(
@@ -3102,6 +3107,7 @@ def repo_status(
     hook = index_status.get("hook", {})
     hook_installed = hook.get("installed", False)
     hook_auto_update = hook.get("auto_update_on_commit", True)
+    hook_state = hook.get("state")
 
     # Build warnings (stale index + hook not installed)
     warn_list: list[dict[str, Any]] = []
@@ -3141,6 +3147,7 @@ def repo_status(
             "suggested_fix": index_status.get("suggested_fix"),
             "hook_installed": hook_installed,
             "hook_auto_update": hook_auto_update,
+            "hook_state": hook_state,
         }
     else:
         data = {
