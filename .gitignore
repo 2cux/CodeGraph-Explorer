@@ -32,6 +32,9 @@ htmlcov/
 venv/
 env/
 .virtualenv/
+Lib/
+Scripts/
+pyvenv.cfg
 
 # --- IDE / Editor ---
 .vscode/

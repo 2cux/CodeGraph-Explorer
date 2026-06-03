@@ -12,7 +12,7 @@
 ![C#](https://img.shields.io/badge/C%23-Beta-512bd4)
 ![MCP](https://img.shields.io/badge/MCP-Agent%20Tools-purple)
 ![CodeGraph](https://img.shields.io/badge/CodeGraph-Local%20Index-orange)
-![Benchmark](https://img.shields.io/badge/Benchmark--31.3%25%20tokens-success)
+![Benchmark](https://img.shields.io/badge/Benchmark--74.6%25%20tokens-success)
 
 CodeGraph Explorer 会提前将代码库解析为结构化代码图谱，让 Claude Code、Cursor、Codex 等 AI 编码 Agent 可以通过 MCP 查询符号、调用者、被调用者、局部子图、影响面、测试信号和索引状态，而不是反复 `grep` / `glob` / `read` 扫描代码文件。
 
@@ -174,7 +174,7 @@ CodeGraph Explorer 会检测索引是否过期：
 | Recall >= baseline | 10/12 (83.3%) | ≥ 7/12 (58%) | ✅ |
 | grep/read 调用减少 | 90.3% | ≥ 40% | ✅ |
 | 文件读取减少 | 77.5% | ≥ 30% | ✅ |
-| Token 减少 | 87.6% | ≥ 10% | ✅ |
+| Token 减少 | 74.6% | ≥ 10% | ✅ |
 | Compact vs Standard payload 减少 | 68.1% | ≥ 30% | ✅ |
 | Compact 平均 payload tokens | 685 | ≤ 2,000 | ✅ |
 | 完整任务平均 token 估计 | 1,118 | ≤ 3,000 | ✅ |
@@ -951,11 +951,13 @@ MIT
 | Document | Description |
 |----------|-------------|
 | [docs/mcp-tools.md](docs/mcp-tools.md) | MCP tools reference with parameters and examples |
+| [docs/language-support.md](docs/language-support.md) | Language and framework support matrix with limitations |
 | [docs/benchmark.md](docs/benchmark.md) | Benchmark suite and regression gate guide |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and fixes |
 | [docs/evidence-pack.md](docs/evidence-pack.md) | Evidence Pack format, usage, and limitations |
 | [docs/development.md](docs/development.md) | Development setup, conventions, and workflow |
 | [docs/storage.md](docs/storage.md) | Storage layer details |
+| [CHANGELOG.md](CHANGELOG.md) | Release history and version changes |
 | [docs/PRD/INDEX.md](docs/PRD/INDEX.md) | Full PRD index (design reference) |
 
 ---

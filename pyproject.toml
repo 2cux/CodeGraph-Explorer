@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codegraph"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 description = "AI Agent-first code context and exploration tool"
 requires-python = ">=3.10"
 dependencies = [
