@@ -44,6 +44,11 @@ _CONFIRMED_RESOLUTIONS: set[Resolution] = {
     Resolution.fastapi_route_decorator,
     Resolution.flask_route_decorator,
     Resolution.framework_route_resolved,
+    Resolution.express_route_handler,
+    Resolution.nextjs_file_route,
+    Resolution.nestjs_controller_route,
+    Resolution.nestjs_injection_resolved,
+    Resolution.jsx_component_resolved,
 }
 
 # Resolutions that are possible / low-confidence candidates
@@ -60,6 +65,7 @@ _POSSIBLE_RESOLUTIONS: set[Resolution] = {
     # TS/JS possible resolutions
     Resolution.object_method_unknown,
     Resolution.callback_candidate,
+    Resolution.inline_handler,
 }
 
 # Resolutions that are unresolved / external
@@ -120,6 +126,8 @@ _STATE_MUTATION_KEYWORDS = [
     "patch", "commit", "flush", "sync", "upload",
 ]
 
+_IMPACT_EDGE_TYPES = {EdgeType.calls, EdgeType.routes_to, EdgeType.depends_on}
+
 
 def transitive_callers(
     store: GraphStore, node_id: str, depth: int
@@ -140,7 +148,7 @@ def transitive_callers(
         if dist >= depth:
             continue
         for edge in store.get_incoming_edges(current):
-            if edge.type == EdgeType.calls and edge.source not in seen:
+            if edge.type in _IMPACT_EDGE_TYPES and edge.source not in seen:
                 # Skip unresolved-tier edges — they must not be traversed
                 edge_res = edge.metadata.resolution if edge.metadata else None
                 if edge_res is not None and is_unresolved_resolution(edge_res):
@@ -172,7 +180,7 @@ def transitive_callees(
         if dist >= depth:
             continue
         for edge in store.get_outgoing_edges(current):
-            if edge.type == EdgeType.calls and edge.target not in seen:
+            if edge.type in _IMPACT_EDGE_TYPES and edge.target not in seen:
                 # Skip unresolved-tier edges — they must not be traversed
                 edge_res = edge.metadata.resolution if edge.metadata else None
                 if edge_res is not None and is_unresolved_resolution(edge_res):

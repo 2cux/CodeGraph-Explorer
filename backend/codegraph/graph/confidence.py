@@ -71,6 +71,12 @@ RESOLUTION_CONFIDENCE: dict[Resolution, float] = {
     Resolution.flask_route_decorator: 0.90,
     Resolution.django_view_heuristic: 0.65,
     Resolution.framework_route_resolved: 0.92,
+    Resolution.express_route_handler: 0.92,
+    Resolution.nextjs_file_route: 0.95,
+    Resolution.nestjs_controller_route: 0.94,
+    Resolution.nestjs_injection_resolved: 0.88,
+    Resolution.jsx_component_resolved: 0.88,
+    Resolution.inline_handler: 0.35,
 
     # ── Test discovery ──────────────────────────────────────────────
     Resolution.direct_test_call: 0.90,

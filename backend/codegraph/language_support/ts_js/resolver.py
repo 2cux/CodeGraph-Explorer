@@ -146,7 +146,15 @@ class BaseTSResolver(Resolver):
         possible.extend(call_possible)
         unresolved.extend(call_unresolved)
 
-        # Phase 3: Build test relationships
+        # Phase 3: Resolve framework-specific edges
+        fw_confirmed, fw_possible, fw_unresolved = self._resolve_framework_edges(
+            all_raw_edges, ctx, imports_by_file, file_list,
+        )
+        confirmed.extend(fw_confirmed)
+        possible.extend(fw_possible)
+        unresolved.extend(fw_unresolved)
+
+        # Phase 4: Build test relationships
         test_edges = self._build_test_relationships(all_symbols, all_raw_edges, ctx)
         confirmed.extend(test_edges)
 
@@ -174,6 +182,10 @@ class BaseTSResolver(Resolver):
             NodeType.import_: 3,
             NodeType.external_symbol: 4,
             NodeType.test: 5,
+            NodeType.route: 6,
+            NodeType.controller: 6,
+            NodeType.service: 6,
+            NodeType.component: 6,
         }
 
         for s in symbols:
@@ -466,6 +478,142 @@ class BaseTSResolver(Resolver):
                 ))
 
         return confirmed, possible, unresolved
+
+    # ── Framework edge resolution ───────────────────────────────────────
+
+    def _resolve_framework_edges(
+        self,
+        raw_edges: list[GraphEdge],
+        ctx: GraphContext,
+        imports_by_file: dict[str, list[ImportInfo]],
+        file_list: list[str],
+    ) -> tuple[list[ResolvedEdge], list[ResolvedEdge], list[ResolvedEdge]]:
+        confirmed: list[ResolvedEdge] = []
+        possible: list[ResolvedEdge] = []
+        unresolved: list[ResolvedEdge] = []
+
+        framework_edge_types = {EdgeType.routes_to, EdgeType.references, EdgeType.depends_on}
+        for edge in raw_edges:
+            if edge.type not in framework_edge_types:
+                continue
+            meta = edge.metadata
+            resolution = meta.resolution if meta else Resolution.framework_route_resolved
+            provenance = Provenance.FRAMEWORK_RESOLVER
+            evidence = dict(meta.evidence or {}) if meta and meta.evidence else {}
+            source_file = edge.source_location.file_path if edge.source_location else evidence.get("file_path", "")
+
+            if resolution in {
+                Resolution.inline_handler,
+                Resolution.object_method_unknown,
+                Resolution.callback_candidate,
+            }:
+                possible.append(self._resolved_from_edge(edge, edge.target, resolution, provenance, evidence))
+                continue
+
+            if not edge.target.startswith("unresolved:"):
+                target_node = ctx.qual_to_id.get(edge.target)
+                if target_node or edge.target in self._all_node_ids(ctx):
+                    confirmed.append(self._resolved_from_edge(edge, edge.target, resolution, provenance, evidence))
+                else:
+                    unresolved.append(self._resolved_from_edge(edge, edge.target, Resolution.unresolved, provenance, evidence))
+                continue
+
+            expr = edge.target[len("unresolved:"):]
+            if "." in expr and edge.type != EdgeType.depends_on:
+                possible.append(self._resolved_from_edge(
+                    edge, edge.target, Resolution.object_method_unknown, provenance,
+                    {**evidence, "reason": "object method type unknown"},
+                ))
+                continue
+
+            target_id = self._resolve_framework_symbol(
+                expr=expr,
+                source_file=source_file,
+                ctx=ctx,
+                imports_by_file=imports_by_file,
+                file_list=file_list,
+            )
+            if target_id:
+                confirmed.append(self._resolved_from_edge(edge, target_id, resolution, provenance, evidence))
+            else:
+                unresolved.append(self._resolved_from_edge(
+                    edge,
+                    edge.target,
+                    Resolution.import_not_found,
+                    provenance,
+                    {**evidence, "reason": "framework target was not defined in file or resolved imports"},
+                ))
+
+        return confirmed, possible, unresolved
+
+    def _resolved_from_edge(
+        self,
+        edge: GraphEdge,
+        target: str,
+        resolution: Resolution,
+        provenance: Provenance,
+        evidence: dict[str, Any],
+    ) -> ResolvedEdge:
+        return ResolvedEdge(
+            source=edge.source,
+            target=target,
+            edge_type=edge.type,
+            confidence=getattr(edge, "confidence", 0.0) or 0.0,
+            resolution=resolution,
+            provenance=provenance,
+            evidence=evidence,
+            source_location=(
+                {
+                    "file_path": edge.source_location.file_path,
+                    "line_start": edge.source_location.line_start,
+                    "line_end": edge.source_location.line_end,
+                }
+                if edge.source_location else None
+            ),
+        )
+
+    def _all_node_ids(self, ctx: GraphContext) -> set[str]:
+        ids: set[str] = set(ctx.qual_to_id.values())
+        for values in ctx.name_to_ids.values():
+            ids.update(values)
+        return ids
+
+    def _resolve_framework_symbol(
+        self,
+        expr: str,
+        source_file: str,
+        ctx: GraphContext,
+        imports_by_file: dict[str, list[ImportInfo]],
+        file_list: list[str],
+    ) -> str | None:
+        same_file = self._find_symbol_in_file(ctx, source_file, expr)
+        if same_file:
+            return same_file
+
+        for imp in imports_by_file.get(source_file, []):
+            if imp.local_name != expr:
+                continue
+            if imp.is_external:
+                return None
+            resolved_file = _resolve_relative_import(source_file, imp.module_path, "", file_list)
+            if not resolved_file:
+                return None
+            imported_name = imp.imported_name or expr
+            target_name = expr if imported_name in ("default", "*") else imported_name
+            return self._find_symbol_in_file(ctx, resolved_file, target_name)
+        return None
+
+    def _find_symbol_in_file(self, ctx: GraphContext, file_path: str, name: str) -> str | None:
+        if not file_path:
+            return None
+        exact = f"{file_path}::{name}"
+        if exact in ctx.qual_to_id:
+            return ctx.qual_to_id[exact]
+        suffixes = (f"::{name}", f".{name}")
+        for qname, nid in ctx.qual_to_id.items():
+            if qname.startswith(file_path + "::") and qname.endswith(suffixes):
+                return nid
+        return None
 
     # ── Test relationships ───────────────────────────────────────────────
 

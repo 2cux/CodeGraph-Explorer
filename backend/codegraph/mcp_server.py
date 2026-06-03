@@ -116,6 +116,7 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "reason_codes", "reason_code", "provenance",
     # Language / framework (Phase 1 multi-language)
     "language_id", "language", "framework_id",
+    "route_path", "http_method", "handler", "parent_component", "child_component",
     # Layer / grouping
     "layer", "group", "role", "groups", "counts",
     # Warnings & status
@@ -139,6 +140,7 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "impact", "token_budget",
     # Repo summary compact fields
     "stats", "top_modules", "entry_point_candidates", "test_coverage_signal",
+    "language_breakdown", "framework_breakdown",
     "capabilities", "repo",
     # Index status
     "status", "indexed_at", "index_files", "fingerprint_health",
@@ -177,6 +179,13 @@ RESOLUTION_TO_REASON_CODE: dict[Resolution, str] = {
     Resolution.fastapi_route_decorator: "fastapi_route_decorator",
     Resolution.flask_route_decorator: "flask_route_decorator",
     Resolution.django_view_heuristic: "django_view_heuristic",
+    Resolution.framework_route_resolved: "framework_route_resolved",
+    Resolution.express_route_handler: "express_route_handler",
+    Resolution.nextjs_file_route: "nextjs_file_route",
+    Resolution.nestjs_controller_route: "nestjs_controller_route",
+    Resolution.nestjs_injection_resolved: "nestjs_injection_resolved",
+    Resolution.jsx_component_resolved: "jsx_component_resolved",
+    Resolution.inline_handler: "inline_handler",
     Resolution.direct_test_call: "direct_test_call",
     Resolution.test_import_match: "test_import_match",
     Resolution.test_name_heuristic: "test_name_heuristic",
@@ -344,6 +353,11 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
             result["line_start"] = node.location.line_start
         if node.tags:
             result["tags"] = node.tags
+        if node.framework_id:
+            result["framework_id"] = node.framework_id
+        for key in ("route_path", "http_method", "handler"):
+            if key in node.metadata:
+                result[key] = node.metadata[key]
         return result
     elif response_mode == "standard":
         result = {
@@ -356,9 +370,13 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
             "signature": node.signature,
             "visibility": node.visibility,
             "tags": node.tags,
+            "framework_id": node.framework_id,
             "line_start": node.location.line_start if node.location else None,
             "line_end": node.location.line_end if node.location else None,
         }
+        for key in ("route_path", "http_method", "handler"):
+            if key in node.metadata:
+                result[key] = node.metadata[key]
         # Docstring excerpt in standard (first 200 chars only)
         if node.docstring:
             result["docstring"] = node.docstring[:200]
@@ -433,11 +451,37 @@ def _serialize_edge(
     if response_mode == "compact":
         if reason_code:
             base["reason_code"] = reason_code
+        if edge.metadata and edge.metadata.provenance:
+            base["provenance"] = edge.metadata.provenance
+        if evidence:
+            for key in (
+                "framework_id",
+                "route_path",
+                "http_method",
+                "handler",
+                "parent_component",
+                "child_component",
+            ):
+                if key in evidence:
+                    base[key] = evidence[key]
         return base
 
     elif response_mode == "standard":
         if reason_code:
             base["reason_code"] = reason_code
+        if edge.metadata and edge.metadata.provenance:
+            base["provenance"] = edge.metadata.provenance
+        if evidence:
+            for key in (
+                "framework_id",
+                "route_path",
+                "http_method",
+                "handler",
+                "parent_component",
+                "child_component",
+            ):
+                if key in evidence:
+                    base[key] = evidence[key]
         if include_explanations:
             base["reason"] = reason or ""
             if evidence:
@@ -3187,6 +3231,29 @@ def repo_summary(
         for lid in sorted(set(list(lang_files.keys()) + list(lang_symbols.keys())))
     }
 
+    framework_files: dict[str, set[str]] = {}
+    framework_symbols: dict[str, int] = {}
+    framework_edges: dict[str, int] = {}
+    for n in nodes:
+        fid = n.framework_id or n.metadata.get("framework_id")
+        if fid:
+            framework_files.setdefault(fid, set()).add(n.file_path)
+            framework_symbols[fid] = framework_symbols.get(fid, 0) + 1
+    for e in edges:
+        fid = None
+        if e.metadata and e.metadata.evidence:
+            fid = e.metadata.evidence.get("framework_id")
+        if fid:
+            framework_edges[fid] = framework_edges.get(fid, 0) + 1
+    framework_breakdown = {
+        fid: {
+            "files": len(framework_files.get(fid, set())),
+            "symbols": framework_symbols.get(fid, 0),
+            "edges": framework_edges.get(fid, 0),
+        }
+        for fid in sorted(set(framework_files) | set(framework_symbols) | set(framework_edges))
+    }
+
     idx = _build_index_status()
     idx_health = idx.get("index_health")
     index_info = {
@@ -3200,6 +3267,7 @@ def repo_summary(
         data: dict[str, Any] = {
             "stats": stats,
             "language_breakdown": language_breakdown,
+            "framework_breakdown": framework_breakdown,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules[:5]],
             "entry_point_candidates": entry_candidates[:5],
             "test_coverage_signal": {
@@ -3214,6 +3282,7 @@ def repo_summary(
             "repo": repo_info,
             "stats": stats,
             "language_breakdown": language_breakdown,
+            "framework_breakdown": framework_breakdown,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules],
             "entry_point_candidates": entry_candidates,
             "test_coverage_signal": {

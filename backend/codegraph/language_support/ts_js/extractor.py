@@ -34,6 +34,7 @@ from codegraph.language_support.extractor import (
     Diagnostic,
 )
 from codegraph.language_support.ts_js.parser import get_parser, TreeSitterParser
+from codegraph.language_support.ts_js.frameworks import extract_frameworks
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -134,20 +135,36 @@ class BaseTSExtractor(LanguageExtractor):
         # 2 — Extract imports
         imports = self._extract_imports(root, rel)
 
-        # 3 — Extract exports
+        # 3 — Extract framework-specific nodes/edges
+        framework = extract_frameworks(
+            rel=rel,
+            src=src,
+            symbols=symbols,
+            imports=imports,
+            language_id=self.language_id,
+        )
+        if framework.nodes:
+            existing_ids = {s.id for s in symbols}
+            for node in framework.nodes:
+                if node.id not in existing_ids:
+                    symbols.append(node)
+                    existing_ids.add(node.id)
+
+        # 4 — Extract exports
         exports = self._extract_exports(root, symbols, rel)
 
-        # 4 — Extract calls (intra-file edges)
+        # 5 — Extract calls (intra-file edges)
         calls = self._extract_calls(root, symbols, method_map, rel)
 
-        # 5 — Extract references (non-call)
+        # 6 — Extract references (non-call)
         references: list[RefEdge] = []
 
-        # 6 — Build structural edges
+        # 7 — Build structural edges
         structural = self._build_structural_edges(symbols, rel, imports)
 
-        # 7 — Collect additional diagnostics for unsupported syntax
+        # 8 — Collect additional diagnostics for unsupported syntax
         diags.extend(self._collect_unsupported_diags(root, rel))
+        diags.extend(framework.diagnostics)
 
         # Set language_id and support_level on all symbols
         for s in symbols:
@@ -166,7 +183,7 @@ class BaseTSExtractor(LanguageExtractor):
             diagnostics=diags,
         )
         # Attach raw edges for the resolver (internal transport)
-        result._raw_edges = structural + self._calls_to_edges(calls, symbols, rel)
+        result._raw_edges = structural + self._calls_to_edges(calls, symbols, rel) + framework.edges
         return result
 
     # ── Symbol extraction ───────────────────────────────────────────────

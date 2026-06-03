@@ -547,9 +547,22 @@ def _merge_resolved_edges(
         key = (re.source, re.target, re.edge_type.value if hasattr(re.edge_type, 'value') else str(re.edge_type))
         if key in edge_keys:
             existing = edge_keys[key]
-            # Add provenance to existing edge
-            if existing.metadata:
-                existing.metadata.provenance = re.provenance.value if hasattr(re.provenance, 'value') else str(re.provenance)
+            # Add resolved metadata to existing edge.
+            existing.confidence = max(existing.confidence, re.confidence)
+            existing.metadata = EdgeMetadata(
+                resolution=re.resolution,
+                provenance=re.provenance.value if hasattr(re.provenance, 'value') else str(re.provenance),
+                evidence=re.evidence,
+                reason=existing.metadata.reason if existing.metadata else None,
+                call_expr=existing.metadata.call_expr if existing.metadata else None,
+                is_dynamic=existing.metadata.is_dynamic if existing.metadata else False,
+            )
+            if re.source_location:
+                existing.source_location = EdgeLocation(
+                    file_path=re.source_location.get("file_path", ""),
+                    line_start=re.source_location.get("line_start", 0),
+                    line_end=re.source_location.get("line_end", re.source_location.get("line_start", 0)),
+                )
         else:
             # New confirmed edge — create GraphEdge
             edge_id = f"edge_resolved_{len(raw_edges):04d}"
@@ -564,6 +577,14 @@ def _merge_resolved_edges(
                 source=re.source,
                 target=re.target,
                 confidence=re.confidence,
+                source_location=(
+                    EdgeLocation(
+                        file_path=re.source_location.get("file_path", ""),
+                        line_start=re.source_location.get("line_start", 0),
+                        line_end=re.source_location.get("line_end", re.source_location.get("line_start", 0)),
+                    )
+                    if re.source_location else None
+                ),
                 metadata=meta,
             ))
 

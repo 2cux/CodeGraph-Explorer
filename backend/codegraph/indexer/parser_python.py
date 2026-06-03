@@ -1,13 +1,24 @@
 """Python AST parser for extracting code structure."""
 
 import ast
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def parse_file(path: Path) -> ast.Module:
-    """Parse a Python file into an AST."""
+    """Parse a Python file into an AST.
+
+    Returns an empty ``ast.Module`` on syntax errors so the indexer can
+    continue processing other files.
+    """
     source = path.read_text(encoding="utf-8")
-    return ast.parse(source, filename=str(path))
+    try:
+        return ast.parse(source, filename=str(path))
+    except SyntaxError:
+        logger.warning("Syntax error in %s — skipping", path)
+        return ast.Module(body=[], type_ignores=[])
 
 
 def extract_classes(tree: ast.Module) -> list[ast.ClassDef]:

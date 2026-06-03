@@ -21,6 +21,10 @@ class NodeType(str, Enum):
     import_ = "import"
     external_symbol = "external_symbol"
     test = "test"
+    route = "route"
+    controller = "controller"
+    service = "service"
+    component = "component"
 
 
 class EdgeType(str, Enum):
@@ -31,6 +35,8 @@ class EdgeType(str, Enum):
     inherits = "inherits"
     references = "references"
     tested_by = "tested_by"
+    routes_to = "routes_to"
+    depends_on = "depends_on"
 
 
 class Resolution(str, Enum):
@@ -88,6 +94,12 @@ class Resolution(str, Enum):
     flask_route_decorator = "flask_route_decorator"
     django_view_heuristic = "django_view_heuristic"
     framework_route_resolved = "framework_route_resolved"
+    express_route_handler = "express_route_handler"
+    nextjs_file_route = "nextjs_file_route"
+    nestjs_controller_route = "nestjs_controller_route"
+    nestjs_injection_resolved = "nestjs_injection_resolved"
+    jsx_component_resolved = "jsx_component_resolved"
+    inline_handler = "inline_handler"
 
     # ── Test discovery ──────────────────────────────────────────────
     direct_test_call = "direct_test_call"
