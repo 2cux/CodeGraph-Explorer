@@ -118,6 +118,76 @@ RESOLUTION_CONFIDENCE: dict[Resolution, float] = {
     Resolution.decorator_unknown: 0.20,
     Resolution.import_not_found: 0.25,
 
+    # ── Java resolution ─────────────────────────────────────────────
+    Resolution.imported_class_exact: 0.90,
+    Resolution.package_local_exact: 0.85,
+    Resolution.static_method_exact: 0.90,
+    Resolution.annotation_resolved: 0.88,
+    Resolution.overloaded_method_candidate: 0.40,
+    Resolution.interface_method_candidate: 0.40,
+    Resolution.unknown_type_method: 0.30,
+    Resolution.external_package: 0.50,
+    Resolution.dynamic_proxy: 0.20,
+    Resolution.unknown_symbol: 0.20,
+    # ── Spring framework resolution ─────────────────────────────────
+    Resolution.spring_rest_controller: 0.95,
+    Resolution.spring_controller: 0.90,
+    Resolution.spring_service: 0.92,
+    Resolution.spring_repository: 0.92,
+    Resolution.spring_component: 0.88,
+    Resolution.spring_route_resolved: 0.94,
+    Resolution.spring_di_constructor: 0.90,
+    Resolution.spring_di_autowired: 0.85,
+    Resolution.spring_bean_candidate: 0.45,
+    Resolution.spring_overloaded_route: 0.40,
+
+    # ── Go confirmed resolution ────────────────────────────────────
+    Resolution.same_package_exact: 0.95,
+    Resolution.package_import_exact: 0.90,
+    Resolution.package_function_exact: 0.90,
+    Resolution.receiver_method_exact: 0.92,
+    Resolution.local_function_exact: 0.95,
+    Resolution.struct_method_exact: 0.88,
+
+    # ── Go possible / low-confidence ───────────────────────────────
+    Resolution.embedded_method_candidate: 0.40,
+    Resolution.unknown_receiver_method: 0.30,
+
+    # ── Go unresolved / external ───────────────────────────────────
+    Resolution.external_module: 0.45,
+    Resolution.dynamic_dispatch: 0.20,
+    Resolution.cgo_external: 0.30,
+    Resolution.unknown_receiver: 0.25,
+
+    # ── Gin framework resolution ───────────────────────────────────
+    Resolution.gin_route_resolved: 0.92,
+    Resolution.gin_group_route_resolved: 0.88,
+    Resolution.gin_middleware_chain: 0.75,
+    Resolution.gin_inline_handler: 0.35,
+
+    # ── Hertz framework resolution ─────────────────────────────────
+    Resolution.hertz_route_resolved: 0.92,
+    Resolution.hertz_group_route_resolved: 0.88,
+    Resolution.hertz_middleware_chain: 0.75,
+    Resolution.hertz_inline_handler: 0.35,
+
+    # ── C# confirmed resolution ────────────────────────────────────
+    Resolution.namespace_local_exact: 0.90,
+    Resolution.using_namespace_exact: 0.88,
+    Resolution.using_alias_exact: 0.85,
+    Resolution.base_method_exact: 0.88,
+
+    # ── C# possible / low-confidence ───────────────────────────────
+    Resolution.extension_method_candidate: 0.38,
+    Resolution.generated_code: 0.25,
+
+    # ── ASP.NET Core framework ─────────────────────────────────────
+    Resolution.aspnetcore_controller: 0.95,
+    Resolution.aspnetcore_route_attribute: 0.94,
+    Resolution.aspnetcore_minimal_api: 0.92,
+    Resolution.aspnetcore_di_constructor: 0.88,
+    Resolution.aspnetcore_map_group: 0.88,
+
     # ── Fallbacks ───────────────────────────────────────────────────
     Resolution.attribute_guess: 0.55,
     Resolution.external_symbol: 0.40,

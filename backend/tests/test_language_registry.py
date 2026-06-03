@@ -276,6 +276,58 @@ class TestTypeScriptJavaScriptDetection:
         ))
         assert lr.detect("src/module.cjs") == "javascript"
 
+
+class TestGoDetection:
+    """Phase 4B: Go beta support."""
+
+    def test_detect_go_extension(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="go", extensions=[".go"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.detect("main.go") == "go"
+        assert lr.detect("src/handler/handler.go") == "go"
+
+    def test_go_support_level_beta(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="go", extensions=[".go"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.get("go").support_level == SupportLevel.BETA
+
+    def test_default_singleton_includes_go(self):
+        reset_registry()
+        reg = get_registry()
+        assert reg.detect("main.go") == "go"
+        assert reg.detect("handlers/user.go") == "go"
+        assert reg.get("go").support_level == SupportLevel.BETA
+
+    def test_default_singleton_includes_csharp(self):
+        reset_registry()
+        reg = get_registry()
+        assert reg.detect("Controllers/UsersController.cs") == "csharp"
+        assert reg.detect("Models/User.cs") == "csharp"
+        assert reg.detect("Program.cs") == "csharp"
+        assert reg.get("csharp").support_level == SupportLevel.BETA
+
+    def test_csharp_support_level_beta(self):
+        lr = LanguageRegistry()
+        lr.register(LanguageRegistration(
+            language_id="csharp", extensions=[".cs"],
+            support_level=SupportLevel.BETA,
+        ))
+        assert lr.get("csharp").support_level == SupportLevel.BETA
+
+    def test_cs_not_mistaken_for_python(self):
+        """Ensure .cs is not detected as another language."""
+        reset_registry()
+        reg = get_registry()
+        # .cs should be csharp, not python or anything else
+        assert reg.detect("file.cs") == "csharp"
+        assert reg.detect("file.cs") != "python"
+
     def test_ts_support_level_beta(self):
         lr = LanguageRegistry()
         lr.register(LanguageRegistration(

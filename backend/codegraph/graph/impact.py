@@ -49,6 +49,46 @@ _CONFIRMED_RESOLUTIONS: set[Resolution] = {
     Resolution.nestjs_controller_route,
     Resolution.nestjs_injection_resolved,
     Resolution.jsx_component_resolved,
+    # Java confirmed resolutions
+    Resolution.imported_class_exact,
+    Resolution.package_local_exact,
+    Resolution.static_method_exact,
+    Resolution.annotation_resolved,
+    # Spring confirmed resolutions
+    Resolution.spring_rest_controller,
+    Resolution.spring_controller,
+    Resolution.spring_service,
+    Resolution.spring_repository,
+    Resolution.spring_component,
+    Resolution.spring_route_resolved,
+    Resolution.spring_di_constructor,
+    Resolution.spring_di_autowired,
+    # Go confirmed resolutions
+    Resolution.same_package_exact,
+    Resolution.package_import_exact,
+    Resolution.package_function_exact,
+    Resolution.receiver_method_exact,
+    Resolution.local_function_exact,
+    Resolution.struct_method_exact,
+    # Gin confirmed resolutions
+    Resolution.gin_route_resolved,
+    Resolution.gin_group_route_resolved,
+    Resolution.gin_middleware_chain,
+    # Hertz confirmed resolutions
+    Resolution.hertz_route_resolved,
+    Resolution.hertz_group_route_resolved,
+    Resolution.hertz_middleware_chain,
+    # C# confirmed resolutions
+    Resolution.namespace_local_exact,
+    Resolution.using_namespace_exact,
+    Resolution.using_alias_exact,
+    Resolution.base_method_exact,
+    # ASP.NET Core confirmed resolutions
+    Resolution.aspnetcore_controller,
+    Resolution.aspnetcore_route_attribute,
+    Resolution.aspnetcore_minimal_api,
+    Resolution.aspnetcore_di_constructor,
+    Resolution.aspnetcore_map_group,
 }
 
 # Resolutions that are possible / low-confidence candidates
@@ -66,6 +106,22 @@ _POSSIBLE_RESOLUTIONS: set[Resolution] = {
     Resolution.object_method_unknown,
     Resolution.callback_candidate,
     Resolution.inline_handler,
+    # Java possible resolutions
+    Resolution.overloaded_method_candidate,
+    Resolution.interface_method_candidate,
+    # Spring possible resolutions
+    Resolution.spring_bean_candidate,
+    Resolution.spring_overloaded_route,
+    # Go possible resolutions
+    Resolution.embedded_method_candidate,
+    Resolution.unknown_receiver_method,
+    # Gin possible resolutions
+    Resolution.gin_inline_handler,
+    # Hertz possible resolutions
+    Resolution.hertz_inline_handler,
+    # C# possible resolutions
+    Resolution.extension_method_candidate,
+    Resolution.generated_code,
 }
 
 # Resolutions that are unresolved / external
@@ -84,6 +140,16 @@ _UNRESOLVED_RESOLUTIONS: set[Resolution] = {
     Resolution.require_unknown,
     Resolution.computed_property,
     Resolution.any_unknown,
+    # Java unresolved / external
+    Resolution.unknown_type_method,
+    Resolution.external_package,
+    Resolution.dynamic_proxy,
+    Resolution.unknown_symbol,
+    # Go unresolved / external
+    Resolution.external_module,
+    Resolution.dynamic_dispatch,
+    Resolution.cgo_external,
+    Resolution.unknown_receiver,
 }
 
 

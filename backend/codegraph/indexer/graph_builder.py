@@ -430,6 +430,15 @@ def _get_extractor(lang_id: str) -> Any | None:
         elif lang_id == "javascript":
             from codegraph.language_support.ts_js.extractor import JavaScriptExtractor
             _EXTRACTOR_FACTORIES[lang_id] = JavaScriptExtractor()
+        elif lang_id == "go":
+            from codegraph.language_support.go.extractor import GoExtractor
+            _EXTRACTOR_FACTORIES[lang_id] = GoExtractor()
+        elif lang_id == "java":
+            from codegraph.language_support.java.extractor import JavaExtractor
+            _EXTRACTOR_FACTORIES[lang_id] = JavaExtractor()
+        elif lang_id == "csharp":
+            from codegraph.language_support.csharp.extractor import CSharpExtractor
+            _EXTRACTOR_FACTORIES[lang_id] = CSharpExtractor()
         else:
             return None
     return _EXTRACTOR_FACTORIES[lang_id]
@@ -447,6 +456,15 @@ def _get_resolver(lang_id: str) -> Any | None:
         elif lang_id == "javascript":
             from codegraph.language_support.ts_js.resolver import JavaScriptResolver
             _RESOLVER_FACTORIES[lang_id] = JavaScriptResolver()
+        elif lang_id == "go":
+            from codegraph.language_support.go.resolver import GoResolver
+            _RESOLVER_FACTORIES[lang_id] = GoResolver()
+        elif lang_id == "java":
+            from codegraph.language_support.java.resolver import JavaResolver
+            _RESOLVER_FACTORIES[lang_id] = JavaResolver()
+        elif lang_id == "csharp":
+            from codegraph.language_support.csharp.resolver import CSharpResolver
+            _RESOLVER_FACTORIES[lang_id] = CSharpResolver()
         else:
             return None
     return _RESOLVER_FACTORIES[lang_id]

@@ -164,6 +164,8 @@ def get_registry() -> LanguageRegistry:
     - ``python``: ``.py``, ``.pyi`` — production
     - ``typescript``: ``.ts``, ``.tsx`` — beta
     - ``javascript``: ``.js``, ``.jsx``, ``.mjs``, ``.cjs`` — beta
+    - ``java``: ``.java`` — beta
+    - ``go``: ``.go`` — beta
     """
     global _registry
     if _registry is None:
@@ -185,6 +187,27 @@ def get_registry() -> LanguageRegistry:
         _registry.register(LanguageRegistration(
             language_id="javascript",
             extensions=[".js", ".jsx", ".mjs", ".cjs"],
+            filenames=[],
+            support_level=SupportLevel.BETA,
+            enabled=True,
+        ))
+        _registry.register(LanguageRegistration(
+            language_id="java",
+            extensions=[".java"],
+            filenames=[],
+            support_level=SupportLevel.BETA,
+            enabled=True,
+        ))
+        _registry.register(LanguageRegistration(
+            language_id="go",
+            extensions=[".go"],
+            filenames=[],
+            support_level=SupportLevel.BETA,
+            enabled=True,
+        ))
+        _registry.register(LanguageRegistration(
+            language_id="csharp",
+            extensions=[".cs"],
             filenames=[],
             support_level=SupportLevel.BETA,
             enabled=True,

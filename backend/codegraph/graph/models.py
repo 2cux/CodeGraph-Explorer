@@ -141,6 +141,76 @@ class Resolution(str, Enum):
     call_graph_neighbor = "call_graph_neighbor"
     impact_neighbor = "impact_neighbor"
 
+    # ── Java resolution ─────────────────────────────────────────────
+    imported_class_exact = "imported_class_exact"
+    package_local_exact = "package_local_exact"
+    static_method_exact = "static_method_exact"
+    annotation_resolved = "annotation_resolved"
+    overloaded_method_candidate = "overloaded_method_candidate"
+    interface_method_candidate = "interface_method_candidate"
+    unknown_type_method = "unknown_type_method"
+    external_package = "external_package"
+    dynamic_proxy = "dynamic_proxy"
+    unknown_symbol = "unknown_symbol"
+    # ── Spring framework resolution ─────────────────────────────────
+    spring_rest_controller = "spring_rest_controller"
+    spring_controller = "spring_controller"
+    spring_service = "spring_service"
+    spring_repository = "spring_repository"
+    spring_component = "spring_component"
+    spring_route_resolved = "spring_route_resolved"
+    spring_di_constructor = "spring_di_constructor"
+    spring_di_autowired = "spring_di_autowired"
+    spring_bean_candidate = "spring_bean_candidate"
+    spring_overloaded_route = "spring_overloaded_route"
+
+    # ── Go confirmed resolution ────────────────────────────────────
+    same_package_exact = "same_package_exact"
+    package_import_exact = "package_import_exact"
+    package_function_exact = "package_function_exact"
+    receiver_method_exact = "receiver_method_exact"
+    local_function_exact = "local_function_exact"
+    struct_method_exact = "struct_method_exact"
+
+    # ── Go possible / low-confidence ───────────────────────────────
+    embedded_method_candidate = "embedded_method_candidate"
+    unknown_receiver_method = "unknown_receiver_method"
+
+    # ── Go unresolved / external ───────────────────────────────────
+    external_module = "external_module"
+    dynamic_dispatch = "dynamic_dispatch"
+    cgo_external = "cgo_external"
+    unknown_receiver = "unknown_receiver"
+
+    # ── Gin framework resolution ───────────────────────────────────
+    gin_route_resolved = "gin_route_resolved"
+    gin_group_route_resolved = "gin_group_route_resolved"
+    gin_middleware_chain = "gin_middleware_chain"
+    gin_inline_handler = "gin_inline_handler"
+
+    # ── Hertz framework resolution ─────────────────────────────────
+    hertz_route_resolved = "hertz_route_resolved"
+    hertz_group_route_resolved = "hertz_group_route_resolved"
+    hertz_middleware_chain = "hertz_middleware_chain"
+    hertz_inline_handler = "hertz_inline_handler"
+
+    # ── C# confirmed resolution ────────────────────────────────────
+    namespace_local_exact = "namespace_local_exact"
+    using_namespace_exact = "using_namespace_exact"
+    using_alias_exact = "using_alias_exact"
+    base_method_exact = "base_method_exact"
+
+    # ── C# possible / low-confidence ───────────────────────────────
+    extension_method_candidate = "extension_method_candidate"
+    generated_code = "generated_code"
+
+    # ── ASP.NET Core framework ─────────────────────────────────────
+    aspnetcore_controller = "aspnetcore_controller"
+    aspnetcore_route_attribute = "aspnetcore_route_attribute"
+    aspnetcore_minimal_api = "aspnetcore_minimal_api"
+    aspnetcore_di_constructor = "aspnetcore_di_constructor"
+    aspnetcore_map_group = "aspnetcore_map_group"
+
     # ── Fallbacks ───────────────────────────────────────────────────
     attribute_guess = "attribute_guess"
     external_symbol = "external_symbol"
