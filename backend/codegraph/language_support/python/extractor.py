@@ -210,10 +210,11 @@ class PythonExtractor(LanguageExtractor):
 
         nodes = extract_symbols(rel, tree)
 
-        # Set language_id on all nodes
+        # Set language_id and support_level on all nodes
         for node in nodes:
             node.language = self.language_id
             node.language_id = self.language_id
+            node.support_level = "production"
 
         # Extract call edges (intra-file + pending cross-file)
         edge_counter = [0]

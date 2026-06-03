@@ -171,6 +171,7 @@ class BaseTSExtractor(LanguageExtractor):
             s.language_id = self.language_id
             s.language = self.language_id
             s.metadata["support_level"] = "beta"
+            s.support_level = "beta"
 
         result = ExtractorResult(
             language_id=self.language_id,
@@ -326,6 +327,7 @@ class BaseTSExtractor(LanguageExtractor):
             ),
             signature=sig,
             tags=tags,
+            support_level="beta",
             metadata={"support_level": "beta"},
         )
 
@@ -353,6 +355,7 @@ class BaseTSExtractor(LanguageExtractor):
                 line_end=class_node.end_point[0] + 1,
             ),
             signature=f"class {name}",
+            support_level="beta",
             metadata={"support_level": "beta"},
         )
 
@@ -380,6 +383,7 @@ class BaseTSExtractor(LanguageExtractor):
                                 line_end=child.end_point[0] + 1,
                             ),
                             signature=f"{'async ' if self._is_async(child) else ''}{name}.{m_name}()",
+                            support_level="beta",
                             metadata={"support_level": "beta", "class_name": name},
                         )
                         methods.append(m_node)
@@ -408,6 +412,7 @@ class BaseTSExtractor(LanguageExtractor):
             ),
             signature=f"interface {name}",
             tags=["interface"],
+            support_level="beta",
             metadata={"support_level": "beta", "ts_type": "interface"},
         )
 
@@ -433,6 +438,7 @@ class BaseTSExtractor(LanguageExtractor):
             ),
             signature=f"type {name}",
             tags=["type_alias"],
+            support_level="beta",
             metadata={"support_level": "beta", "ts_type": "type_alias"},
         )
 
@@ -481,6 +487,7 @@ class BaseTSExtractor(LanguageExtractor):
                         line_end=vd.end_point[0] + 1,
                     ),
                     signature=sig, tags=tags,
+                    support_level="beta",
                     metadata={"support_level": "beta", "is_arrow": True},
                 ))
             else:
@@ -499,6 +506,7 @@ class BaseTSExtractor(LanguageExtractor):
                         line_end=vd.end_point[0] + 1,
                     ),
                     signature=f"const {name}",
+                    support_level="beta",
                     metadata={"support_level": "beta", "is_constant": True},
                 ))
 

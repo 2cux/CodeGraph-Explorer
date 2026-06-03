@@ -190,6 +190,7 @@ class JavaExtractor(LanguageExtractor):
             s.language = self.language_id
             if "support_level" not in s.metadata:
                 s.metadata["support_level"] = "beta"
+                s.support_level = "beta"
 
         result = ExtractorResult(
             language_id=self.language_id,
@@ -300,6 +301,7 @@ class JavaExtractor(LanguageExtractor):
                 language_id=self.language_id,
                 language=self.language_id,
                 tags=["package"],
+                support_level="beta",
                 metadata={"support_level": "beta"},
             ))
 
@@ -390,6 +392,7 @@ class JavaExtractor(LanguageExtractor):
             ),
             signature=" ".join(sig_parts),
             tags=tags,
+            support_level="beta",
             metadata={
                 "support_level": "beta",
                 "extends": extends_name,
@@ -443,6 +446,7 @@ class JavaExtractor(LanguageExtractor):
             ),
             signature=f"interface {name}",
             tags=["interface"],
+            support_level="beta",
             metadata={"support_level": "beta", "java_type": "interface"},
         )
 
@@ -473,6 +477,7 @@ class JavaExtractor(LanguageExtractor):
             ),
             signature=f"enum {name}",
             tags=["enum"],
+            support_level="beta",
             metadata={"support_level": "beta", "java_type": "enum"},
         ))
 
@@ -498,6 +503,7 @@ class JavaExtractor(LanguageExtractor):
                             ),
                             signature=f"{name}.{const_name}",
                             tags=["enum_constant"],
+                            support_level="beta",
                             metadata={"support_level": "beta", "class_name": name},
                         ))
 
@@ -539,6 +545,7 @@ class JavaExtractor(LanguageExtractor):
             ),
             signature=f"{class_name}.{name}{param_text}",
             tags=tags,
+            support_level="beta",
             metadata={
                 "support_level": "beta",
                 "class_name": class_name,
@@ -575,6 +582,7 @@ class JavaExtractor(LanguageExtractor):
             ),
             signature=f"{class_name}{param_text}",
             tags=["constructor"] + annotations,
+            support_level="beta",
             metadata={
                 "support_level": "beta",
                 "class_name": class_name,
@@ -613,6 +621,7 @@ class JavaExtractor(LanguageExtractor):
                 ),
                 signature=f"{class_name}.{name}",
                 tags=["field"] + annotations,
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "class_name": class_name,

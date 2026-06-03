@@ -412,6 +412,25 @@ def get_index_status(project_root: str | Path) -> dict[str, Any]:
     except Exception:
         pass
 
+    # ── Hook status ────────────────────────────────────────────────────
+    hook_config: dict[str, Any] = state.get("hook", {})
+    hook_status: dict[str, Any] = {
+        "installed": hook_config.get("installed", False),
+        "auto_update_on_commit": hook_config.get(
+            "auto_update_on_commit", True,
+        ),
+        "last_run_at": hook_config.get("last_run_at"),
+        "last_run_status": (
+            "success"
+            if hook_config.get("last_run_exit_code") == 0
+            else "error"
+            if hook_config.get("last_run_exit_code") is not None
+            else None
+        ),
+        "total_runs": hook_config.get("total_runs", 0),
+        "total_failures": hook_config.get("total_failures", 0),
+    }
+
     # ── Build result ────────────────────────────────────────────────────
     result: dict[str, Any] = {
         "status": result_status,
@@ -422,6 +441,7 @@ def get_index_status(project_root: str | Path) -> dict[str, Any]:
         "index_health": index_health,
         "last_change_summary": last_change_summary,
         "last_incremental_stats": last_incremental_stats,
+        "hook": hook_status,
         "suggested_fix": _suggested_fix(result_status),
     }
 

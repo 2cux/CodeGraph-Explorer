@@ -98,6 +98,7 @@ class FrameworkResolver:
             framework_id=framework_id,
             location=Location(line_start=line, line_end=line),
             tags=["route", framework_id],
+            support_level="beta",
             metadata={
                 "support_level": "beta",
                 "route_path": path,
@@ -220,6 +221,7 @@ class SpringResolver(FrameworkResolver):
                             framework_id=self.framework_id,
                             location=Location(line_start=line, line_end=line),
                             tags=[tag, self.framework_id],
+                            support_level="beta",
                             metadata={
                                 "support_level": "beta",
                                 "framework_id": self.framework_id,

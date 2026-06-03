@@ -115,7 +115,8 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "confidence", "confidence_level", "resolution", "resolution_category",
     "reason_codes", "reason_code", "provenance",
     # Language / framework (Phase 1 multi-language)
-    "language_id", "language", "framework_id",
+    "language_id", "language", "framework_id", "support_level",
+    "evidence_summary",
     "route_path", "http_method", "handler", "parent_component", "child_component",
     # Layer / grouping
     "layer", "group", "role", "groups", "counts",
@@ -132,6 +133,8 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "tests", "related_tests", "suggested_tests",
     "confirmed_files", "possible_files",
     "confirmed_impact", "possible_impact",
+    # Hook / auto-update status
+    "hook_installed", "hook_auto_update", "hook_status", "hook",
     # Count signals
     "related_tests_count", "selected_context_count",
     "unresolved_count", "changed_file_count",
@@ -140,7 +143,8 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "impact", "token_budget",
     # Repo summary compact fields
     "stats", "top_modules", "entry_point_candidates", "test_coverage_signal",
-    "language_breakdown", "framework_breakdown",
+    "language_breakdown", "framework_breakdown", "support_level_breakdown",
+    "edge_quality_by_language", "suggested_warnings",
     "capabilities", "repo",
     # Index status
     "status", "indexed_at", "index_files", "fingerprint_health",
@@ -250,6 +254,7 @@ IMPACT_REASON_CODES: dict[str, str] = {
 
 CAPABILITIES: dict[str, Any] = {
     "languages": ["python"],
+    "beta_languages": ["typescript", "javascript", "java", "go", "csharp"],
     "supported_edges": ["calls", "imports", "contains", "tested_by", "references"],
     "supports_incremental_index": True,
     "supports_source_snippets": True,
@@ -259,6 +264,7 @@ CAPABILITIES: dict[str, Any] = {
     "supports_role_grouping": True,
     "supports_path_glob_filtering": True,
     "supports_reason_codes": True,
+    "supports_multi_language": True,
 }
 
 LIMITATIONS: list[str] = [
@@ -279,6 +285,10 @@ def _get_capabilities() -> dict[str, Any]:
         from codegraph.language_support.registry import get_registry
         registry = get_registry()
         caps["languages"] = registry.language_ids()
+        caps["language_support_levels"] = {
+            reg.language_id: reg.support_level.value
+            for reg in registry.list_enabled()
+        }
     except Exception:
         pass  # fall back to hardcoded list in CAPABILITIES
     if _store is not None:
@@ -353,8 +363,12 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
             result["line_start"] = node.location.line_start
         if node.tags:
             result["tags"] = node.tags
+        if node.language_id:
+            result["language_id"] = node.language_id
         if node.framework_id:
             result["framework_id"] = node.framework_id
+        if node.support_level and node.support_level != "production":
+            result["support_level"] = node.support_level
         for key in ("route_path", "http_method", "handler"):
             if key in node.metadata:
                 result[key] = node.metadata[key]
@@ -419,6 +433,20 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
         }
 
 
+def _build_evidence_summary(edge: GraphEdge) -> str | None:
+    """Generate a compact evidence summary for an edge.
+
+    Format: ``"<resolution_category> via <provenance>``.
+    Returns ``None`` if no metadata is available.
+    """
+    if not edge.metadata or not edge.metadata.resolution:
+        return None
+    res_val = edge.metadata.resolution
+    res_str = res_val.value if hasattr(res_val, "value") else str(res_val)
+    provenance = edge.metadata.provenance or "unknown"
+    return f"{res_str} via {provenance}"
+
+
 def _serialize_edge(
     edge: GraphEdge,
     response_mode: ResponseMode = "compact",
@@ -453,6 +481,10 @@ def _serialize_edge(
             base["reason_code"] = reason_code
         if edge.metadata and edge.metadata.provenance:
             base["provenance"] = edge.metadata.provenance
+        # Generate compact evidence summary
+        evidence_summary = _build_evidence_summary(edge)
+        if evidence_summary:
+            base["evidence_summary"] = evidence_summary
         if evidence:
             for key in (
                 "framework_id",
@@ -1535,7 +1567,15 @@ def search_symbols(
             "layer": item.get("layer"),
         }
         if response_mode == "compact":
-            pass
+            # Add multi-language signals in compact mode
+            if item.get("language_id"):
+                entry["language_id"] = item["language_id"]
+            if item.get("framework_id"):
+                entry["framework_id"] = item["framework_id"]
+            if item.get("support_level") and item.get("support_level") != "production":
+                entry["support_level"] = item["support_level"]
+            if item.get("tags"):
+                entry["tags"] = item.get("tags")
         elif response_mode == "standard":
             entry["qualified_name"] = item.get("qualified_name")
             entry["signature"] = item.get("signature")
@@ -3059,6 +3099,33 @@ def repo_status(
     added_count = change_summary.get("added", 0)
     deleted_count = change_summary.get("deleted", 0)
     idx_health = index_status.get("index_health")
+    hook = index_status.get("hook", {})
+    hook_installed = hook.get("installed", False)
+    hook_auto_update = hook.get("auto_update_on_commit", True)
+
+    # Build warnings (stale index + hook not installed)
+    warn_list: list[dict[str, Any]] = []
+    if index_status["status"] == "stale":
+        warn_list.append({
+            "type": "stale_index",
+            "severity": "warning",
+            "message": (
+                f"Index is stale. Results may not reflect recent file changes. "
+                f"Run: {index_status.get('suggested_fix', 'codegraph init --incremental')}"
+            ),
+            "reason_code": "stale_index",
+        })
+
+    if hook_auto_update and not hook_installed:
+        warn_list.append({
+            "type": "hook_not_installed",
+            "severity": "info",
+            "message": (
+                "auto_update_on_commit is enabled but the post-commit hook "
+                "is not installed. Run: codegraph hooks install"
+            ),
+            "reason_code": "hook_not_installed",
+        })
 
     if response_mode == "compact":
         data: dict[str, Any] = {
@@ -3072,6 +3139,8 @@ def repo_status(
             "last_incremental_stats": index_status.get("last_incremental_stats"),
             "validation_status": idx_health["status"] if idx_health else None,
             "suggested_fix": index_status.get("suggested_fix"),
+            "hook_installed": hook_installed,
+            "hook_auto_update": hook_auto_update,
         }
     else:
         data = {
@@ -3090,24 +3159,13 @@ def repo_status(
             "fingerprint_health": index_status.get("fingerprint_health"),
             "last_change_summary": index_status.get("last_change_summary"),
             "index_health_details": idx_health,
+            "hook_status": hook,
         }
 
     return _respond_ok(
         data=data,
         tool="codegraph_repo_status",
-        warnings=(
-            [{
-                "type": "stale_index",
-                "severity": "warning",
-                "message": (
-                    f"Index is stale. Results may not reflect recent file changes. "
-                    f"Run: {index_status.get('suggested_fix', 'codegraph init --incremental')}"
-                ),
-                "reason_code": "stale_index",
-            }]
-            if index_status["status"] == "stale"
-            else []
-        ),
+        warnings=warn_list,
     )
 
 
@@ -3254,6 +3312,66 @@ def repo_summary(
         for fid in sorted(set(framework_files) | set(framework_symbols) | set(framework_edges))
     }
 
+    # Support level breakdown
+    support_level_symbols: dict[str, int] = {}
+    support_level_files: dict[str, set[str]] = {}
+    for n in nodes:
+        sl = n.support_level or n.metadata.get("support_level", "production")
+        support_level_symbols[sl] = support_level_symbols.get(sl, 0) + 1
+        support_level_files.setdefault(sl, set()).add(n.file_path)
+    support_level_breakdown = {
+        sl: {"files": len(support_level_files.get(sl, set())), "symbols": support_level_symbols.get(sl, 0)}
+        for sl in sorted(support_level_symbols.keys())
+    }
+
+    # Per-language edge quality
+    node_map: dict[str, GraphNode] = {n.id: n for n in nodes}
+    edge_quality_by_language: dict[str, dict[str, Any]] = {}
+    for lid in sorted(set(n.language_id or n.language or "unknown" for n in nodes)):
+        lang_edges = [
+            e for e in edges
+            if e.source in node_map and (node_map[e.source].language_id or node_map[e.source].language or "unknown") == lid
+        ]
+        total_le = len(lang_edges)
+        if total_le == 0:
+            continue
+        unresolved_le = sum(
+            1 for e in lang_edges
+            if e.metadata and e.metadata.resolution and classify_edge_resolution(e.metadata.resolution) == "unresolved"
+        )
+        low_conf_le = sum(1 for e in lang_edges if is_low_confidence(e.confidence))
+        edge_quality_by_language[lid] = {
+            "total_edges": total_le,
+            "unresolved_edges": unresolved_le,
+            "unresolved_ratio": round(unresolved_le / total_le, 4),
+            "low_confidence_edges": low_conf_le,
+            "low_confidence_ratio": round(low_conf_le / total_le, 4),
+        }
+
+    # Suggested warnings from edge quality
+    suggested_warnings: list[dict[str, Any]] = []
+    for lid, quality in edge_quality_by_language.items():
+        if quality["low_confidence_ratio"] > 0.30:
+            suggested_warnings.append({
+                "type": "high_low_confidence_ratio",
+                "language": lid,
+                "message": (
+                    f"Language '{lid}' has {quality['low_confidence_ratio']:.1%} low-confidence edges. "
+                    "Consider improving parser resolution for this language."
+                ),
+                "severity": "warning" if quality["low_confidence_ratio"] > 0.50 else "info",
+            })
+        if quality["unresolved_ratio"] > 0.20:
+            suggested_warnings.append({
+                "type": "high_unresolved_ratio",
+                "language": lid,
+                "message": (
+                    f"Language '{lid}' has {quality['unresolved_ratio']:.1%} unresolved edges. "
+                    "External package resolution may need improvement."
+                ),
+                "severity": "info",
+            })
+
     idx = _build_index_status()
     idx_health = idx.get("index_health")
     index_info = {
@@ -3268,6 +3386,8 @@ def repo_summary(
             "stats": stats,
             "language_breakdown": language_breakdown,
             "framework_breakdown": framework_breakdown,
+            "support_level_breakdown": support_level_breakdown,
+            "edge_quality_by_language": edge_quality_by_language,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules[:5]],
             "entry_point_candidates": entry_candidates[:5],
             "test_coverage_signal": {
@@ -3277,12 +3397,16 @@ def repo_summary(
             "capabilities": _get_capabilities(),
             "index_info": index_info,
         }
+        if suggested_warnings:
+            data["suggested_warnings"] = suggested_warnings
     elif response_mode == "standard":
         data = {
             "repo": repo_info,
             "stats": stats,
             "language_breakdown": language_breakdown,
             "framework_breakdown": framework_breakdown,
+            "support_level_breakdown": support_level_breakdown,
+            "edge_quality_by_language": edge_quality_by_language,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules],
             "entry_point_candidates": entry_candidates,
             "test_coverage_signal": {
@@ -3292,10 +3416,16 @@ def repo_summary(
             "capabilities": _get_capabilities(),
             "index_info": index_info,
         }
-    else:  # standard
+        if suggested_warnings:
+            data["suggested_warnings"] = suggested_warnings
+    else:  # standard (fallback)
         data = {
             "repo": repo_info,
             "stats": stats,
+            "language_breakdown": language_breakdown,
+            "framework_breakdown": framework_breakdown,
+            "support_level_breakdown": support_level_breakdown,
+            "edge_quality_by_language": edge_quality_by_language,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules],
             "entry_point_candidates": entry_candidates,
             "test_coverage_signal": {
@@ -3305,6 +3435,8 @@ def repo_summary(
             "capabilities": _get_capabilities(),
             "index_info": index_info,
         }
+        if suggested_warnings:
+            data["suggested_warnings"] = suggested_warnings
 
     return _respond_ok(
         data=data,

@@ -231,6 +231,7 @@ class AspNetCoreResolver:
                     framework_id=self.framework_id,
                     location=Location(line_start=line, line_end=line),
                     tags=["aspnetcore"],
+                    support_level="beta",
                     metadata={
                         "support_level": "beta",
                         "class_name": class_name,
@@ -357,6 +358,7 @@ class AspNetCoreResolver:
                 framework_id=self.framework_id,
                 location=Location(line_start=line, line_end=line),
                 tags=["inline_handler", self.framework_id],
+                support_level="beta",
                 metadata={"support_level": "beta", "framework_id": self.framework_id},
             )
             out.nodes.append(handler_node)

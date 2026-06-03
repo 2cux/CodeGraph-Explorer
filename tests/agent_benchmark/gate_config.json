@@ -31,6 +31,39 @@
     "max_name_only_confirmed": 0
   },
 
+  "language_edges": {
+    "python": {
+      "max_false_confirmed_edges": 0,
+      "max_unresolved_in_confirmed": 0,
+      "max_name_only_confirmed": 0
+    },
+    "typescript": {
+      "max_false_confirmed_edges": 0,
+      "max_unresolved_in_confirmed": 0,
+      "max_name_only_confirmed": 0
+    },
+    "javascript": {
+      "max_false_confirmed_edges": 0,
+      "max_unresolved_in_confirmed": 0,
+      "max_name_only_confirmed": 0
+    },
+    "java": {
+      "max_false_confirmed_edges": 0,
+      "max_unresolved_in_confirmed": 0,
+      "max_name_only_confirmed": 0
+    },
+    "go": {
+      "max_false_confirmed_edges": 0,
+      "max_unresolved_in_confirmed": 0,
+      "max_name_only_confirmed": 0
+    },
+    "csharp": {
+      "max_false_confirmed_edges": 0,
+      "max_unresolved_in_confirmed": 0,
+      "max_name_only_confirmed": 0
+    }
+  },
+
   "impact": {
     "require_confirmed_possible_separation": true,
     "require_tests_separate_group": true,

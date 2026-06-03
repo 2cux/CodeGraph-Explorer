@@ -601,6 +601,7 @@ class SqliteStore:
             "file_path": node.get("file_path", ""),
             "language_id": node.get("language_id", node.get("language", "python")),
             "framework_id": node.get("framework_id"),
+            "support_level": node.get("support_level", "production"),
             "score": round(max(0.0, min(float(score), 1.0)), 4),
             "match_sources": sources,
             "tags": node.get("tags", []),

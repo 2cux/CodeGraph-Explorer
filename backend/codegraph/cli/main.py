@@ -1,6 +1,9 @@
 """CLI entry point for codegraph commands."""
 
+import json
 import os
+import sys
+import time as time_module
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -14,7 +17,10 @@ from codegraph.graph.models import (
 from codegraph.graph.store import GraphStore
 from codegraph.graph import query as graph_query
 from codegraph.graph import impact as graph_impact
+from codegraph.hooks.manager import HookManager
+from codegraph.hooks.logger import get_hook_logger
 from codegraph.indexer.graph_builder import build_index, build_index_from_paths
+from codegraph.indexer.lock import IndexLock
 from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
 from codegraph.indexer.status import detect_status, detect_status_with_classification, StatusResult, get_index_status
 from codegraph.storage.file_store import FileStore
@@ -131,6 +137,50 @@ def _type_label(node_type: NodeType) -> str:
     }.get(node_type, node_type.value)
 
 
+def _maybe_install_hook(
+    root_path: Path,
+    no_hook: bool,
+    state_store: IndexStateStore,
+) -> None:
+    """Auto-install the git post-commit hook after a successful init.
+
+    Checks whether the project is a git repo, whether auto-update is enabled,
+    and whether the hook is already installed.
+    """
+    if no_hook:
+        return
+
+    # Check auto_update_on_commit config
+    hook_config = state_store.get_hook_config()
+    if not hook_config.get("auto_update_on_commit", True):
+        return
+
+    # Check if this is a git repo
+    git_dir = HookManager._find_git_dir(root_path)
+    if git_dir is None:
+        return
+
+    # Check if hook already installed
+    hook_path = git_dir / "hooks" / "post-commit"
+    if hook_path.exists():
+        content = hook_path.read_text(encoding="utf-8")
+        from codegraph.hooks.template import SENTINEL_START
+        if SENTINEL_START in content:
+            return  # Already installed, nothing to do
+
+    # Install the hook
+    result = HookManager.install(root_path)
+    if result["installed"]:
+        typer.echo()
+        typer.echo(
+            f"> Post-commit hook {result['action']}. "
+            f"Index will auto-update after each commit."
+        )
+        typer.echo(
+            "> Disable with: codegraph config set auto_update_on_commit false"
+        )
+
+
 # ── index command ────────────────────────────────────────────────────
 
 
@@ -151,11 +201,18 @@ def init(
         False, "--no-sqlite",
         help="Skip SQLite output (JSON-only fallback)",
     ),
+    no_hook: bool = typer.Option(
+        False, "--no-hook",
+        help="Skip installing the git post-commit auto-update hook",
+    ),
 ) -> None:
     """Initialize local code graph index. One-time setup, then MCP Server works directly.
 
     This scans the codebase, parses AST, and builds the code graph index.
     Once initialized, MCP Server can consume the index immediately.
+
+    By default, a git post-commit hook is also installed to keep the index
+    updated automatically after every commit. Use --no-hook to opt out.
     """
     root_path = Path(root).resolve()
     if not root_path.is_dir():
@@ -169,10 +226,12 @@ def init(
 
     if incremental:
         _run_incremental_index(root_path, output_dir, no_sqlite, state_store)
+        _maybe_install_hook(root_path, no_hook, state_store)
         return
 
     if not force and (output_dir / "nodes.json").exists():
         typer.echo("Index already exists. Use --force to re-index.")
+        _maybe_install_hook(root_path, no_hook, state_store)
         return
 
     typer.echo(f"Scanning {root_path} ...")
@@ -196,6 +255,8 @@ def init(
     if not no_sqlite and counts.get("fts_symbols", 0) > 0:
         typer.echo(f"  FTS symbols:   {counts['fts_symbols']}")
 
+    _maybe_install_hook(root_path, no_hook, state_store)
+
 
 @app.command(name="index", hidden=True)
 def index_cmd(
@@ -214,9 +275,13 @@ def index_cmd(
         False, "--no-sqlite",
         help="Skip SQLite output",
     ),
+    no_hook: bool = typer.Option(
+        False, "--no-hook",
+        help="Skip installing the git post-commit hook",
+    ),
 ) -> None:
     """Backward-compatible alias for 'init'. Use 'codegraph init' instead."""
-    init(root=root, force=force, incremental=incremental, no_sqlite=no_sqlite)
+    init(root=root, force=force, incremental=incremental, no_sqlite=no_sqlite, no_hook=no_hook)
 
 
 @app.command()
@@ -1145,6 +1210,49 @@ def doctor(
         fail(f"{project_root} — path does not exist or is not a directory")
     typer.echo()
 
+    # 4b. Enabled languages
+    typer.echo("4b. Enabled languages")
+    try:
+        from codegraph.language_support.registry import get_registry
+        registry = get_registry()
+        enabled_langs = registry.list_enabled()
+        if enabled_langs:
+            for reg in enabled_langs:
+                sl = reg.support_level.value
+                sl_icon = "[PROD]" if sl == "production" else "[BETA]" if sl == "beta" else "[EXP]"
+                ok(f"{sl_icon} {reg.language_id}: {', '.join(reg.extensions)}")
+        else:
+            warn("No languages registered")
+    except Exception as e:
+        warn(f"Could not load language registry: {e}")
+    typer.echo()
+
+    # 4c. Unsupported file count
+    typer.echo("4c. Unsupported files")
+    try:
+        supported_exts: set[str] = set()
+        for reg in enabled_langs:
+            supported_exts.update(reg.extensions)
+        unsupported_count = 0
+        unsupported_exts: dict[str, int] = {}
+        skip_dirs = {'.git', '.codegraph', '__pycache__', 'node_modules', '.venv', 'venv', 'dist', 'build', '.next'}
+        for dirpath, dirnames, filenames in os.walk(str(project_root)):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith('.')]
+            for f in filenames:
+                ext = os.path.splitext(f)[1].lower()
+                if ext and ext not in supported_exts:
+                    unsupported_exts[ext] = unsupported_exts.get(ext, 0) + 1
+                    unsupported_count += 1
+        if unsupported_count > 0:
+            top_exts = sorted(unsupported_exts.items(), key=lambda x: -x[1])[:5]
+            top_str = ", ".join(f"{ext}({n})" for ext, n in top_exts)
+            warn(f"{unsupported_count} file(s) with unsupported extensions (top: {top_str})")
+        else:
+            ok("All files match supported extensions")
+    except Exception as e:
+        warn(f"Could not check unsupported files: {e}")
+    typer.echo()
+
     # 5. .codegraph presence & index status
     typer.echo("5. Index status")
     cg_dir = project_root / ".codegraph"
@@ -1402,6 +1510,226 @@ def doctor(
                     )
         except Exception as e:
             warn(f"Could not run graph validation: {e}")
+    else:
+        warn("Skipped because .codegraph is missing")
+    typer.echo()
+
+    # 5f. Parser diagnostics by language
+    typer.echo("5f. Parser diagnostics")
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        try:
+            graph_json = json.loads((cg_dir / "graph.json").read_text("utf-8"))
+            nodes_list = graph_json.get("nodes", [])
+            parser_errors: dict[str, int] = {}
+            for node in nodes_list:
+                meta = node.get("metadata", {})
+                if meta.get("parse_error") or meta.get("parser_unavailable"):
+                    lid = node.get("language_id", node.get("language", "unknown"))
+                    parser_errors[lid] = parser_errors.get(lid, 0) + 1
+            if parser_errors:
+                for lid, count in sorted(parser_errors.items()):
+                    warn(f"{lid}: {count} symbols with parse errors or parser unavailable")
+            else:
+                ok("No parser errors detected")
+        except Exception as e:
+            warn(f"Could not check parser diagnostics: {e}")
+    else:
+        typer.echo("     Skipped — no graph.json found")
+    typer.echo()
+
+    # 5g. Extractor errors by language
+    typer.echo("5g. Extractor errors")
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        try:
+            graph_json = json.loads((cg_dir / "graph.json").read_text("utf-8"))
+            nodes_list = graph_json.get("nodes", [])
+            extractor_errors: dict[str, int] = {}
+            for node in nodes_list:
+                meta = node.get("metadata", {})
+                if meta.get("extractor_error") or meta.get("extraction_failed"):
+                    lid = node.get("language_id", node.get("language", "unknown"))
+                    extractor_errors[lid] = extractor_errors.get(lid, 0) + 1
+            if extractor_errors:
+                for lid, count in sorted(extractor_errors.items()):
+                    warn(f"{lid}: {count} extraction errors")
+            else:
+                ok("No extractor errors detected")
+        except Exception as e:
+            warn(f"Could not check extractor errors: {e}")
+    else:
+        typer.echo("     Skipped — no graph.json found")
+    typer.echo()
+
+    # 5h. Resolver warnings by language
+    typer.echo("5h. Resolver warnings")
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        try:
+            graph_json = json.loads((cg_dir / "graph.json").read_text("utf-8"))
+            nodes_list = graph_json.get("nodes", [])
+            edges_list = graph_json.get("edges", [])
+            node_map: dict[str, dict] = {n["id"]: n for n in nodes_list}
+            resolver_warnings: dict[str, dict[str, int]] = {}
+            for edge in edges_list:
+                if edge.get("type") != "calls":
+                    continue
+                source_node = node_map.get(edge.get("source", ""))
+                if not source_node:
+                    continue
+                resolution = edge.get("resolution") or (edge.get("metadata", {}) or {}).get("resolution", "")
+                if resolution in ("unresolved", "name_match_candidate", "external_symbol"):
+                    lid = source_node.get("language_id", source_node.get("language", "unknown"))
+                    resolver_warnings.setdefault(lid, {"unresolved": 0, "possible": 0})
+                    resolver_warnings[lid]["unresolved"] += 1
+                elif resolution in ("possible_match", "heuristic_match", "partial_match", "overloaded_method_candidate", "interface_method_candidate"):
+                    lid = source_node.get("language_id", source_node.get("language", "unknown"))
+                    resolver_warnings.setdefault(lid, {"unresolved": 0, "possible": 0})
+                    resolver_warnings[lid]["possible"] += 1
+            if resolver_warnings:
+                for lid, counts in sorted(resolver_warnings.items()):
+                    total_warn = counts["unresolved"] + counts["possible"]
+                    typer.echo(f"     {lid}: {counts['possible']} possible, {counts['unresolved']} unresolved edges")
+            else:
+                ok("No resolver warnings")
+        except Exception as e:
+            warn(f"Could not check resolver warnings: {e}")
+    else:
+        typer.echo("     Skipped — no graph.json found")
+    typer.echo()
+
+    # 5i. Benchmark fixture status
+    typer.echo("5i. Benchmark fixture status")
+    try:
+        bench_dir = Path(__file__).resolve().parents[3] / "tests" / "agent_benchmark"
+        if bench_dir.exists():
+            cases_dir = bench_dir / "cases"
+            if cases_dir.exists():
+                case_files = list(cases_dir.glob("*.json"))
+                langs_in_bench: set[str] = set()
+                for cf in case_files:
+                    case_data = json.loads(cf.read_text("utf-8"))
+                    langs_in_bench.add(case_data.get("language", "python"))
+                ok(f"Benchmark cases: {len(case_files)} ({', '.join(sorted(langs_in_bench))})")
+                missing_langs = set(registry.language_ids()) - langs_in_bench
+                if missing_langs:
+                    warn(f"Languages without benchmark cases: {', '.join(sorted(missing_langs))}")
+            else:
+                warn("No benchmark cases directory found")
+        else:
+            typer.echo("     Benchmark directory not found (expected in repo)")
+    except Exception as e:
+        warn(f"Could not check benchmark fixture status: {e}")
+    typer.echo()
+
+    # 5j. Schema compatibility
+    typer.echo("5j. Schema compatibility")
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        try:
+            graph_json = json.loads((cg_dir / "graph.json").read_text("utf-8"))
+            nodes_list = graph_json.get("nodes", [])
+            schema_ver = graph_json.get("schema_version", "unknown")
+            typer.echo(f"     Schema version: {schema_ver}")
+            # Check language_id presence
+            missing_lang = sum(1 for n in nodes_list if not n.get("language_id") and not n.get("language"))
+            if missing_lang:
+                warn(f"{missing_lang} node(s) missing language_id")
+            else:
+                ok("All nodes have language_id")
+            # Check support_level presence
+            missing_support = sum(1 for n in nodes_list if not n.get("support_level"))
+            if missing_support:
+                typer.echo(f"     {missing_support} node(s) missing support_level (defaulting to production)")
+            else:
+                ok("All nodes have support_level")
+        except Exception as e:
+            warn(f"Schema validation failed: {e}")
+    else:
+        typer.echo("     Skipped — no graph.json found")
+    typer.echo()
+
+    # 5k. Hook health
+    typer.echo("5k. Hook health")
+    if cg_dir.exists():
+        state_store_5f = IndexStateStore(cg_dir)
+        hook_cfg = state_store_5f.get_hook_config()
+
+        auto_update = hook_cfg.get("auto_update_on_commit", True)
+        installed = hook_cfg.get("installed", False)
+        hook_path_str = hook_cfg.get("hook_path")
+        last_run = hook_cfg.get("last_run_at")
+        last_exit = hook_cfg.get("last_run_exit_code")
+        last_dur = hook_cfg.get("last_run_duration_ms")
+        total_runs = hook_cfg.get("total_runs", 0)
+        total_fails = hook_cfg.get("total_failures", 0)
+
+        # Check if this is a git repo
+        git_dir_hook = HookManager._find_git_dir(project_root)
+        is_git_repo = git_dir_hook is not None
+
+        if not is_git_repo:
+            warn("Not a git repository — post-commit hook not applicable")
+        else:
+            # Check hook file presence
+            hook_file = git_dir_hook / "hooks" / "post-commit"
+            hook_exists = hook_file.exists()
+
+            if auto_update:
+                ok("Auto-update on commit: enabled")
+            else:
+                warn("Auto-update on commit: disabled")
+                typer.echo(f"       Enable with: codegraph config set auto_update_on_commit true")
+
+            if hook_exists:
+                content = hook_file.read_text(encoding="utf-8")
+                from codegraph.hooks.template import SENTINEL_START
+                has_managed = SENTINEL_START in content
+
+                if has_managed:
+                    ok(f"Post-commit hook installed: {hook_file}")
+
+                    # Check Python path validity
+                    python_path = HookManager._extract_field(
+                        content, "CODEGRAPH_PYTHON",
+                    )
+                    if python_path:
+                        if Path(python_path).exists():
+                            ok(f"Python path valid: {python_path}")
+                        else:
+                            fail(f"Python path in hook does not exist: {python_path}")
+                            typer.echo(f"       Run: codegraph hooks install --force")
+
+                    # Check project root validity
+                    hook_root = HookManager._extract_field(
+                        content, "CODEGRAPH_PROJECT_ROOT",
+                    )
+                    if hook_root:
+                        if Path(hook_root).exists():
+                            ok(f"Project root valid: {hook_root}")
+                        else:
+                            fail(f"CODEGRAPH_PROJECT_ROOT invalid: {hook_root}")
+                            typer.echo(f"       Run: codegraph hooks install --force")
+
+                    # Last run info
+                    if last_run:
+                        status_label = "success" if last_exit == 0 else "error"
+                        dur_str = f"{last_dur:.0f}ms" if last_dur else "N/A"
+                        ok(f"Last run: {last_run} (exit {last_exit}, {dur_str})")
+                    else:
+                        typer.echo(f"  [INFO]  Last run: never")
+
+                    if total_runs > 0:
+                        typer.echo(
+                            f"  [INFO]  Total runs: {total_runs}, "
+                            f"failures: {total_fails}"
+                        )
+                else:
+                    warn("Hook file exists but missing CodeGraph managed block")
+                    typer.echo(f"       Run: codegraph hooks install")
+            else:
+                if auto_update:
+                    warn("Post-commit hook not installed")
+                    typer.echo(f"       Run: codegraph hooks install")
+                else:
+                    typer.echo("  [INFO]  Post-commit hook not installed (auto-update disabled)")
     else:
         warn("Skipped because .codegraph is missing")
     typer.echo()
@@ -1666,6 +1994,16 @@ def doctor(
     else:
         fail(f"Storage:       {storage_msg}")
 
+    # Hook status
+    hook_info = lite.get("hook", {})
+    if hook_info.get("installed"):
+        ok(f"Hook:          installed (auto-update: {hook_info.get('auto_update_on_commit', True)})")
+    elif hook_info.get("auto_update_on_commit", True):
+        warn("Hook:          not installed (auto-update enabled but hook missing)")
+        typer.echo("       Run: codegraph hooks install")
+    else:
+        typer.echo("  [INFO]  Hook:          not installed (auto-update disabled)")
+
     # Suggested fix
     suggested = lite.get("suggested_fix")
     if suggested:
@@ -1674,6 +2012,369 @@ def doctor(
         ok("Suggested fix: No action needed")
 
     typer.echo()
+
+
+# ── sync command (internal, for hook invocation) ───────────────────────────
+
+@app.command(name="sync", hidden=True)
+def sync_cmd(
+    incremental: bool = typer.Option(
+        False, "--incremental", "-i",
+        help="Use incremental update (only changed files)",
+    ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q",
+        help="Suppress stdout output (for hook usage)",
+    ),
+    trigger: str = typer.Option(
+        "manual",
+        "--trigger",
+        help="What triggered this sync (e.g. 'post-commit', 'manual')",
+    ),
+) -> None:
+    """Internal: trigger an incremental index sync.
+
+    Called by the git post-commit hook.  Always exits with code 0
+    so that a failing sync never blocks a git commit.
+    """
+    start_time = time_module.monotonic()
+    logger = None
+    exit_code = 0
+
+    # --- Resolve project root ---
+    project_root = _resolve_project_root()
+    if project_root is None:
+        if not quiet:
+            typer.echo(
+                "No .codegraph directory found. Run 'codegraph init' first.",
+                err=True,
+            )
+        sys.exit(0)
+
+    cg_dir = project_root / ".codegraph"
+
+    # --- Set up logger ---
+    log_dir = cg_dir / "logs"
+    try:
+        logger = get_hook_logger(log_dir)
+    except Exception:
+        pass
+
+    def _log(msg: str, level: str = "info") -> None:
+        if logger:
+            getattr(logger, level)(msg)
+        if not quiet and level != "debug":
+            typer.echo(f"[codegraph sync] {msg}", err=True)
+
+    # --- Check auto_update_on_commit config ---
+    try:
+        state_store = IndexStateStore(cg_dir)
+        hook_config = state_store.get_hook_config()
+        if not hook_config.get("auto_update_on_commit", True):
+            _log("auto_update_on_commit is disabled, skipping sync")
+            sys.exit(0)
+    except Exception:
+        pass
+
+    # --- Acquire index lock ---
+    lock = IndexLock(cg_dir)
+    if not lock.acquire(timeout=10.0):
+        _log("Could not acquire index lock — another sync may be in progress. Skipping.")
+        sys.exit(0)
+
+    try:
+        _log(f"Sync started (trigger={trigger})")
+        state_store = IndexStateStore(cg_dir)
+        state_store.mark_indexing()
+
+        from codegraph.indexer.incremental import run_incremental_index
+
+        result = run_incremental_index(
+            project_root, cg_dir, None, state_store=state_store,
+        )
+
+        duration_ms = (time_module.monotonic() - start_time) * 1000
+        _log(
+            f"Sync complete: {result.get('reparsed_files', 0)} files "
+            f"re-parsed, {result.get('inserted_nodes', 0)} nodes, "
+            f"{result.get('inserted_edges', 0)} edges "
+            f"({duration_ms:.0f}ms)",
+        )
+
+        state_store.record_hook_run(exit_code=0, duration_ms=duration_ms)
+        state_store.update_status("fresh")
+    except Exception as exc:
+        exit_code = 1
+        duration_ms = (time_module.monotonic() - start_time) * 1000
+        _log(f"Sync failed: {exc}", level="error")
+
+        try:
+            state_store = IndexStateStore(cg_dir)
+            state_store.record_hook_run(exit_code=1, duration_ms=duration_ms)
+        except Exception:
+            pass
+    finally:
+        lock.release()
+
+    # Always exit 0 — never block a git commit
+    sys.exit(0)
+
+
+# ── hooks command group ────────────────────────────────────────────────────
+
+hooks_app = typer.Typer(
+    name="hooks",
+    help="Manage git post-commit hook for automatic index updates",
+)
+app.add_typer(hooks_app)
+
+
+@hooks_app.command(name="install")
+def hooks_install(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (defaults to auto-detect from CWD)",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-install even if already installed",
+    ),
+) -> None:
+    """Install the git post-commit hook for automatic index updates.
+
+    The hook runs 'codegraph sync --incremental --quiet' after each commit,
+    keeping the MCP index fresh without manual intervention.
+
+    Examples:
+        codegraph hooks install
+        codegraph hooks install --root /path/to/project
+        codegraph hooks install --force
+    """
+    project_root = _resolve_hook_project_root(root)
+    if project_root is None:
+        typer.echo("Error: Could not determine project root.", err=True)
+        typer.echo(
+            "Use --root to specify the project directory, or run from within "
+            "a project that already has a .codegraph directory.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    result = HookManager.install(project_root, force=force)
+    if result["installed"]:
+        if result["action"] == "skip":
+            typer.echo(result["message"])
+            typer.echo("Use --force to re-install.")
+        else:
+            typer.echo(f"Post-commit hook {result['action']}.")
+            typer.echo(f"  Path: {result['hook_path']}")
+            typer.echo(f"  Python: {sys.executable}")
+            typer.echo(f"  Project root: {project_root.resolve()}")
+    else:
+        typer.echo(f"Error: {result['message']}", err=True)
+        raise typer.Exit(1)
+
+
+@hooks_app.command(name="uninstall")
+def hooks_uninstall(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (defaults to auto-detect from CWD)",
+    ),
+) -> None:
+    """Remove the CodeGraph managed post-commit hook.
+
+    Only the CodeGraph managed block is removed — any user-written
+    hook content is preserved.
+
+    Examples:
+        codegraph hooks uninstall
+        codegraph hooks uninstall --root /path/to/project
+    """
+    project_root = _resolve_hook_project_root(root)
+    if project_root is None:
+        typer.echo("Error: Could not determine project root.", err=True)
+        raise typer.Exit(1)
+
+    result = HookManager.uninstall(project_root)
+    typer.echo(result["message"])
+    if not result["uninstalled"]:
+        raise typer.Exit(1)
+
+
+@hooks_app.command(name="status")
+def hooks_status(
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (defaults to auto-detect from CWD)",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output status as JSON",
+    ),
+) -> None:
+    """Show the current state of the post-commit hook.
+
+    Examples:
+        codegraph hooks status
+        codegraph hooks status --json
+    """
+    import json
+
+    project_root = _resolve_hook_project_root(root)
+    if project_root is None:
+        typer.echo("Error: Could not determine project root.", err=True)
+        raise typer.Exit(1)
+
+    status = HookManager.status(project_root)
+
+    if json_output:
+        typer.echo(json.dumps(status, indent=2, ensure_ascii=False))
+        return
+
+    typer.echo("Hook status:")
+    typer.echo(f"  Installed:              {status['installed']}")
+    typer.echo(f"  Auto-update on commit:  {status['auto_update_on_commit']}")
+    typer.echo(f"  Hook path:              {status['hook_path'] or 'N/A'}")
+    typer.echo(f"  Last run:               {status['last_run_at'] or 'never'}")
+    typer.echo(f"  Total runs:             {status['total_runs']}")
+    typer.echo(f"  Total failures:         {status['total_failures']}")
+    typer.echo(f"  Valid:                  {status['valid']}")
+    if status["issues"]:
+        typer.echo("  Issues:")
+        for issue in status["issues"]:
+            typer.echo(f"    - {issue}")
+
+
+# ── config command group ───────────────────────────────────────────────────
+
+config_app = typer.Typer(
+    name="config",
+    help="Get or set CodeGraph configuration values",
+)
+app.add_typer(config_app)
+
+
+_VALID_CONFIG_KEYS = {"auto_update_on_commit"}
+
+
+@config_app.command(name="set")
+def config_set(
+    key: str = typer.Argument(..., help="Config key to set"),
+    value: str = typer.Argument(..., help="New value"),
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (defaults to auto-detect from CWD)",
+    ),
+) -> None:
+    """Set a configuration value.
+
+    Supported keys:
+        auto_update_on_commit  (true/false)
+
+    Examples:
+        codegraph config set auto_update_on_commit false
+        codegraph config set auto_update_on_commit true
+    """
+    if key not in _VALID_CONFIG_KEYS:
+        typer.echo(
+            f"Error: Unknown config key '{key}'. "
+            f"Valid keys: {', '.join(sorted(_VALID_CONFIG_KEYS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    project_root = _resolve_hook_project_root(root)
+    if project_root is None:
+        typer.echo("Error: Could not determine project root.", err=True)
+        raise typer.Exit(1)
+
+    cg_dir = project_root / ".codegraph"
+    if not cg_dir.exists():
+        typer.echo("Error: No .codegraph directory found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    # Parse value
+    if key == "auto_update_on_commit":
+        raw = value.strip().lower()
+        if raw in ("true", "1", "yes", "on"):
+            parsed: object = True
+        elif raw in ("false", "0", "no", "off"):
+            parsed = False
+        else:
+            typer.echo(
+                f"Error: '{value}' is not a valid boolean. Use true or false.",
+                err=True,
+            )
+            raise typer.Exit(1)
+    else:
+        parsed = value
+
+    state_store = IndexStateStore(cg_dir)
+    state_store.update_hook_config(**{key: parsed})
+    typer.echo(f"Set {key} = {parsed}")
+
+
+@config_app.command(name="get")
+def config_get(
+    key: str = typer.Argument(..., help="Config key to get"),
+    root: str = typer.Option(
+        None, "--root", "-r",
+        help="Project root (defaults to auto-detect from CWD)",
+    ),
+) -> None:
+    """Get a configuration value.
+
+    Examples:
+        codegraph config get auto_update_on_commit
+    """
+    project_root = _resolve_hook_project_root(root)
+    if project_root is None:
+        typer.echo("Error: Could not determine project root.", err=True)
+        raise typer.Exit(1)
+
+    cg_dir = project_root / ".codegraph"
+    if not cg_dir.exists():
+        typer.echo("Error: No .codegraph directory found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    state_store = IndexStateStore(cg_dir)
+    hook_config = state_store.get_hook_config()
+
+    if key in hook_config:
+        typer.echo(str(hook_config[key]))
+    else:
+        typer.echo(f"Error: Unknown config key '{key}'.", err=True)
+        raise typer.Exit(1)
+
+
+def _resolve_project_root() -> Path | None:
+    """Walk up from CWD to find a .codegraph directory.
+
+    Returns the project root (parent of .codegraph), or None.
+    """
+    start = Path.cwd()
+    for parent in [start] + list(start.parents):
+        if (parent / ".codegraph").is_dir():
+            return parent
+    return None
+
+
+def _resolve_hook_project_root(root_arg: str | None) -> Path | None:
+    """Resolve the project root for hook commands.
+
+    Priority: --root arg > CODEGRAPH_PROJECT_ROOT env > auto-detect.
+    """
+    if root_arg:
+        return Path(root_arg).resolve()
+
+    env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT")
+    if env_root:
+        env_path = Path(env_root).resolve()
+        if env_path.is_dir():
+            return env_path
+
+    return _resolve_project_root()
 
 
 # ── configure command group ──────────────────────────────────────────────

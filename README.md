@@ -1,10 +1,15 @@
 # CodeGraph Explorer
 
-面向 AI 编码 Agent 的本地代码图谱索引与 MCP 查询工具。
+面向 AI 编码 Agent 的多语言本地代码图谱索引与 MCP 查询工具。
 
-**Python-first local code graph index and MCP toolkit for AI coding agents.**
+**Multi-language local code graph index and MCP toolkit for AI coding agents.**
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![TypeScript](https://img.shields.io/badge/TypeScript-Beta-3178c6)
+![JavaScript](https://img.shields.io/badge/JavaScript-Beta-f7df1e)
+![Java](https://img.shields.io/badge/Java-Beta-ed8b00)
+![Go](https://img.shields.io/badge/Go-Beta-00add8)
+![C#](https://img.shields.io/badge/C%23-Beta-512bd4)
 ![MCP](https://img.shields.io/badge/MCP-Agent%20Tools-purple)
 ![CodeGraph](https://img.shields.io/badge/CodeGraph-Local%20Index-orange)
 ![Benchmark](https://img.shields.io/badge/Benchmark--31.3%25%20tokens-success)
@@ -121,6 +126,40 @@ CodeGraph Explorer 会检测索引是否过期：
 
 ---
 
+## 语言支持
+
+| Language | Status | Symbols | Imports | Calls | Frameworks | Impact | Notes |
+|----------|--------|---------|---------|-------|------------|--------|-------|
+| Python | 🟢 Production | Full AST | Full | Intra-file + imported | FastAPI, Flask, Django | Confirmed/possible | LLM-assisted extraction for unparseable files |
+| TypeScript | 🟡 Beta | Full tree-sitter | Named/default/namespace/barrel | Intra-file + imported | Express, Next.js, NestJS, React | Confirmed/possible | Dynamic property access, callback heuristics limited |
+| JavaScript | 🟡 Beta | Full tree-sitter | require/module.exports | Intra-file + imported | Express, Next.js | Confirmed/possible | Same limits as TypeScript |
+| Java | 🟡 Beta | Full tree-sitter | Single/static/wildcard | Intra-file + package-local | Spring Boot (REST, DI) | Confirmed/possible | Overloaded/interface methods not forced confirmed |
+| Go | 🟡 Beta | Regex-based | Package import | Intra-package + cross-package | Gin, Hertz | Confirmed/possible | Interface satisfaction, embedded methods limited |
+| C# | 🟡 Beta | Regex-based | using/using alias | Intra-namespace + cross-namespace | ASP.NET Core (Controllers, Minimal API, DI) | Confirmed/possible | Extension methods, dynamic/reflection limited |
+
+> **Production** = full confidence for agent use, **Beta** = functional with known limitations, call edges tiered as confirmed/possible/unresolved.
+
+---
+
+## 框架支持
+
+| Framework | Language | Status | Supported Signals |
+|-----------|----------|--------|-------------------|
+| FastAPI | Python | 🟢 Production | Route decorators, dependency injection, path parameters |
+| Flask | Python | 🟢 Production | Route decorators, view functions |
+| Django | Python | 🟡 Beta | View heuristics, URL patterns |
+| Express | TypeScript/JS | 🟡 Beta | Route handlers (`app.get/post/use`), middleware chains |
+| Next.js | TypeScript/JS | 🟡 Beta | File-based routes (`page.tsx`, `route.ts`), API routes |
+| NestJS | TypeScript/JS | 🟡 Beta | Controller decorators, `@Injectable` DI resolution |
+| Spring Boot | Java | 🟡 Beta | `@RestController`, `@Service`, `@Repository`, `@Autowired` DI |
+| Gin | Go | 🟡 Beta | Router groups, route handlers, middleware chains |
+| Hertz | Go | 🟡 Beta | Router groups, route handlers, middleware chains |
+| ASP.NET Core | C# | 🟡 Beta | `[ApiController]`, `[Route]`, `MapGet`/`MapPost`, constructor DI, `MapGroup` |
+
+> **Route-to-handler** confirmed edges are separated from possible/unresolved. Uncertain relationships never enter confirmed.
+
+---
+
 ## Benchmark 结果
 
 我们用内置 Python benchmark fixtures 对比了两种流程：
@@ -197,6 +236,25 @@ cd your-project
 codegraph init
 ```
 
+`codegraph init` 默认会：
+- 构建初始代码图谱索引
+- **自动安装 git post-commit hook**，每次 commit 后自动增量更新索引
+- 写入 `.codegraph/config.json`
+
+如果不需要自动更新：
+
+```bash
+codegraph init --no-hook                              # 初始化时不安装 hook
+codegraph config set auto_update_on_commit false      # 禁用自动更新（保留 hook）
+codegraph hooks uninstall                             # 完全卸载 hook
+```
+
+查看 hook 状态：
+
+```bash
+codegraph hooks status
+```
+
 ### 4. 验证环境
 
 ```bash
@@ -211,8 +269,27 @@ codegraph status
 
 ### 可选：Watch Mode 自动同步
 
+Post-commit hook 已覆盖最常见的场景（commit 后自动更新）。如果需要在每次保存文件时实时更新索引，可使用 Watch Mode：
+
 ```bash
 codegraph watch .
+```
+
+### 管理 Post-Commit Hook
+
+```bash
+codegraph hooks install            # 手动安装 hook
+codegraph hooks uninstall          # 卸载 hook（保留用户自定义内容）
+codegraph hooks status             # 查看 hook 状态
+codegraph hooks status --json      # JSON 格式输出
+```
+
+### 配置自动更新
+
+```bash
+codegraph config set auto_update_on_commit false   # 关闭自动更新
+codegraph config set auto_update_on_commit true    # 开启自动更新
+codegraph config get auto_update_on_commit         # 查看当前设置
 ```
 
 ### 更新（获取最新版本）
@@ -675,22 +752,25 @@ graph-rag
 
 ## 当前局限
 
-* 目前是 Python-first
-* 静态分析无法覆盖所有动态派发和 monkey patch
-* 多语言项目支持有限
-* benchmark 结果来自内置 fixtures，不代表所有真实项目
-* 复杂框架依赖注入仍可能需要 Agent 自行验证
+* **Python 是 production 级别**；TypeScript、JavaScript、Java、Go、C# 均为 **Beta** 级别，调用边分为 confirmed / possible / unresolved
+* 静态分析无法覆盖动态派发、反射、monkey patch、运行时代码生成
+* Benchmark 结果来自内置 fixtures，不代表所有真实项目
+* 复杂框架依赖注入链可能需要 Agent 自行验证
+
+各语言的详细限制见 **[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)**。
 
 ---
 
 ## Roadmap
 
-* TypeScript / JavaScript 支持
-* Java 支持
-* 更多框架 route mapping
-* 更强的 test discovery
-* 更大的 benchmark suite
-* workspace-level indexing
+* TypeScript / JavaScript → production quality（from beta）
+* Java → production quality（from beta）
+* Go → production quality（from beta）
+* C# → production quality（from beta）
+* 更多框架 route mapping（Ruby on Rails, Laravel, Fiber, Echo）
+* 跨语言调用图（cross-language call graph edges）
+* 更大的多语言 benchmark suite
+* workspace-level indexing（monorepo 支持）
 * 更强的 incremental sync
 
 ---

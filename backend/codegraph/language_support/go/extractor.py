@@ -291,6 +291,7 @@ class GoExtractor(LanguageExtractor):
             s.language = self.language_id
             if "support_level" not in s.metadata:
                 s.metadata["support_level"] = "beta"
+                s.support_level = "beta"
 
         result = ExtractorResult(
             language_id=self.language_id,
@@ -496,6 +497,7 @@ class GoExtractor(LanguageExtractor):
                 ),
                 signature=sig,
                 tags=tags,
+                support_level="beta",
                 metadata={"support_level": "beta"},
             ))
 
@@ -529,6 +531,7 @@ class GoExtractor(LanguageExtractor):
                     line_end=_get_line(src, _find_brace_end(src, m.start())),
                 ),
                 signature=sig,
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "receiver_type": recv_type,
@@ -572,6 +575,7 @@ class GoExtractor(LanguageExtractor):
                 ),
                 signature=f"type {name} struct",
                 tags=["struct"],
+                support_level="beta",
                 metadata={"support_level": "beta", "go_kind": "struct", "package": pkg_name},
             ))
 
@@ -612,6 +616,7 @@ class GoExtractor(LanguageExtractor):
                 ),
                 signature=f"type {name} interface",
                 tags=["interface"],
+                support_level="beta",
                 metadata={"support_level": "beta", "go_kind": "interface", "package": pkg_name},
             ))
 
@@ -632,6 +637,7 @@ class GoExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"const {name}",
                 tags=["const"],
+                support_level="beta",
                 metadata={"support_level": "beta", "go_kind": "const"},
             ))
 
@@ -655,7 +661,8 @@ class GoExtractor(LanguageExtractor):
                     location=Location(line_start=line, line_end=line),
                     signature=f"const {name}",
                     tags=["const"],
-                    metadata={"support_level": "beta", "go_kind": "const"},
+                    support_level="beta",
+                metadata={"support_level": "beta", "go_kind": "const"},
                 ))
 
         # Variables
@@ -675,6 +682,7 @@ class GoExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"var {name}",
                 tags=["var"],
+                support_level="beta",
                 metadata={"support_level": "beta", "go_kind": "var"},
             ))
 
@@ -698,7 +706,8 @@ class GoExtractor(LanguageExtractor):
                     location=Location(line_start=line, line_end=line),
                     signature=f"var {name}",
                     tags=["var"],
-                    metadata={"support_level": "beta", "go_kind": "var"},
+                    support_level="beta",
+                metadata={"support_level": "beta", "go_kind": "var"},
                 ))
 
         return nodes, struct_fields, interface_methods

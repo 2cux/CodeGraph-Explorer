@@ -486,34 +486,48 @@ def check_search_quality(results: dict[str, Any], config: dict[str, Any]) -> lis
 
 
 def check_false_edges(results: dict[str, Any], config: dict[str, Any]) -> list[CheckResult]:
-    """Check edge quality across all fixture projects."""
+    """Check edge quality across all fixture projects, grouped by language."""
     cfg = config.get("edges", {})
+    lang_cfg = config.get("language_edges", {})
     checks: list[CheckResult] = []
 
     from tests.agent_benchmark.metrics import edge_quality_metrics
 
     projects = _get_fixture_projects()
     max_false = cfg.get("max_false_confirmed_edges", 0)
-    total_name_only = 0
-    details: list[str] = []
 
+    # Track by language
+    lang_results: dict[str, dict[str, Any]] = {}
     for proj_name, proj_path in projects:
         store = _load_store(proj_path)
         if store is None:
-            details.append(f"{proj_name}: no index found")
             continue
         metrics = edge_quality_metrics(store)
+        # Determine language from nodes
+        lid = "python"
+        for n in store.all_nodes():
+            nlid = n.language_id or n.language or "python"
+            if nlid != "unknown":
+                lid = nlid
+                break
+        lang_results.setdefault(lid, {"name_only": 0, "details": []})
         count = metrics.get("name_only_confirmed_count", 0)
-        total_name_only += count
+        lang_results[lid]["name_only"] += count
         if count > 0:
-            details.append(f"{proj_name}: {count} name-only confirmed edges")
+            lang_results[lid]["details"].append(f"{proj_name}: {count}")
 
-    checks.append(CheckResult(
-        category="edges", name="false confirmed edges (name-only)",
-        value=str(total_name_only), threshold=f"<= {max_false}",
-        passed=total_name_only <= max_false,
-        detail="; ".join(details) if details else "All projects clean",
-    ))
+    # Report per-language
+    for lid in sorted(lang_results.keys()):
+        lr = lang_results[lid]
+        lang_threshold = lang_cfg.get(lid, {}).get("max_name_only_confirmed", max_false)
+        checks.append(CheckResult(
+            category="edges",
+            name=f"false confirmed edges ({lid})",
+            value=str(lr["name_only"]),
+            threshold=f"<= {lang_threshold}",
+            passed=lr["name_only"] <= lang_threshold,
+            detail="; ".join(lr["details"]) if lr["details"] else f"{lid}: clean",
+        ))
 
     # Also check confirmed edges don't contain unresolved
     total_unresolved_in_confirmed = 0

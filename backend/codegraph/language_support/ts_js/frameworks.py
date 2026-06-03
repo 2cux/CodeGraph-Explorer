@@ -300,6 +300,7 @@ class ExpressResolver(FrameworkResolver):
             framework_id=self.framework_id,
             location=Location(line_start=line, line_end=line),
             tags=["inline_handler", self.framework_id],
+            support_level="beta",
             metadata={"support_level": "beta", "framework_id": self.framework_id},
         )]
 
@@ -399,6 +400,7 @@ class NestJsResolver(FrameworkResolver):
                     framework_id=self.framework_id,
                     location=Location(line_start=self._line_for_offset(src, m.start()), line_end=self._line_for_offset(src, m.start())),
                     tags=["service", self.framework_id],
+                    support_level="beta",
                     metadata={"support_level": "beta"},
                 )
                 out.nodes.append(node)
@@ -423,6 +425,7 @@ class NestJsResolver(FrameworkResolver):
                     framework_id=self.framework_id,
                     location=Location(line_start=self._line_for_offset(src, m.start()), line_end=self._line_for_offset(src, m.start())),
                     tags=["module_metadata", self.framework_id],
+                    support_level="beta",
                     metadata={"support_level": "beta"},
                 )
                 out.nodes.append(node)
@@ -453,6 +456,7 @@ class NestJsResolver(FrameworkResolver):
                     framework_id=self.framework_id,
                     location=Location(line_start=line, line_end=line),
                     tags=["controller", self.framework_id],
+                    support_level="beta",
                     metadata={"support_level": "beta"},
                 )
                 out.nodes.append(node)
@@ -487,6 +491,7 @@ class NestJsResolver(FrameworkResolver):
                         framework_id=self.framework_id,
                         location=Location(line_start=route_line, line_end=route_line),
                         tags=[self.framework_id],
+                        support_level="beta",
                         metadata={"class_name": cls_name, "support_level": "beta"},
                     ))
                 route = self._route_node(

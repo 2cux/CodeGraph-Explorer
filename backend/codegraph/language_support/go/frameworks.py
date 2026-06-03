@@ -311,6 +311,7 @@ class _FrameworkResolver:
             framework_id=self.framework_id,
             location=Location(line_start=line, line_end=line),
             tags=["route", self.framework_id],
+            support_level="beta",
             metadata={
                 "route_path": path,
                 "http_method": method.upper(),

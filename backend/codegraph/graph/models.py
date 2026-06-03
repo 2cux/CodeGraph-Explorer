@@ -287,6 +287,8 @@ class GraphNode(BaseModel):
     Added in Phase 1 multi-language refactoring."""
     framework_id: str | None = None
     """Framework identifier (e.g. ``fastapi``, ``django``) or ``None``."""
+    support_level: str = "production"
+    """Support level from LanguageRegistry: production, beta, experimental, unsupported."""
     location: Location | None = None
     signature: str | None = None
     docstring: str | None = None

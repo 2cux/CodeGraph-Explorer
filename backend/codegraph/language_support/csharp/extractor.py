@@ -316,6 +316,7 @@ class CSharpExtractor(LanguageExtractor):
             s.language = self.language_id
             if s.type not in (NodeType.file,):
                 s.metadata["support_level"] = "beta"
+                s.support_level = "beta"
 
         result = ExtractorResult(
             language_id=self.language_id,
@@ -349,6 +350,7 @@ class CSharpExtractor(LanguageExtractor):
             language=self.language_id,
             location=Location(line_start=line, line_end=line),
             signature=f"namespace {name}",
+            support_level="beta",
             metadata={"kind": "namespace", "support_level": "beta"},
         )
 
@@ -461,6 +463,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"class {name}" + (f" : {bases.strip()}" if bases else ""),
                 tags=tags,
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "namespace": namespace.name if namespace else "",
@@ -499,6 +502,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"interface {name}" + (f" : {bases.strip()}" if bases else ""),
                 tags=["interface"],
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "namespace": namespace.name if namespace else "",
@@ -527,6 +531,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"enum {name}",
                 tags=["enum"],
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "namespace": namespace.name if namespace else "",
@@ -608,6 +613,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"{'async ' if 'async' in m.group(0) else ''}{return_type} {method_name}({params})",
                 tags=(["aspnetcore"] if http_method else []),
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "class_name": class_name,
@@ -649,6 +655,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"{class_name}({params})",
                 tags=["constructor"],
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "class_name": class_name,
@@ -678,6 +685,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"{prop_type} {prop_name} {{ get; set; }}",
                 tags=["property"],
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "class_name": class_name,
@@ -711,6 +719,7 @@ class CSharpExtractor(LanguageExtractor):
                 location=Location(line_start=line, line_end=line),
                 signature=f"{prop_type} {prop_name} =>",
                 tags=["property"],
+                support_level="beta",
                 metadata={
                     "support_level": "beta",
                     "class_name": class_name,
@@ -746,6 +755,7 @@ class CSharpExtractor(LanguageExtractor):
                     location=Location(line_start=fline, line_end=fline),
                     signature=f"{field_type} {field_name}",
                     tags=["field"],
+                    support_level="beta",
                     metadata={
                         "support_level": "beta",
                         "class_name": class_name,
@@ -790,6 +800,7 @@ class CSharpExtractor(LanguageExtractor):
                 language=self.language_id,
                 location=Location(line_start=line, line_end=line),
                 signature=f"{return_type} {method_name}({params})",
+                support_level="beta",
                 metadata={"support_level": "beta"},
             )
             symbols.append(node)

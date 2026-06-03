@@ -128,6 +128,47 @@ class IndexStateStore:
         current["last_incremental_stats"] = stats
         self.save(current)
 
+    def get_hook_config(self) -> dict:
+        """Return the hook configuration section from state."""
+        current = self.load()
+        return current.get("hook", self._default_state()["hook"])
+
+    def update_hook_config(self, **kwargs: object) -> None:
+        """Partially update hook config fields.
+
+        Accepts keyword arguments matching the hook config keys, e.g.::
+
+            store.update_hook_config(installed=True, hook_path="/path/to/hook")
+        """
+        current = self.load()
+        hook = dict(current.get("hook", self._default_state()["hook"]))
+        hook.update({k: v for k, v in kwargs.items() if k in hook})
+        current["hook"] = hook
+        self.save(current)
+
+    def record_hook_run(self, exit_code: int, duration_ms: float) -> None:
+        """Record a hook execution result.
+
+        Increments run counters and updates last-run timestamps.
+
+        Args:
+            exit_code: Process exit code (0 = success).
+            duration_ms: Wall-clock duration in milliseconds.
+        """
+        from datetime import datetime, timezone
+
+        current = self.load()
+        hook = dict(current.get("hook", self._default_state()["hook"]))
+        now = datetime.now(timezone.utc).isoformat()
+        hook["last_run_at"] = now
+        hook["last_run_exit_code"] = exit_code
+        hook["last_run_duration_ms"] = duration_ms
+        hook["total_runs"] = hook.get("total_runs", 0) + 1
+        if exit_code != 0:
+            hook["total_failures"] = hook.get("total_failures", 0) + 1
+        current["hook"] = hook
+        self.save(current)
+
     @staticmethod
     def _default_state() -> dict:
         return {
@@ -163,5 +204,16 @@ class IndexStateStore:
                 "inserted_edges": 0,
                 "duration_ms": 0,
                 "full_replace": False,
+            },
+            "hook": {
+                "auto_update_on_commit": True,
+                "installed": False,
+                "installed_at": None,
+                "hook_path": None,
+                "last_run_at": None,
+                "last_run_exit_code": None,
+                "last_run_duration_ms": None,
+                "total_runs": 0,
+                "total_failures": 0,
             },
         }
