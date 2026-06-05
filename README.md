@@ -22,32 +22,25 @@ CodeGraph Explorer 会提前将代码库解析为结构化代码图谱，让 Cla
 
 ## 为什么需要 CodeGraph Explorer？
 
-你让 Agent 修改一个大型项目里的登录逻辑。
+AI Coding Agent 在理解代码库时，通常会先用 `grep`、`glob` 和 `Read` 反复扫描文件，寻找符号、调用链、入口点、测试和影响面。
 
-Agent 通常会先做这些事：
-
-* 搜索 `login`
-* 读取多个 `auth` 文件
-* 手动追踪调用链
-* 查找 token 存储逻辑
-* 查找相关测试
-* 估算修改影响面
-
-这些探索过程会消耗大量工具调用和 token。
+这个过程会消耗大量 token 和工具调用，而且每个新任务都可能重复发生。
 
 CodeGraph Explorer 的做法是：
 
 ```text
-先索引代码库
-      ↓
+预先索引代码库
+        ↓
 生成本地代码图谱
-      ↓
-通过 MCP 暴露细粒度查询工具
-      ↓
+        ↓
+通过 MCP 暴露结构化查询工具
+        ↓
 Agent 按需查询 callers / callees / neighbors / impact
 ```
 
-让 Agent 不再每次任务都重新扫描整个代码库。
+Agent 不需要每次都重新扫描整个仓库，而是可以直接查询已经构建好的代码关系图。
+
+这让代码理解过程更快、更稳定，也更节省 token。
 
 ---
 
