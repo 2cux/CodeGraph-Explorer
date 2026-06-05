@@ -4,7 +4,7 @@
 # Optional version pin:
 #   $env:CODEGRAPH_VERSION="v1.0.0-rc.1"; irm https://... | iex
 #
-# Verbose mode:
+# Verbose mode (shows every command and output):
 #   $env:CODEGRAPH_INSTALL_VERBOSE="1"; irm https://... | iex
 
 param()
@@ -13,6 +13,9 @@ $REPO = "https://github.com/2cux/CodeGraph-Explorer.git"
 $PACKAGE = "codegraph"
 $REQUIRED_PYTHON_MAJOR = 3
 $REQUIRED_PYTHON_MINOR = 10
+
+# Version check code must NOT use f-strings (Python 2 compatibility for error messages)
+$VERSION_CHECK_CODE = "import sys; print('%d.%d' % (sys.version_info[0], sys.version_info[1]))"
 
 $ErrorActionPreference = "Stop"
 
@@ -50,9 +53,11 @@ function Run-Command {
         [string]$Description = ""
     )
 
+    # Build display string
+    $cmdDisplay = if ($Args.Count -gt 0) { "$Exe $($Args -join ' ')" } else { $Exe }
+
     if ($Script:Verbose) {
-        $cmdLine = "$Exe $($Args -join ' ')"
-        Write-Host "  [cmd] $cmdLine" -ForegroundColor Gray
+        Write-Host "  [cmd] $cmdDisplay" -ForegroundColor Gray
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -71,16 +76,19 @@ function Run-Command {
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
     } catch {
-        Write-Err "  Failed to start: $Exe $($Args -join ' ')"
-        Write-Err "  $_"
-        return @{ ExitCode = -1; Stdout = ""; Stderr = $_; TimedOut = $false }
+        if ($Script:Verbose) {
+            Write-Host "  [err] Failed to start: $cmdDisplay — $_" -ForegroundColor DarkYellow
+        }
+        return @{ ExitCode = -1; Stdout = ""; Stderr = "$_"; TimedOut = $false }
     }
 
     $finished = $proc.WaitForExit($TimeoutSec * 1000)
 
     if (-not $finished -or -not $proc.HasExited) {
         try { $proc.Kill() } catch {}
-        Write-Err "  Command timed out after ${TimeoutSec}s: $Exe $($Args -join ' ')"
+        if ($Script:Verbose) {
+            Write-Host "  [err] Timed out after ${TimeoutSec}s: $cmdDisplay" -ForegroundColor DarkYellow
+        }
         return @{ ExitCode = -1; Stdout = ""; Stderr = "Timed out after ${TimeoutSec}s"; TimedOut = $true }
     }
 
@@ -112,6 +120,8 @@ function Run-CommandOrDie {
 
     $result = Run-Command -Exe $Exe -Args $Args -TimeoutSec $TimeoutSec -Description $Description
 
+    $cmdDisplay = if ($Args.Count -gt 0) { "$Exe $($Args -join ' ')" } else { $Exe }
+
     if ($result.TimedOut) {
         Write-StepFail
         Write-Err "  Step timed out: $Description"
@@ -128,7 +138,7 @@ function Run-CommandOrDie {
 
     if ($result.ExitCode -ne 0) {
         Write-StepFail
-        Write-Err "  Command failed (exit=$($result.ExitCode)): $Exe $($Args -join ' ')"
+        Write-Err "  Command failed (exit=$($result.ExitCode)): $cmdDisplay"
         if ($result.Stderr) { Write-Err "  $($result.Stderr)" }
         if ($FixSuggestion) {
             Write-Host "  Try:" -ForegroundColor Yellow
@@ -140,97 +150,104 @@ function Run-CommandOrDie {
     return $result
 }
 
-# --- step 1: python detection --------------------------------------------
+# --- step 1: find Python 3 -----------------------------------------------
 
-function Detect-PythonExe {
-    Write-Step "[1/6] Checking Python..."
+function Test-PythonCandidate {
+    param(
+        [string]$Exe,
+        [string[]]$Args,
+        [string]$Label
+    )
 
-    # 1. Try py -3 (Windows Python launcher)
-    $result = Run-Command -Exe py -Args @("-3", "--version") -TimeoutSec 30 -Description "py -3 --version"
-    if ($result.ExitCode -eq 0) {
+    $allArgs = $Args + @("-c", $VERSION_CHECK_CODE)
+    $result = Run-Command -Exe $Exe -Args $allArgs -TimeoutSec 30 -Description "Testing $Label"
+
+    if ($result.ExitCode -ne 0) {
         if ($Script:Verbose) {
-            Write-Host "  [ver] $($result.Stdout)" -ForegroundColor Gray
+            $errBrief = if ($result.Stderr) { ($result.Stderr -split "`n")[0] } else { "exit code $($result.ExitCode)" }
+            Write-Host "  [skip] $Label — $errBrief" -ForegroundColor Gray
         }
-        Write-StepOk
-        return "py"
+        return @{ Success = $false; Error = $result.Stderr }
     }
-
-    # 2. Try $env:PYTHON if explicitly set
-    if ($env:PYTHON) {
-        $result = Run-Command -Exe $env:PYTHON -Args @("--version") -TimeoutSec 30 -Description "$env:PYTHON --version"
-        if ($result.ExitCode -eq 0) {
-            if ($Script:Verbose) {
-                Write-Host "  [ver] $($result.Stdout)" -ForegroundColor Gray
-            }
-            Write-StepOk
-            return $env:PYTHON
-        }
-    }
-
-    # 3. Try python3 and python from PATH
-    foreach ($candidate in @("python3", "python")) {
-        $found = $null
-        try { $found = (Get-Command $candidate -ErrorAction Stop | Select-Object -First 1).Source } catch {}
-        if ($found) {
-            $result = Run-Command -Exe $candidate -Args @("--version") -TimeoutSec 30 -Description "$candidate --version"
-            if ($result.ExitCode -eq 0) {
-                if ($Script:Verbose) {
-                    Write-Host "  [ver] $($result.Stdout)" -ForegroundColor Gray
-                    Write-Host "  [path] $found" -ForegroundColor Gray
-                }
-                Write-StepOk
-                return $candidate
-            }
-        }
-    }
-
-    Write-StepFail
-    Die "Python not found. Install Python $REQUIRED_PYTHON_MAJOR.$REQUIRED_PYTHON_MINOR+ from https://python.org and retry."
-}
-
-# --- step 2: python version check ----------------------------------------
-
-function Check-PythonVersion {
-    param([string]$PythonExe)
-
-    Write-Step "[2/6] Checking Python version..."
-
-    $pyArgs = if ($PythonExe -eq "py") { @("-3") } else { @() }
-    $code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-    $result = Run-CommandOrDie -Exe $PythonExe -Args ($pyArgs + @("-c", $code)) `
-        -TimeoutSec 30 `
-        -Description "Python version check" `
-        -FixSuggestion "Verify your Python installation: python --version"
 
     $verStr = ($result.Stdout -split "`n")[0].Trim()
     if ([string]::IsNullOrWhiteSpace($verStr)) {
-        Write-StepFail
-        Die "Failed to query Python version from '$PythonExe'."
+        if ($Script:Verbose) {
+            Write-Host "  [skip] $Label — empty version output" -ForegroundColor Gray
+        }
+        return @{ Success = $false; Error = "Empty version output" }
     }
 
     $parts = $verStr -split '\.'
     if ($parts.Count -lt 2) {
-        Write-StepFail
-        Die "Unexpected Python version format: $verStr"
+        if ($Script:Verbose) {
+            Write-Host "  [skip] $Label — unexpected version format: $verStr" -ForegroundColor Gray
+        }
+        return @{ Success = $false; Error = "Unexpected version format: $verStr" }
     }
+
     $major = [int]$parts[0]
     $minor = [int]$parts[1]
 
-    if ($major -lt $REQUIRED_PYTHON_MAJOR -or ($major -eq $REQUIRED_PYTHON_MAJOR -and $minor -lt $REQUIRED_PYTHON_MINOR)) {
-        Write-StepFail
-        Die "Python $verStr detected — need $REQUIRED_PYTHON_MAJOR.$REQUIRED_PYTHON_MINOR+. Install from https://python.org"
+    return @{
+        Success    = $true
+        Major      = $major
+        Minor      = $minor
+        VersionStr = "$major.$minor"
     }
-
-    if ($Script:Verbose) {
-        Write-Host "  [ver] Python $verStr (>= $REQUIRED_PYTHON_MAJOR.$REQUIRED_PYTHON_MINOR)" -ForegroundColor Gray
-    }
-    Write-StepOk
 }
 
-# --- step 3: git check ---------------------------------------------------
+function Find-Python3 {
+    Write-Step "[1/5] Finding Python 3..."
+
+    $candidates = @(
+        @{ Exe = "py";       Args = @("-3"); Label = "py -3" },
+        @{ Exe = "python3";  Args = @();     Label = "python3" },
+        @{ Exe = "python";   Args = @();     Label = "python" }
+    )
+
+    foreach ($c in $candidates) {
+        $r = Test-PythonCandidate -Exe $c.Exe -Args $c.Args -Label $c.Label
+
+        if (-not $r.Success) {
+            continue
+        }
+
+        # Found a Python, check its version
+        if ($r.Major -lt $REQUIRED_PYTHON_MAJOR) {
+            Write-Warn "  Found unsupported Python $($r.VersionStr) at $($c.Label), trying next candidate..."
+            continue
+        }
+
+        if ($r.Major -eq $REQUIRED_PYTHON_MAJOR -and $r.Minor -lt $REQUIRED_PYTHON_MINOR) {
+            Write-StepFail
+            Die "Found Python $($r.VersionStr) at $($c.Label), but $REQUIRED_PYTHON_MAJOR.$REQUIRED_PYTHON_MINOR+ is required.`n`nInstall from: https://www.python.org/downloads/"
+        }
+
+        # Success — found a valid Python 3
+        Write-StepOk
+        Write-Host "      Using: $($c.Label)" -ForegroundColor Green
+        Write-Host "      Version: $($r.VersionStr)" -ForegroundColor Green
+        return @{ Exe = $c.Exe; Args = $c.Args; Label = $c.Label; Version = $r.VersionStr }
+    }
+
+    # All candidates exhausted
+    Write-StepFail
+    Die @"
+No supported Python 3 installation found.
+
+Please install Python $REQUIRED_PYTHON_MAJOR.$REQUIRED_PYTHON_MINOR+:
+  https://www.python.org/downloads/
+
+Then restart PowerShell and verify:
+  py -3 --version
+"@
+}
+
+# --- step 2: git check ---------------------------------------------------
 
 function Check-Git {
-    Write-Step "[3/6] Checking Git..."
+    Write-Step "[2/5] Checking Git..."
 
     try {
         $gitFound = (Get-Command git -ErrorAction Stop | Select-Object -First 1).Source
@@ -257,12 +274,12 @@ function Check-Git {
     exit 1
 }
 
-# --- step 4: pipx --------------------------------------------------------
+# --- step 3: pipx --------------------------------------------------------
 
 function Ensure-Pipx {
-    param([string]$PythonExe)
+    param([hashtable]$PyInfo)
 
-    Write-Step "[4/6] Checking pipx..."
+    Write-Step "[3/5] Checking pipx..."
 
     # Check if pipx is already on PATH
     try {
@@ -283,16 +300,15 @@ function Ensure-Pipx {
     Write-Host ""  # newline after "Checking pipx..."
     Write-Warn "  pipx not found — installing via pip..."
 
-    $pyArgs = if ($PythonExe -eq "py") { @("-3") } else { @() }
-    Run-CommandOrDie -Exe $PythonExe -Args ($pyArgs + @("-m", "pip", "install", "--user", "pipx")) `
+    Run-CommandOrDie -Exe $PyInfo.Exe -Args ($PyInfo.Args + @("-m", "pip", "install", "--user", "pipx")) `
         -TimeoutSec 180 `
         -Description "pip install pipx" `
         -FixSuggestion "Check your internet connection and retry. If behind a proxy, set `$env:HTTP_PROXY and `$env:HTTPS_PROXY."
 
-    Run-CommandOrDie -Exe $PythonExe -Args ($pyArgs + @("-m", "pipx", "ensurepath")) `
+    Run-CommandOrDie -Exe $PyInfo.Exe -Args ($PyInfo.Args + @("-m", "pipx", "ensurepath")) `
         -TimeoutSec 30 `
         -Description "pipx ensurepath" `
-        -FixSuggestion "Run manually: python -m pipx ensurepath"
+        -FixSuggestion "Run manually: $($PyInfo.Label) -m pipx ensurepath"
 
     # Refresh PATH for current session
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -303,21 +319,20 @@ function Ensure-Pipx {
         Write-StepOk
         return $false
     } catch {
-        Write-Warn "  pipx still not on PATH. Will use python -m pipx for installation."
-        Write-Host "  After this install completes, run: python -m pipx ensurepath" -ForegroundColor Yellow
+        Write-Warn "  pipx still not on PATH. Will use $($PyInfo.Label) -m pipx for installation."
+        Write-Host "  After this install completes, run: $($PyInfo.Label) -m pipx ensurepath" -ForegroundColor Yellow
     }
 
-    # reprint step line since we added output
     Write-StepOk
     return $true
 }
 
-# --- step 5: install -----------------------------------------------------
+# --- step 4: install -----------------------------------------------------
 
 function Install-CodeGraph {
-    param([string]$PythonExe, [bool]$UseModulePipx)
+    param([hashtable]$PyInfo, [bool]$UseModulePipx)
 
-    Write-Step "[5/6] Installing CodeGraph Explorer..."
+    Write-Step "[4/5] Installing CodeGraph Explorer..."
 
     if ($env:CODEGRAPH_VERSION) {
         $installUrl = "git+$REPO@$env:CODEGRAPH_VERSION"
@@ -330,9 +345,8 @@ function Install-CodeGraph {
     Write-Info "  This may take a few minutes (downloading + building)..."
 
     if ($UseModulePipx) {
-        $pyArgs = if ($PythonExe -eq "py") { @("-3") } else { @() }
-        Run-CommandOrDie -Exe $PythonExe `
-            -Args ($pyArgs + @("-m", "pipx", "install", "--force", $installUrl)) `
+        Run-CommandOrDie -Exe $PyInfo.Exe `
+            -Args ($PyInfo.Args + @("-m", "pipx", "install", "--force", $installUrl)) `
             -TimeoutSec 300 `
             -Description "pipx install CodeGraph Explorer" `
             -FixSuggestion @"
@@ -342,8 +356,6 @@ Possible causes:
   - Python environment is broken
 
 Try manual install:
-  pip install -e "git+$REPO#egg=codegraph&subdirectory="
-  # or clone and install:
   git clone $REPO
   cd CodeGraph-Explorer
   pip install -e "backend[mcp,watch]"
@@ -369,10 +381,10 @@ Try manual install:
     Write-StepOk
 }
 
-# --- step 6: verify ------------------------------------------------------
+# --- step 5: verify ------------------------------------------------------
 
 function Verify-Install {
-    Write-Step "[6/6] Verifying codegraph command..."
+    Write-Step "[5/5] Verifying codegraph command..."
 
     try {
         $null = Get-Command codegraph -ErrorAction Stop
@@ -433,22 +445,19 @@ function Main {
     Write-Host "================================"
     Write-Host ""
 
-    # [1/6]
-    $pythonExe = Detect-PythonExe
+    # [1/5]
+    $PyInfo = Find-Python3
 
-    # [2/6]
-    Check-PythonVersion $pythonExe
-
-    # [3/6]
+    # [2/5]
     Check-Git
 
-    # [4/6]
-    $useModulePipx = Ensure-Pipx $pythonExe
+    # [3/5]
+    $useModulePipx = Ensure-Pipx $PyInfo
 
-    # [5/6]
-    Install-CodeGraph $pythonExe $useModulePipx
+    # [4/5]
+    Install-CodeGraph $PyInfo $useModulePipx
 
-    # [6/6]
+    # [5/5]
     Verify-Install
 }
 

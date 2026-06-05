@@ -7,13 +7,16 @@ set -eu
 # Optional version pin:
 #   CODEGRAPH_VERSION=v1.0.0-rc.1 curl -fsSL ... | sh
 #
-# Verbose mode:
+# Verbose mode (shows every command and output):
 #   CODEGRAPH_INSTALL_VERBOSE=1 curl -fsSL ... | sh
 
 REPO="https://github.com/2cux/CodeGraph-Explorer.git"
 PACKAGE="codegraph"
 REQUIRED_PYTHON_MAJOR=3
 REQUIRED_PYTHON_MINOR=10
+
+# Version check code must NOT use f-strings (Python 2 compatibility for error messages)
+VERSION_CHECK_CODE="import sys; print('%d.%d' % (sys.version_info[0], sys.version_info[1]))"
 
 VERBOSE="${CODEGRAPH_INSTALL_VERBOSE:-0}"
 
@@ -130,56 +133,112 @@ run_cmd_or_die() {
     fi
 }
 
-# --- step 1: python detection --------------------------------------------
+# Test a Python candidate — returns 0 and sets $CANDIDATE_VERSION if valid Python 3
+# Usage: test_python_candidate <exe> [args...]
+test_python_candidate() {
+    exe="$1"; shift
 
-detect_python() {
-    step "[1/6] Checking Python..."
+    run_cmd 30 "test $exe" "$exe" "$@" -c "$VERSION_CHECK_CODE"
+    rc=$?
 
-    for candidate in python3 python; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            run_cmd 30 "python detection" "$candidate" --version
-            if [ $? -eq 0 ]; then
-                verbose "Python path: $(command -v "$candidate")"
-                step_ok
-                printf "%s" "$candidate"
-                return 0
-            fi
+    if [ $rc -ne 0 ]; then
+        if [ "$VERBOSE" = "1" ]; then
+            err_brief="${CMD_STDERR:-"exit code $rc"}"
+            say "${GRAY}  [skip] $exe — $(echo "$err_brief" | head -n1)${NC}"
         fi
-    done
-
-    step_fail
-    die "Python not found. Install Python ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}+ and retry."
-}
-
-# --- step 2: python version check ----------------------------------------
-
-check_python_version() {
-    py="$1"
-    step "[2/6] Checking Python version..."
-
-    run_cmd 30 "python version check" "$py" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-    if [ $? -ne 0 ] || [ -z "$CMD_STDOUT" ]; then
-        step_fail
-        die "Failed to query Python version from '$py'."
+        return 1
     fi
 
     ver="$(echo "$CMD_STDOUT" | head -n1 | tr -d '[:space:]')"
+    if [ -z "$ver" ]; then
+        verbose "$exe — empty version output"
+        return 1
+    fi
+
     major=$(echo "$ver" | cut -d. -f1)
     minor=$(echo "$ver" | cut -d. -f2)
 
-    if [ "$major" -lt "$REQUIRED_PYTHON_MAJOR" ] || { [ "$major" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$minor" -lt "$REQUIRED_PYTHON_MINOR" ]; }; then
-        step_fail
-        die "Python $ver detected — need ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}+."
+    if [ -z "$major" ] || [ -z "$minor" ]; then
+        verbose "$exe — unexpected version format: $ver"
+        return 1
     fi
 
-    verbose "Python $ver (>= ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR})"
-    step_ok
+    # Export for caller
+    CANDIDATE_VERSION="$ver"
+    CANDIDATE_MAJOR="$major"
+    CANDIDATE_MINOR="$minor"
+    return 0
 }
 
-# --- step 3: git check ---------------------------------------------------
+# --- step 1: find Python 3 -----------------------------------------------
+
+# Returns: sets PYTHON_EXE, PYTHON_ARGS, PYTHON_LABEL, PYTHON_VERSION
+find_python3() {
+    step "[1/5] Finding Python 3..."
+
+    # Candidate list: "exe|args|label"
+    for entry in "python3||python3" "python||python"; do
+        exe="${entry%%|*}"
+        rest="${entry#*|}"
+        args="${rest%|*}"
+        label="${rest##*|}"
+
+        if ! command -v "$exe" >/dev/null 2>&1; then
+            verbose "$label — not found in PATH"
+            continue
+        fi
+
+        # Test with version check (args may be empty)
+        if [ -n "$args" ]; then
+            test_python_candidate "$exe" "$args"
+        else
+            test_python_candidate "$exe"
+        fi
+
+        if [ $? -ne 0 ]; then
+            continue
+        fi
+
+        # Found a Python, check its version
+        if [ "$CANDIDATE_MAJOR" -lt "$REQUIRED_PYTHON_MAJOR" ]; then
+            warn "  Found unsupported Python ${CANDIDATE_VERSION} at $label, trying next candidate..."
+            continue
+        fi
+
+        if [ "$CANDIDATE_MAJOR" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$CANDIDATE_MINOR" -lt "$REQUIRED_PYTHON_MINOR" ]; then
+            step_fail
+            die "Found Python ${CANDIDATE_VERSION} at $label, but ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}+ is required.
+
+Install from: https://www.python.org/downloads/"
+        fi
+
+        # Success — found a valid Python 3
+        step_ok
+        say "      ${GREEN}Using: $label${NC}"
+        say "      ${GREEN}Version: ${CANDIDATE_VERSION}${NC}"
+
+        PYTHON_EXE="$exe"
+        PYTHON_ARGS="$args"
+        PYTHON_LABEL="$label"
+        PYTHON_VERSION="$CANDIDATE_VERSION"
+        return 0
+    done
+
+    # All candidates exhausted
+    step_fail
+    die "No supported Python 3 installation found.
+
+Please install Python ${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}+:
+  https://www.python.org/downloads/
+
+Then verify:
+  python3 --version"
+}
+
+# --- step 2: git check ---------------------------------------------------
 
 check_git() {
-    step "[3/6] Checking Git..."
+    step "[2/5] Checking Git..."
 
     if command -v git >/dev/null 2>&1; then
         run_cmd 15 "git check" git --version
@@ -199,12 +258,11 @@ check_git() {
     exit 1
 }
 
-# --- step 4: pipx --------------------------------------------------------
+# --- step 3: pipx --------------------------------------------------------
 
-# Returns "true" if we must use "python -m pipx" instead of bare "pipx"
+# Returns "true" (to stdout) if we must use "python -m pipx" instead of bare "pipx"
 ensure_pipx() {
-    py="$1"
-    step "[4/6] Checking pipx..."
+    step "[3/5] Checking pipx..."
 
     if command -v pipx >/dev/null 2>&1; then
         run_cmd 30 "pipx version" pipx --version
@@ -219,13 +277,25 @@ ensure_pipx() {
     echo ""  # newline after step header
     warn "  pipx not found — installing via pip..."
 
-    run_cmd_or_die 180 "pip install pipx" \
-        "Check your internet connection and retry. If behind a proxy, set HTTP_PROXY/HTTPS_PROXY." \
-        "$py" -m pip install --user pipx
+    if [ -n "$PYTHON_ARGS" ]; then
+        run_cmd_or_die 180 "pip install pipx" \
+            "Check your internet connection and retry. If behind a proxy, set HTTP_PROXY/HTTPS_PROXY." \
+            "$PYTHON_EXE" "$PYTHON_ARGS" -m pip install --user pipx
+    else
+        run_cmd_or_die 180 "pip install pipx" \
+            "Check your internet connection and retry. If behind a proxy, set HTTP_PROXY/HTTPS_PROXY." \
+            "$PYTHON_EXE" -m pip install --user pipx
+    fi
 
-    run_cmd_or_die 30 "pipx ensurepath" \
-        "Run manually: python3 -m pipx ensurepath" \
-        "$py" -m pipx ensurepath
+    if [ -n "$PYTHON_ARGS" ]; then
+        run_cmd_or_die 30 "pipx ensurepath" \
+            "Run manually: $PYTHON_LABEL -m pipx ensurepath" \
+            "$PYTHON_EXE" "$PYTHON_ARGS" -m pipx ensurepath
+    else
+        run_cmd_or_die 30 "pipx ensurepath" \
+            "Run manually: $PYTHON_LABEL -m pipx ensurepath" \
+            "$PYTHON_EXE" -m pipx ensurepath
+    fi
 
     # Refresh PATH for current session
     export PATH="$HOME/.local/bin:$PATH"
@@ -237,18 +307,17 @@ ensure_pipx() {
         return 0
     fi
 
-    warn "  pipx still not on PATH. Falling back to python -m pipx."
+    warn "  pipx still not on PATH. Falling back to $PYTHON_LABEL -m pipx."
     step_ok
     printf "%s" "true"
     return 0
 }
 
-# --- step 5: install -----------------------------------------------------
+# --- step 4: install -----------------------------------------------------
 
 install_codegraph() {
-    py="$1"
-    use_module_pipx="$2"
-    step "[5/6] Installing CodeGraph Explorer..."
+    use_module_pipx="$1"
+    step "[4/5] Installing CodeGraph Explorer..."
     echo ""
 
     if [ -n "${CODEGRAPH_VERSION:-}" ]; then
@@ -271,8 +340,13 @@ Manual install:
   pip install -e \"backend[mcp,watch]\""
 
     if [ "$use_module_pipx" = "true" ]; then
-        run_cmd_or_die 300 "pipx install CodeGraph Explorer" "$fix_msg" \
-            "$py" -m pipx install --force "$install_url"
+        if [ -n "$PYTHON_ARGS" ]; then
+            run_cmd_or_die 300 "pipx install CodeGraph Explorer" "$fix_msg" \
+                "$PYTHON_EXE" "$PYTHON_ARGS" -m pipx install --force "$install_url"
+        else
+            run_cmd_or_die 300 "pipx install CodeGraph Explorer" "$fix_msg" \
+                "$PYTHON_EXE" -m pipx install --force "$install_url"
+        fi
     else
         run_cmd_or_die 300 "pipx install CodeGraph Explorer" "$fix_msg" \
             pipx install --force "$install_url"
@@ -281,10 +355,10 @@ Manual install:
     step_ok
 }
 
-# --- step 6: verify ------------------------------------------------------
+# --- step 5: verify ------------------------------------------------------
 
 verify_install() {
-    step "[6/6] Verifying codegraph command..."
+    step "[5/5] Verifying codegraph command..."
 
     if command -v codegraph >/dev/null 2>&1; then
         run_cmd 30 "codegraph --version" codegraph --version
@@ -338,22 +412,19 @@ main() {
     say "================================"
     echo ""
 
-    # [1/6]
-    PYTHON=$(detect_python)
+    # [1/5]
+    find_python3
 
-    # [2/6]
-    check_python_version "$PYTHON"
-
-    # [3/6]
+    # [2/5]
     check_git
 
-    # [4/6]
-    USE_MODULE_PIPX=$(ensure_pipx "$PYTHON")
+    # [3/5]
+    USE_MODULE_PIPX=$(ensure_pipx)
 
-    # [5/6]
-    install_codegraph "$PYTHON" "$USE_MODULE_PIPX"
+    # [4/5]
+    install_codegraph "$USE_MODULE_PIPX"
 
-    # [6/6]
+    # [5/5]
     verify_install
 }
 
