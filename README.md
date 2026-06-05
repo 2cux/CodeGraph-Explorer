@@ -53,21 +53,43 @@ codegraph doctor --help
 
 > 如果 `codegraph` 命令找不到，运行 `python -m pipx ensurepath` 并重启终端。
 
-### 一键安装脚本（实验性）
+### 一键安装脚本（实验性 · Experimental）
 
-以下安装脚本正在验证中。如果失败，请使用上面的源码安装或 pipx 安装方式。
+> ⚠️ **实验性**：以下一键安装脚本正在验证中，尚未在所有环境中充分测试。
+> 如果遇到问题，请使用上面的源码安装或 pipx 安装方式，并欢迎 [提交 issue](https://github.com/2cux/CodeGraph-Explorer/issues)。
 
-**macOS / Linux（未验证）:**
+**macOS / Linux:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/2cux/CodeGraph-Explorer/main/install.sh | sh
 ```
 
-**Windows PowerShell（本地验证通过，待远程验证）:**
+**Windows PowerShell:**
 
 ```powershell
 irm https://raw.githubusercontent.com/2cux/CodeGraph-Explorer/main/install.ps1 | iex
 ```
+
+**调试模式**（安装卡住或失败时使用，可看到每步详情）：
+
+```bash
+# macOS / Linux
+CODEGRAPH_INSTALL_VERBOSE=1 curl -fsSL https://raw.githubusercontent.com/2cux/CodeGraph-Explorer/main/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+$env:CODEGRAPH_INSTALL_VERBOSE="1"; irm https://raw.githubusercontent.com/2cux/CodeGraph-Explorer/main/install.ps1 | iex
+```
+
+**常见安装失败原因：**
+
+| 症状 | 可能原因 | 解决 |
+|------|----------|------|
+| 安装脚本停在标题无反应 | Git 未安装、网络不通、pipx 安装卡住 | 运行 verbose 模式查看卡在哪一步 |
+| `git` 命令找不到 | Git 未安装 | [安装 Git](https://git-scm.com/downloads) 后重试 |
+| pipx install 超时 | 网络无法访问 GitHub | 改用源码安装：`git clone` + `pip install -e` |
+| `codegraph` 命令找不到 | pipx bin 目录不在 PATH | 运行 `python -m pipx ensurepath` 并重启终端 |
 
 ### 2. 配置 Agent
 
