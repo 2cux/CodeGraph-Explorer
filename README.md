@@ -1,8 +1,6 @@
 # CodeGraph Explorer
 
-面向 AI 编码 Agent 的多语言本地代码图谱索引与 MCP 查询工具。
-
-**Multi-language local code graph index and MCP toolkit for AI coding agents.**
+Local-first MCP code graph backend for AI coding agents.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Beta-3178c6)
@@ -14,68 +12,118 @@
 ![CodeGraph](https://img.shields.io/badge/CodeGraph-Local%20Index-orange)
 ![Benchmark](https://img.shields.io/badge/Benchmark--74.6%25%20tokens-success)
 
-CodeGraph Explorer 会提前将代码库解析为结构化代码图谱，让 Claude Code、Cursor、Codex 等 AI 编码 Agent 可以通过 MCP 查询符号、调用者、被调用者、局部子图、影响面、测试信号和索引状态，而不是反复 `grep` / `glob` / `read` 扫描代码文件。
-
-它提供的是 **代码图谱证据层**，不是实现计划生成器。
+CodeGraph Explorer 会预先索引代码库，生成本地代码图谱，并通过 MCP 暴露符号、调用关系、影响面和框架入口查询能力。Agent 不需要每次任务都重新 `grep` / `read` 整个仓库。
 
 ---
 
-## 为什么需要 CodeGraph Explorer？
+- **MCP-first**：为 Claude Code、Cursor、Codex 等 Agent 提供细粒度代码查询
+- **Local-first**：索引和查询都在本地运行，零遥测
+- **Token-efficient**：减少重复 `grep` / `read` 和大段文件读取
+- **Auto-updated**：`codegraph init` 默认安装 post-commit hook，提交后自动更新索引
+- **Multi-language**：Python Production，TypeScript / JavaScript / Java / Go / C# Beta
 
-AI Coding Agent 在理解代码库时，通常会先用 `grep`、`glob` 和 `Read` 反复扫描文件，寻找符号、调用链、入口点、测试和影响面。
+---
 
-这个过程会消耗大量 token 和工具调用，而且每个新任务都可能重复发生。
+## Quick Start
 
-CodeGraph Explorer 的做法是：
+### 1. 安装
 
-```text
-预先索引代码库
-        ↓
-生成本地代码图谱
-        ↓
-通过 MCP 暴露结构化查询工具
-        ↓
-Agent 按需查询 callers / callees / neighbors / impact
+```bash
+git clone <repo-url>
+cd CodeGraph-Explorer
+pip install -e "backend[mcp,watch]"
 ```
 
-Agent 不需要每次都重新扫描整个仓库，而是可以直接查询已经构建好的代码关系图。
+### 2. 配置 MCP Server
 
-这让代码理解过程更快、更稳定，也更节省 token。
+```bash
+codegraph configure all        # 同时配置 Claude Code 和 Cursor
+codegraph configure claude     # 仅配置 Claude Code
+codegraph configure cursor     # 仅配置 Cursor
+```
 
----
+### 3. 初始化项目索引
 
-## 核心亮点
+```bash
+cd your-project
+codegraph init
+```
 
-### 让 Agent 更快理解代码库
+`codegraph init` 默认会：
+- 构建初始代码图谱索引
+- **自动安装 git post-commit hook**，每次 commit 后自动增量更新索引
+- 写入 `.codegraph/config.json`
 
-CodeGraph Explorer 在本地预先建立代码图谱，Agent 可以直接查询符号、调用关系、
-入口点、测试和影响面，而不需要每次都重新扫描文件。
+如果不需要自动更新：
 
-### 减少 token 和工具调用
+```bash
+codegraph init --no-hook                              # 初始化时不安装 hook
+codegraph config set auto_update_on_commit false      # 禁用自动更新（保留 hook）
+codegraph hooks uninstall                             # 完全卸载 hook
+```
 
-Agent 不再需要反复使用 `grep`、`glob`、`Read` 探索仓库。
-它可以通过 MCP 查询已经索引好的结构化信息，从而减少重复的文件读取和上下文浪费。
+查看 hook 状态：
 
-### 更可靠的影响面分析
+```bash
+codegraph hooks status
+```
 
-修改一个函数前，Agent 可以快速看到哪些上游调用者会受影响、哪些下游逻辑依赖它，
-以及相关的测试文件。确定关系和可能关系会被明确区分，避免把低置信度推断混进
-确定影响面。
+### 4. 验证环境
 
-### 自动保持索引新鲜
+```bash
+codegraph doctor
+```
 
-`codegraph init` 默认安装 post-commit hook。每次 commit 后自动增量更新索引，
-减少手动维护成本。索引状态对 Agent 透明，过期时会有明确提示。
+### 5. 查看索引状态
 
-### 多语言和主流框架覆盖
+```bash
+codegraph status
+```
 
-Python 为 production 级别支持；TypeScript、JavaScript、Java、Go、C# 提供
-Beta 级解析。同时覆盖 FastAPI、Express、Next.js、Spring Boot、Gin、ASP.NET Core
-等常见 Web 框架的入口和路由信号。
+### 可选：Watch Mode 自动同步
 
-### Local-first，零遥测
+Post-commit hook 已覆盖最常见的场景（commit 后自动更新）。如果需要在每次保存文件时实时更新索引，可使用 Watch Mode：
 
-索引、查询和 MCP 服务全部在本地运行。不上传代码、文件路径、索引数据或错误信息。
+```bash
+codegraph watch .
+```
+
+### 管理 Post-Commit Hook
+
+```bash
+codegraph hooks install            # 手动安装 hook
+codegraph hooks uninstall          # 卸载 hook（保留用户自定义内容）
+codegraph hooks status             # 查看 hook 状态
+codegraph hooks status --json      # JSON 格式输出
+```
+
+### 配置自动更新
+
+```bash
+codegraph config set auto_update_on_commit false   # 关闭自动更新
+codegraph config set auto_update_on_commit true    # 开启自动更新
+codegraph config get auto_update_on_commit         # 查看当前设置
+```
+
+### 更新（获取最新版本）
+
+```bash
+cd CodeGraph-Explorer
+git pull
+pip install -e "backend[mcp,watch]"
+```
+
+### 卸载
+
+```bash
+pip uninstall codegraph-explorer
+```
+
+MCP 配置文件（`~/.claude.json`、`~/.cursor/mcp.json`）不会被自动删除。如需移除 MCP 配置：
+
+```bash
+codegraph configure remove all
+```
 
 ---
 
