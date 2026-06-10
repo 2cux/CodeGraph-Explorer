@@ -141,28 +141,31 @@ Generate an optional task-oriented evidence snapshot. See [Evidence Pack docs](e
 
 ## Recommended Agent Workflow
 
-When working in a codebase indexed by CodeGraph, prefer the following workflow over grep/glob/read:
+When working in a codebase indexed by CodeGraph, follow this workflow instead of grep/glob/read-heavy exploration:
 
-1. **`codegraph_repo_summary`** — Start here to understand the repository structure, languages, frameworks, and entry points.
-2. **`codegraph_search_symbols`** — Find functions, classes, methods, routes, or framework entry points by name or path.
-3. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol: callers, callees, tests, models, config.
-4. **`codegraph_get_impact`** — Before modifying shared code, understand what files and tests would be affected.
-5. **`codegraph_build_context_pack`** — For larger investigation or modification tasks, get a task-aware evidence snapshot.
-6. **`Read`** — Only when exact source text is needed.
+1. **`codegraph_repo_status`** — First, confirm the index is available, fresh, and healthy before relying on results.
+2. **`codegraph_build_context_pack`** — Default first tool for larger code investigation, bug fixing, feature implementation, refactoring, or impact analysis. Takes a natural language task description and returns relevant entry points, symbols, relationships, impact signals, and suggested tests.
+3. **`codegraph_repo_summary`** — Understand repository structure, languages, frameworks, entry points, and symbol/edge breakdown.
+4. **`codegraph_search_symbols`** — Find functions, classes, methods, routes, and framework entry points by name, type, tag, or path.
+5. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol (callers, callees, tests, models, config).
+6. **`codegraph_get_callers` / `codegraph_get_callees`** — Trace call chains instead of grep for call/reference lookup.
+7. **`codegraph_get_impact`** — Before modifying shared code, understand confirmed and possible impact, and what tests cover it.
+8. **`Read`** — Only when exact source text is needed.
 
 ### When to use each tool
 
 | Tool | Use when... |
 |------|-------------|
+| `codegraph_repo_status` | First, check index is available, fresh, and healthy before relying on results |
+| `codegraph_build_context_pack` | Default first tool for larger code modification or investigation tasks — returns task-aware context instead of broad grep/glob |
 | `codegraph_repo_summary` | Entering a repository, before glob/grep for structure overview |
 | `codegraph_search_symbols` | Looking for functions, classes, methods, routes, before grep |
 | `codegraph_get_symbol` | You need exact metadata and location for a symbol, after search_symbols |
 | `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep |
 | `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep |
 | `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files |
-| `codegraph_get_impact` | Before modifying shared code, to understand confirmed and possible impact |
-| `codegraph_repo_status` | Checking whether the index is fresh, stale, or has health warnings |
-| `codegraph_build_context_pack` | First tool for larger code modification or investigation tasks |
+| `codegraph_get_impact` | Before modifying shared code — understand confirmed and possible impact, tests, external dependencies |
+| `Read` | Only when exact source text is needed beyond what CodeGraph returns |
 
 ## Design Principles
 

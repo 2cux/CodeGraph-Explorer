@@ -1932,12 +1932,16 @@ class TestAgentUsageGuidance:
         assert "codegraph_build_context_pack" in content
 
     def test_readme_has_agent_usage_section(self):
-        """README should have an 'Agent 使用建议' section."""
+        """README should have an agent usage section."""
         readme_path = Path(__file__).parent.parent.parent / "README.md"
         if not readme_path.exists():
             pytest.skip("README.md not found")
         content = readme_path.read_text(encoding="utf-8")
-        assert "Agent 使用建议" in content, "README must have Agent 使用建议 section"
+        # Check for the agent usage section (may use any reasonable title)
+        assert (
+            "让 Agent 优先使用 CodeGraph" in content
+            or "Agent 使用建议" in content
+        ), "README must have agent usage section (让 Agent 优先使用 CodeGraph or Agent 使用建议)"
 
     def test_readme_does_not_claim_auto_install_hints(self):
         """README should not claim to auto-install hints/rules into user files."""

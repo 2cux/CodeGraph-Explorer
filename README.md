@@ -75,7 +75,7 @@ codegraph doctor
 
 完成后，打开 Claude Code 或 Cursor，即可让 Agent 使用 CodeGraph 进行代码库导航。
 
-> 💡 **提示**：如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下方「Agent 使用建议」中的提示块复制到 CLAUDE.md、Cursor Rules 或 AGENTS.md。
+> 💡 **提示**：如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下方「让 Agent 优先使用 CodeGraph」中的提示块复制到目标项目的 CLAUDE.md、Cursor Rules 或 AGENTS.md。
 
 ---
 
@@ -369,32 +369,70 @@ macOS / Linux 示例：
 
 MCP Server 会自动从当前工作目录检测 `.codegraph/` 索引。如需指定固定路径，在 `env` 中设置 `CODEGRAPH_PROJECT_ROOT`。
 
-CodeGraph Explorer 不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。
+CodeGraph Explorer 本身不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。如需让 Agent 在**目标项目**中优先使用 CodeGraph，参考下方「让 Agent 优先使用 CodeGraph」中的提示块。
 
 ---
 
-## Agent 使用建议
+## 让 Agent 优先使用 CodeGraph
 
-如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下面这段复制到 CLAUDE.md、Cursor Rules 或 AGENTS.md：
+CodeGraph MCP 安装完成后，Agent 不一定会自动优先使用它。Agent 仍然可能默认使用 Read / Grep / Glob。
+
+如果希望 Agent 在某个项目里优先调用 CodeGraph MCP，需要把下面的提示块复制到**该项目的** Agent 规则文件中。
+
+### 目标位置
+
+| Agent | 目标文件 |
+|-------|---------|
+| Claude Code | 目标项目根目录的 `CLAUDE.md` |
+| Cursor | 目标项目的 `.cursor/rules/codegraph.mdc` |
+| 其他 Agent | 目标项目的 `AGENTS.md` 或对应规则文件 |
+
+> 注意：这里说的是**你要分析/修改的项目**，不是 CodeGraph Explorer 仓库本身。
+
+### 提示块
+
+复制下面这段到目标项目的 Agent 规则文件：
 
 ```markdown
 ## CodeGraph Usage
 
 This repository is indexed by CodeGraph.
 
-Before using grep, glob, or reading many files, prefer CodeGraph MCP tools for code navigation:
+Before code exploration, bug fixing, refactoring, feature implementation, or impact analysis, use CodeGraph MCP before grep/glob/read-heavy exploration.
 
-- Use `codegraph_repo_summary` to understand the repository structure.
-- Use `codegraph_search_symbols` to find functions, classes, methods, routes, and framework entry points.
-- Use `codegraph_get_neighbors` to inspect local relationships around a symbol.
-- Use `codegraph_get_callers` and `codegraph_get_callees` instead of grep for call/reference lookup.
-- Use `codegraph_get_impact` before modifying shared code.
-- Use `codegraph_build_context_pack` as the first tool for larger investigation or modification tasks.
+Start with `codegraph_build_context_pack` for larger tasks.
+
+Use:
+- `codegraph_repo_summary` to understand repository structure.
+- `codegraph_search_symbols` to find functions, classes, methods, routes, and entry points.
+- `codegraph_get_neighbors` to inspect relationships around a symbol.
+- `codegraph_get_callers` and `codegraph_get_callees` instead of grep for call chains.
+- `codegraph_get_impact` before modifying shared code.
 
 Use `Read` only when exact source text is needed.
 ```
 
-> 以上提示块不会自动写入任何文件。需要手动复制到你使用的 Agent 配置文件中。
+### 目标项目使用流程
+
+在复制提示块之前，先在目标项目中完成索引：
+
+```bash
+cd your-project
+codegraph init
+codegraph doctor
+```
+
+`doctor` 显示索引正常（symbols > 0，index_health 为 ok），再把 CodeGraph Usage 提示块复制到该项目的 `CLAUDE.md` 或 Cursor Rules。
+
+### 验证 Agent 是否使用了 CodeGraph
+
+参考 [docs/agent-adoption-test.md](docs/agent-adoption-test.md) 的验证流程。
+
+### 重要说明
+
+- CodeGraph 提供 MCP 工具和使用建议，帮助 Agent 优先使用结构化代码导航，减少重复 grep/read。
+- 提示块不会自动写入任何文件，需要手动复制。
+- 提示块是**建议性**的，不强制 Agent 调用 MCP。
 
 ---
 
@@ -869,6 +907,7 @@ MIT
 | [docs/benchmark.md](docs/benchmark.md) | Benchmark 套件与 regression gate 指南 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见问题及修复 |
 | [docs/evidence-pack.md](docs/evidence-pack.md) | Evidence Pack 格式、用法与限制 |
+| [docs/agent-adoption-test.md](docs/agent-adoption-test.md) | Agent 是否使用 CodeGraph 的验证流程 |
 | [docs/development.md](docs/development.md) | 开发环境、规范与工作流 |
 | [docs/storage.md](docs/storage.md) | 存储层详情 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本历史与变更记录 |

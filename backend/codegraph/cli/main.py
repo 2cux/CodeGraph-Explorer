@@ -256,6 +256,28 @@ def init(
     if not no_sqlite and counts.get("fts_symbols", 0) > 0:
         typer.echo(f"  FTS symbols:   {counts['fts_symbols']}")
 
+    # ── Agent adoption hint ──────────────────────────────────────────────
+    if counts.get("nodes", 0) > 0:
+        typer.echo("")
+        typer.echo("CodeGraph index ready.")
+        typer.echo("")
+        typer.echo(
+            "To help your coding agent use CodeGraph before grep/read, "
+            "add the CodeGraph Usage block to your target project rules:"
+        )
+        typer.echo("")
+        typer.echo("  - Claude Code: CLAUDE.md")
+        typer.echo("  - Cursor:      .cursor/rules/codegraph.mdc")
+        typer.echo("  - Other agents: AGENTS.md or equivalent rule file")
+        typer.echo("")
+        typer.echo("See README: 让 Agent 优先使用 CodeGraph")
+    else:
+        typer.echo("")
+        typer.echo(
+            "Warning: 0 symbols indexed. The index may be empty or invalid. "
+            "Run 'codegraph doctor' to diagnose."
+        )
+
     _maybe_install_hook(root_path, no_hook, state_store, force=force)
 
 
