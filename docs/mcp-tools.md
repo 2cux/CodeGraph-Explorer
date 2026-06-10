@@ -139,6 +139,31 @@ Get high-level statistics: file count, symbol count, type breakdown, edge count,
 
 Generate an optional task-oriented evidence snapshot. See [Evidence Pack docs](evidence-pack.md).
 
+## Recommended Agent Workflow
+
+When working in a codebase indexed by CodeGraph, prefer the following workflow over grep/glob/read:
+
+1. **`codegraph_repo_summary`** — Start here to understand the repository structure, languages, frameworks, and entry points.
+2. **`codegraph_search_symbols`** — Find functions, classes, methods, routes, or framework entry points by name or path.
+3. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol: callers, callees, tests, models, config.
+4. **`codegraph_get_impact`** — Before modifying shared code, understand what files and tests would be affected.
+5. **`codegraph_build_context_pack`** — For larger investigation or modification tasks, get a task-aware evidence snapshot.
+6. **`Read`** — Only when exact source text is needed.
+
+### When to use each tool
+
+| Tool | Use when... |
+|------|-------------|
+| `codegraph_repo_summary` | Entering a repository, before glob/grep for structure overview |
+| `codegraph_search_symbols` | Looking for functions, classes, methods, routes, before grep |
+| `codegraph_get_symbol` | You need exact metadata and location for a symbol, after search_symbols |
+| `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep |
+| `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep |
+| `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files |
+| `codegraph_get_impact` | Before modifying shared code, to understand confirmed and possible impact |
+| `codegraph_repo_status` | Checking whether the index is fresh, stale, or has health warnings |
+| `codegraph_build_context_pack` | First tool for larger code modification or investigation tasks |
+
 ## Design Principles
 
 - **Compact by default**: Tools return minimal JSON; request `standard` mode for full details

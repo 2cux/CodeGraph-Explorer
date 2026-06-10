@@ -1444,6 +1444,10 @@ def search_symbols(
 ) -> dict[str, Any]:
     """Search for code symbols by name, file path, type, tags, or path glob.
 
+    Use before grep when looking for functions, classes, methods, routes,
+    or framework entry points. Prefer this over grep/glob for finding
+    where a symbol is defined or referenced in the codebase.
+
     Args:
         query: Search keyword — symbol name, file path fragment, or docstring keyword
         type: Exact node type, e.g. "function"
@@ -1659,6 +1663,10 @@ def get_symbol(
     include_explanations: bool = False,
 ) -> dict[str, Any]:
     """Get detailed information about a specific code symbol.
+
+    Use after search_symbols when you need exact metadata, location,
+    signature, and docstring for a symbol. Prefer this before Read
+    when you only need symbol-level information rather than full file content.
 
     Supports fuzzy lookup with resolve mode. Returns AMBIGUOUS_SYMBOL
     error when multiple candidates match.
@@ -1879,6 +1887,10 @@ def get_callers(
     exclude_paths: str | None = None,
 ) -> dict[str, Any]:
     """Get all callers of a symbol — functions that call it.
+
+    Use instead of grep when finding who calls or references a symbol.
+    Prefer this before grep/read for tracing upstream dependencies
+    and understanding what depends on a given function or class.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
     Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
@@ -2115,6 +2127,10 @@ def get_callees(
 ) -> dict[str, Any]:
     """Get all callees of a symbol — functions it calls.
 
+    Use instead of manual Read/grep when understanding what a symbol
+    depends on or calls. Prefer this before reading multiple files
+    to trace downstream call chains and external dependencies.
+
     External/unresolved symbols are separated into ``external_calls``.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
@@ -2284,6 +2300,11 @@ def get_neighbors(
     include_explanations: bool = False,
 ) -> dict[str, Any]:
     """Get neighbors of a symbol in the code graph — the primary local-graph tool.
+
+    Use before reading multiple files to understand local relationships
+    around a symbol. Prefer this over glob/read for exploring what is
+    connected to a function, class, or method — callers, callees, tests,
+    models, and config dependencies.
 
     Compact mode returns neighbors grouped by role. Standard mode returns
     full nodes + edges. External/unresolved symbols are always in their
@@ -2591,6 +2612,10 @@ def get_impact(
 ) -> dict[str, Any]:
     """Analyze the impact of modifying a symbol.
 
+    Use before modifying shared code to understand confirmed and possible
+    impact. Prefer this before manual grep/read for tracing what files,
+    tests, and downstream callers would be affected by a change.
+
     Returns confirmed impact, possible impact, risk level with reason codes,
     and separates upstream/downstream/test/external items clearly.
 
@@ -2894,9 +2919,10 @@ def build_context_pack(
 ) -> dict[str, Any]:
     """Build a Context Pack for a natural language task.
 
-    Provides task-aware code evidence: entry points, related symbols,
-    call graph, impact signals, selected context, and tests.
-    Does NOT include reading plans or agent instructions.
+    Use as the first CodeGraph tool for larger code modification or
+    investigation tasks. Takes a natural language task description and
+    returns entry points, related symbols, call graph, impact signals,
+    and tests. Does NOT include reading plans or agent instructions.
 
     Args:
         task: Natural language description of what you need to do
@@ -3060,6 +3086,10 @@ def repo_status(
 ) -> dict[str, Any]:
     """Check index freshness and report changed/added/deleted files.
 
+    Use when checking whether the index is fresh, stale, missing, or
+    has health warnings. Prefer this before assuming search results
+    are up-to-date — stale indexes may miss recent changes.
+
     Returns project_root, index_status, index_health, indexed_at,
     changed/added/deleted file counts, last_incremental_stats,
     validation_status, and a suggested_fix action.
@@ -3186,9 +3216,10 @@ def repo_summary(
 ) -> dict[str, Any]:
     """Get a summary of the indexed repository.
 
-    Returns file count, symbol count, type breakdown, edge count,
-    low-confidence edge ratio, top modules, entry point candidates,
-    test coverage signal, and capability metadata.
+    Use first when entering a repository to understand its structure.
+    Prefer this before glob/grep for getting an overview of the codebase —
+    file count, symbol breakdown, top modules, entry points, test coverage,
+    framework detection, and language support levels.
 
     Args:
         response_mode: "compact" (default) or "standard"

@@ -75,6 +75,8 @@ codegraph doctor
 
 完成后，打开 Claude Code 或 Cursor，即可让 Agent 使用 CodeGraph 进行代码库导航。
 
+> 💡 **提示**：如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下方「Agent 使用建议」中的提示块复制到 CLAUDE.md、Cursor Rules 或 AGENTS.md。
+
 ---
 
 ## 维护命令
@@ -368,6 +370,31 @@ macOS / Linux 示例：
 MCP Server 会自动从当前工作目录检测 `.codegraph/` 索引。如需指定固定路径，在 `env` 中设置 `CODEGRAPH_PROJECT_ROOT`。
 
 CodeGraph Explorer 不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。
+
+---
+
+## Agent 使用建议
+
+如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下面这段复制到 CLAUDE.md、Cursor Rules 或 AGENTS.md：
+
+```markdown
+## CodeGraph Usage
+
+This repository is indexed by CodeGraph.
+
+Before using grep, glob, or reading many files, prefer CodeGraph MCP tools for code navigation:
+
+- Use `codegraph_repo_summary` to understand the repository structure.
+- Use `codegraph_search_symbols` to find functions, classes, methods, routes, and framework entry points.
+- Use `codegraph_get_neighbors` to inspect local relationships around a symbol.
+- Use `codegraph_get_callers` and `codegraph_get_callees` instead of grep for call/reference lookup.
+- Use `codegraph_get_impact` before modifying shared code.
+- Use `codegraph_build_context_pack` as the first tool for larger investigation or modification tasks.
+
+Use `Read` only when exact source text is needed.
+```
+
+> 以上提示块不会自动写入任何文件。需要手动复制到你使用的 Agent 配置文件中。
 
 ---
 

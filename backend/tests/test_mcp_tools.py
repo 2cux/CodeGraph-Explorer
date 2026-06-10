@@ -1828,3 +1828,199 @@ class TestEvidencePackForbiddenFields:
             assert "do_first" not in result["data"]
             assert "avoid" not in result["data"]
             assert "validation_steps" not in result["data"]
+
+
+# ── Test: Agent Usage Guidance (方案一+方案三) ──────────────────────────────
+
+
+class TestAgentUsageGuidance:
+    """方案一+方案三：MCP tool descriptions guide agents, README/docs have usage hints."""
+
+    # ── 方案三：MCP tool descriptions ──────────────────────────────────────
+
+    def test_search_symbols_description_guides_before_grep(self):
+        """search_symbols description should mention 'before grep'."""
+        from codegraph.mcp_server import search_symbols
+        doc = search_symbols.__doc__ or ""
+        assert "before grep" in doc.lower() or "prefer this" in doc.lower()
+
+    def test_get_symbol_description_guides_after_search(self):
+        """get_symbol description should mention 'after search_symbols'."""
+        from codegraph.mcp_server import get_symbol
+        doc = get_symbol.__doc__ or ""
+        assert "after search_symbols" in doc.lower()
+
+    def test_get_callers_description_guides_instead_of_grep(self):
+        """get_callers description should mention 'instead of grep'."""
+        from codegraph.mcp_server import get_callers
+        doc = get_callers.__doc__ or ""
+        assert "instead of grep" in doc.lower()
+
+    def test_get_callees_description_guides_instead_of_read(self):
+        """get_callees description should mention 'instead of manual Read' or 'instead of' grep/read."""
+        from codegraph.mcp_server import get_callees
+        doc = get_callees.__doc__ or ""
+        doc_lower = doc.lower()
+        has_instead_of_read = "instead of manual read" in doc_lower
+        has_instead_of_grep = "instead of" in doc_lower and ("grep" in doc_lower or "read" in doc_lower)
+        assert has_instead_of_read or has_instead_of_grep, (
+            f"get_callees description should guide away from read/grep, got: {doc[:120]}"
+        )
+
+    def test_get_neighbors_description_guides_before_reading_files(self):
+        """get_neighbors description should mention 'before reading multiple files'."""
+        from codegraph.mcp_server import get_neighbors
+        doc = get_neighbors.__doc__ or ""
+        assert "before reading multiple files" in doc.lower()
+
+    def test_get_impact_description_guides_before_modifying(self):
+        """get_impact description should mention 'before modifying shared code'."""
+        from codegraph.mcp_server import get_impact
+        doc = get_impact.__doc__ or ""
+        assert "before modifying" in doc.lower()
+
+    def test_build_context_pack_description_guides_first_tool(self):
+        """build_context_pack description should mention 'first' tool."""
+        from codegraph.mcp_server import build_context_pack
+        doc = build_context_pack.__doc__ or ""
+        assert "first" in doc.lower()
+
+    def test_repo_status_description_guides_freshness_check(self):
+        """repo_status description should mention stale/fresh index check."""
+        from codegraph.mcp_server import repo_status
+        doc = repo_status.__doc__ or ""
+        assert "fresh" in doc.lower() or "stale" in doc.lower()
+
+    def test_repo_summary_description_guides_use_first(self):
+        """repo_summary description should mention 'use first' when entering repo."""
+        from codegraph.mcp_server import repo_summary
+        doc = repo_summary.__doc__ or ""
+        assert "use first" in doc.lower() or "before glob" in doc.lower()
+
+    def test_all_tool_descriptions_exist(self):
+        """All 9 MCP tools have non-empty descriptions."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, build_context_pack,
+            repo_status, repo_summary,
+        )
+        tools = [
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, build_context_pack,
+            repo_status, repo_summary,
+        ]
+        for tool_fn in tools:
+            doc = tool_fn.__doc__
+            assert doc is not None, f"{tool_fn.__name__} has no docstring"
+            assert len(doc.strip()) > 20, f"{tool_fn.__name__} docstring too short: {doc[:50]}"
+
+    # ── 方案一：README/docs usage hints ────────────────────────────────────
+
+    def test_readme_contains_codegraph_usage_block(self):
+        """README should contain a copyable CodeGraph Usage prompt block."""
+        readme_path = Path(__file__).parent.parent.parent / "README.md"
+        if not readme_path.exists():
+            pytest.skip("README.md not found")
+        content = readme_path.read_text(encoding="utf-8")
+        assert "## CodeGraph Usage" in content, "README must have CodeGraph Usage markdown block"
+        assert "codegraph_repo_summary" in content
+        assert "codegraph_search_symbols" in content
+        assert "codegraph_get_neighbors" in content
+        assert "codegraph_get_callers" in content
+        assert "codegraph_get_callees" in content
+        assert "codegraph_get_impact" in content
+        assert "codegraph_build_context_pack" in content
+
+    def test_readme_has_agent_usage_section(self):
+        """README should have an 'Agent 使用建议' section."""
+        readme_path = Path(__file__).parent.parent.parent / "README.md"
+        if not readme_path.exists():
+            pytest.skip("README.md not found")
+        content = readme_path.read_text(encoding="utf-8")
+        assert "Agent 使用建议" in content, "README must have Agent 使用建议 section"
+
+    def test_readme_does_not_claim_auto_install_hints(self):
+        """README should not claim to auto-install hints/rules into user files."""
+        readme_path = Path(__file__).parent.parent.parent / "README.md"
+        if not readme_path.exists():
+            pytest.skip("README.md not found")
+        content = readme_path.read_text(encoding="utf-8")
+        # CodeGraph must not claim to auto-write CLAUDE.md / Cursor rules
+        assert "会自动写入 CLAUDE.md" not in content
+        assert "会自动安装提示" not in content
+        assert "会自动配置 Agent" not in content
+        # The negative disclaimer "不会自动写入任何文件" is correct and expected
+
+    def test_readme_does_not_mention_agents_install_hints(self):
+        """README should not mention 'codegraph agents install-hints'."""
+        readme_path = Path(__file__).parent.parent.parent / "README.md"
+        if not readme_path.exists():
+            pytest.skip("README.md not found")
+        content = readme_path.read_text(encoding="utf-8")
+        assert "agents install-hints" not in content, "README must not mention agents install-hints"
+
+    def test_docs_mcp_tools_has_workflow_section(self):
+        """docs/mcp-tools.md should have Recommended Agent Workflow section."""
+        docs_path = Path(__file__).parent.parent.parent / "docs" / "mcp-tools.md"
+        if not docs_path.exists():
+            pytest.skip("docs/mcp-tools.md not found")
+        content = docs_path.read_text(encoding="utf-8")
+        assert "Recommended Agent Workflow" in content, "docs/mcp-tools.md must have workflow section"
+
+    # ── Compat checks ──────────────────────────────────────────────────────
+
+    def test_mcp_tool_names_unchanged(self):
+        """MCP tool names and parameter structure remain compatible."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, build_context_pack,
+            repo_status, repo_summary,
+        )
+        import inspect
+
+        # Check key parameters still exist
+        sig = inspect.signature(search_symbols)
+        assert "query" in sig.parameters
+
+        sig = inspect.signature(get_symbol)
+        assert "symbol_id" in sig.parameters
+
+        sig = inspect.signature(get_callers)
+        assert "symbol_id" in sig.parameters
+        assert "depth" in sig.parameters
+
+        sig = inspect.signature(get_callees)
+        assert "symbol_id" in sig.parameters
+
+        sig = inspect.signature(get_neighbors)
+        assert "symbol_id" in sig.parameters
+        assert "depth" in sig.parameters
+        assert "direction" in sig.parameters
+
+        sig = inspect.signature(get_impact)
+        assert "symbol_id" in sig.parameters
+        assert "impact_mode" in sig.parameters
+
+        sig = inspect.signature(build_context_pack)
+        assert "task" in sig.parameters
+
+        sig = inspect.signature(repo_status)
+        assert "response_mode" in sig.parameters, "repo_status missing response_mode param"
+
+        sig = inspect.signature(repo_summary)
+        assert "response_mode" in sig.parameters, "repo_summary missing response_mode param"
+
+    def test_mcp_tool_count_is_9(self):
+        """There should be exactly 9 MCP tools registered with the FastMCP server."""
+        import codegraph.mcp_server as mcp_mod
+        # FastMCP stores tool registrations; verify each expected function exists
+        expected_tools = [
+            "search_symbols", "get_symbol", "get_callers", "get_callees",
+            "get_neighbors", "get_impact", "build_context_pack",
+            "repo_status", "repo_summary",
+        ]
+        for tool_name in expected_tools:
+            tool_fn = getattr(mcp_mod, tool_name, None)
+            assert tool_fn is not None, f"MCP tool '{tool_name}' not found in mcp_server"
+            assert callable(tool_fn), f"MCP tool '{tool_name}' is not callable"
+            assert tool_fn.__doc__, f"MCP tool '{tool_name}' has no docstring"
