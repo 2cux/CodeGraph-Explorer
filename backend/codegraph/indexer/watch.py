@@ -21,11 +21,28 @@ from codegraph.storage.state_store import IndexStateStore
 
 # ── Watch / ignore patterns ───────────────────────────────────────────────
 
+# All file extensions supported by the multi-language indexer.
+# Any file with one of these extensions will be watched.
+_WATCHED_EXTS: frozenset[str] = frozenset({
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".java", ".go", ".cs",
+})
+
+# Config files that trigger a full re-index when changed.
+_WATCHED_CONFIG_NAMES: frozenset[str] = frozenset({
+    "pyproject.toml", "requirements.txt", "setup.py",
+    "package.json", "tsconfig.json", "go.mod", "pom.xml",
+})
+
 WATCH_GLOBS: list[str] = [
-    "**/*.py",
-    "pyproject.toml",
-    "requirements.txt",
-    "setup.py",
+    "**/*.py", "**/*.pyi",
+    "**/*.ts", "**/*.tsx",
+    "**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs",
+    "**/*.java",
+    "**/*.go",
+    "**/*.cs",
+    "pyproject.toml", "requirements.txt", "setup.py",
+    "package.json", "tsconfig.json", "go.mod", "pom.xml",
 ]
 
 IGNORE_DIRS: set[str] = {
@@ -58,10 +75,14 @@ def _should_watch(path: str, root: Path) -> bool:
         return False
 
     name = parts[-1] if parts else ""
-    if name in {"pyproject.toml", "requirements.txt", "setup.py"}:
+    if name in _WATCHED_CONFIG_NAMES:
         return True
 
-    return name.endswith(".py")
+    # Check against all supported file extensions
+    for ext in _WATCHED_EXTS:
+        if name.endswith(ext):
+            return True
+    return False
 
 
 def _should_watch_path(path: Path, root: Path) -> bool:
@@ -73,12 +94,19 @@ def _should_watch_path(path: Path, root: Path) -> bool:
     return _should_watch(rel_str, root)
 
 
-def _is_py_or_config(path: str) -> bool:
+def _is_watched_file(path: str) -> bool:
     """Quick check if a path matches watch patterns without root comparison."""
     name = os.path.basename(path)
-    if name in {"pyproject.toml", "requirements.txt", "setup.py"}:
+    if name in _WATCHED_CONFIG_NAMES:
         return True
-    return name.endswith(".py")
+    for ext in _WATCHED_EXTS:
+        if name.endswith(ext):
+            return True
+    return False
+
+
+# Backward-compatible alias
+_is_py_or_config = _is_watched_file
 
 
 # ── WatchSyncManager ──────────────────────────────────────────────────────

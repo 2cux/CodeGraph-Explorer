@@ -1404,9 +1404,9 @@ def doctor(
 
                 # Check coverage
                 if index_files.get("metadata.json"):
-                    from codegraph.indexer.scanner import scan_python_files, normalize_path
+                    from codegraph.indexer.scanner import scan_supported_files, normalize_path
                     current = {normalize_path(f.relative_to(project_root))
-                               for f in scan_python_files(project_root)}
+                               for f in scan_supported_files(project_root)}
                     missing = current - set(fps.keys())
                     if missing:
                         warn(f"{len(missing)} file(s) have no fingerprint")

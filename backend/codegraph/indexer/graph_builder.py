@@ -16,19 +16,102 @@ def _rel_path(root: Path, path: Path) -> str:
     return normalize_path(path.relative_to(root))
 
 
+# File extensions supported by the multi-language pipeline.
+# Used by _module_id to strip extensions when building module node IDs.
+_SUPPORTED_EXTS: tuple[str, ...] = (
+    '.py', '.pyi', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+    '.java', '.go', '.cs',
+)
+
+
+def _strip_ext(rel: str) -> str:
+    """Remove a supported file extension from *rel*, if any."""
+    for ext in _SUPPORTED_EXTS:
+        if rel.endswith(ext):
+            return rel[:-len(ext)]
+    return rel
+
+
 def _module_id(rel: str) -> str:
     """Build module node ID, e.g. ``module:app.api.auth``."""
-    return f"module:{rel.removesuffix('.py').removesuffix('/__init__').replace('/', '.')}"
+    stem = _strip_ext(rel)
+    stem = stem.removesuffix('/__init__')
+    return f"module:{stem.replace('/', '.')}"
 
 
 def build_index(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
     """Scan, parse, extract symbols and calls, and return the complete graph.
 
-    Returns ``(nodes, edges)`` with structural relationships
-    (contains, defined_in, imports) plus call edges.
+    Delegates to the multi-language :func:`build_index_v2` pipeline and adds
+    structural edges (contains, defined_in, imports), test relationships,
+    and external-edge resolution on top.
+
+    Returns ``(nodes, edges)`` with structural relationships plus call edges.
     """
-    files = scan_python_files(root)
-    return build_index_from_paths(root, files)
+    # ── Multi-language extraction + cross-file resolution ──────────────
+    nodes, edges = build_index_v2(root)
+
+    if not nodes:
+        return [], []
+
+    # ── Post-processing: structural edges ──────────────────────────────
+    # build_index_v2 produces nodes + call edges via language extractors
+    # and resolvers.  We add structural edges (contains, defined_in,
+    # imports) here because they are language-agnostic and work on the
+    # full node set.
+    edge_counter = [len(edges)]  # continue numbering after v2 edges
+    struct_edges = _build_structural_edges_from_nodes(nodes, edge_counter)
+    edges.extend(struct_edges)
+
+    # ── Resolve external: prefix edges to internal node IDs ────────────
+    edges = _resolve_external_edges(edges, nodes)
+
+    # ── Build test relationships ───────────────────────────────────────
+    test_edges = _build_test_relationships(nodes, edges, edge_counter)
+    edges.extend(test_edges)
+
+    # ── Final deduplication ────────────────────────────────────────────
+    edges = _deduplicate_edges(edges)
+
+    # ── Renumber IDs for global uniqueness ──────────────────────────────
+    # Each language extractor uses its own counter, so node/edge IDs
+    # from different files may collide (e.g. ``external:typing.Optional``
+    # or ``edge_0001``).  SQLite INSERT OR REPLACE on id would silently
+    # overwrite duplicates.  Renumber to guarantee unique IDs.
+    nodes, edges = _renumber_ids(nodes, edges)
+
+    return nodes, edges
+
+
+def _renumber_ids(
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+) -> tuple[list[GraphNode], list[GraphEdge]]:
+    """Assign globally unique sequential IDs to nodes and edges.
+
+    Merges duplicate node IDs (keeping the first occurrence) and
+    renumbers all edges with ``edge_NNNN`` format.
+    """
+    # Deduplicate nodes by ID — keep first occurrence
+    seen_ids: set[str] = set()
+    unique_nodes: list[GraphNode] = []
+    for node in nodes:
+        if node.id not in seen_ids:
+            seen_ids.add(node.id)
+            unique_nodes.append(node)
+    # (Drop duplicate nodes rather than renumbering them, since they
+    #  represent the same symbol — e.g. external:typing.Optional.)
+
+    # Renumber edges
+    for i, edge in enumerate(edges):
+        edge.id = f"edge_{i:04d}"
+
+    return unique_nodes, edges
+
+
+def _renumber_edge_ids(edges: list[GraphEdge]) -> list[GraphEdge]:
+    """Renumber edge IDs for global uniqueness (convenience wrapper)."""
+    return _renumber_ids([], edges)[1]
 
 
 def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
@@ -157,6 +240,32 @@ def _build_structural_edges(
         ))
 
     return edges
+
+
+def _build_structural_edges_from_nodes(
+    all_nodes: list[GraphNode],
+    counter: list[int],
+) -> list[GraphEdge]:
+    """Generate structural edges (contains, defined_in, imports) for the
+    full node set, grouped by file.
+
+    This is the multi-language equivalent of the per-file structural edge
+    generation in :func:`build_index_from_paths`.  It groups nodes by
+    ``file_path`` and calls :func:`_build_structural_edges` for each group.
+    """
+    # Group nodes by file_path
+    nodes_by_file: dict[str, list[GraphNode]] = {}
+    for node in all_nodes:
+        fp = node.file_path or ""
+        if fp:
+            nodes_by_file.setdefault(fp, []).append(node)
+
+    all_struct_edges: list[GraphEdge] = []
+    for rel, file_nodes in nodes_by_file.items():
+        struct_edges = _build_structural_edges(file_nodes, rel, counter)
+        all_struct_edges.extend(struct_edges)
+
+    return all_struct_edges
 
 
 def _contains_edge(parent_id: str, child_id: str, counter: list[int]) -> GraphEdge:

@@ -290,9 +290,9 @@ def _check_fingerprints(
 
     # Check for missing fingerprints (files exist but no fingerprint)
     try:
-        from codegraph.indexer.scanner import scan_python_files, normalize_path
+        from codegraph.indexer.scanner import scan_supported_files, normalize_path
         root = cg_dir.parent
-        current_files = scan_python_files(root)
+        current_files = scan_supported_files(root)
         current_rels = {normalize_path(f.relative_to(root)) for f in current_files}
         fp_rels = set(fps.keys())
         missing = current_rels - fp_rels

@@ -23,7 +23,7 @@ from codegraph.graph.models import (
     RepoInfo,
 )
 from codegraph.indexer.fingerprint import FingerprintStore, compute_fingerprints
-from codegraph.indexer.scanner import compute_fingerprint, scan_python_files
+from codegraph.indexer.scanner import compute_fingerprint, scan_python_files, scan_supported_files
 from codegraph.storage.file_store import FileStore
 from codegraph.storage.sqlite_store import SqliteStore
 
@@ -311,7 +311,7 @@ def _write_metadata_from_sqlite(
         files=[],
     )
     # Compute fingerprints
-    all_files = scan_python_files(root_path)
+    all_files = scan_supported_files(root_path)
     for f in all_files:
         rel = f.relative_to(root_path).as_posix()
         metadata.files.append(FileEntry(
@@ -338,7 +338,7 @@ def _write_metadata_from_lists(
         edge_count=0,  # will be set by caller's edges list
         files=[],
     )
-    all_files = scan_python_files(root_path)
+    all_files = scan_supported_files(root_path)
     for f in all_files:
         rel = f.relative_to(root_path).as_posix()
         metadata.files.append(FileEntry(
@@ -366,13 +366,20 @@ def _write_graph_json_from_lists(
     edges = edge_adapter.validate_python(json_edges)
 
     repo_name = root_path.name
+    # Detect actually indexed languages from the node set
+    detected_langs: list[str] = sorted({
+        n.language_id or n.language or "python"
+        for n in nodes if n.language_id or n.language
+    })
+    if not detected_langs:
+        detected_langs = ["python"]
     graph = CodeGraph(
         schema_version="1.0.0",
         repo=RepoInfo(
             repo_id=f"local:{repo_name}",
             name=repo_name,
             root_path=str(root_path),
-            languages=["python"],
+            languages=detected_langs,
             indexed_at=now_iso,
             file_count=len({n.file_path for n in nodes}),
             symbol_count=len(nodes),
@@ -396,7 +403,7 @@ def write_fingerprints(output_dir: Path, root_path: Path) -> int:
     Returns the number of fingerprints written.
     """
     fp_store = FingerprintStore(output_dir)
-    all_files = scan_python_files(root_path)
+    all_files = scan_supported_files(root_path)
     fps = compute_fingerprints(root_path, all_files)
     fp_store.save(fps)
     return len(fps)

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from codegraph.graph.models import FileEntry, IndexMetadata
-from codegraph.indexer.scanner import scan_python_files, compute_fingerprint, normalize_path
+from codegraph.indexer.scanner import scan_python_files, scan_supported_files, compute_fingerprint, normalize_path
 
 
 class StatusResult:
@@ -101,7 +101,7 @@ def detect_status(root: Path, metadata: IndexMetadata | None) -> StatusResult:
         pass
 
     # Fallback: SHA256 comparison (original behavior)
-    current_files = scan_python_files(root)
+    current_files = scan_supported_files(root)
     current_rel = {normalize_path(f.relative_to(root)) for f in current_files}
 
     metadata_map: dict[str, str] = {f.path: f.fingerprint for f in metadata.files}
@@ -177,7 +177,7 @@ def detect_status_with_classification(
         return StatusResult(status="missing")
 
     stored_fps = fp_store.load()
-    current_files = scan_python_files(root)
+    current_files = scan_supported_files(root)
 
     # Stat pre-filter: separate unchanged from needs-hash from deleted
     unchanged, needs_hash, deleted_rels = stat_prefilter(
