@@ -74,7 +74,18 @@ mcp = FastMCP(
     instructions=(
         "Use CodeGraph MCP for codebase exploration, symbol lookup, "
         "call graph inspection, and impact analysis before falling back "
-        "to grep/glob/read-heavy exploration."
+        "to grep/glob/read-heavy exploration.\n\n"
+        "Anti-patterns:\n"
+        "- Do not grep first when looking for a function, class, method, "
+        "route, or symbol by name.\n"
+        "- Do not read many files manually before trying CodeGraph "
+        "context tools.\n"
+        "- Do not use grep as the first choice for callers, callees, "
+        "or impact analysis.\n"
+        "- For larger implementation, bug fixing, refactoring, or "
+        "investigation tasks, start with codegraph_build_context_pack.\n"
+        "- Use Read only when exact source text is needed after "
+        "CodeGraph identifies relevant files or symbols."
     ),
 )
 
@@ -1005,7 +1016,13 @@ def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
     #   explicit > env > walk_up > git_root > cwd
     # Since cg_dir was found (non-None), the result will be one of
     # "explicit", "env", or "walk_up" — never "git_root" or "cwd".
-    _, _resolution_method = _resolve_project_root(project_root)
+    #
+    # Only resolve when the method has not already been set by main().
+    # Otherwise, passing a resolved path string to _resolve_project_root
+    # would always return "explicit", overwriting the correct "env" or
+    # "walk_up" value.
+    if _resolution_method == "unknown":
+        _, _resolution_method = _resolve_project_root(project_root)
 
     store = GraphStore()
     sqlite_path = cg_dir / "index.sqlite"
@@ -3008,8 +3025,8 @@ def build_context_pack(
 ) -> dict[str, Any]:
     """Build a Context Pack for a natural language task.
 
-    Use this as the first CodeGraph tool for code investigation, bug fixing,
-    feature implementation, refactoring, or impact analysis. Prefer this
+    PRIMARY TOOL for larger code investigation, bug fixing, feature
+    implementation, refactoring, or impact analysis tasks. Prefer this
     before grep/glob/read-heavy exploration. Takes a natural language task
     description and returns entry points, related symbols, call graph,
     impact signals, and tests. Does NOT include reading plans or agent
@@ -3175,15 +3192,12 @@ def repo_status(
     root: str | None = None,
     response_mode: str = "compact",
 ) -> dict[str, Any]:
-    """Check index freshness and report changed/added/deleted files.
+    """Check index health and which project CodeGraph is currently bound to.
 
-    Use to check whether the CodeGraph index is fresh, stale, missing, or
-    healthy before relying on results. Prefer this before assuming search
-    results are up-to-date — stale indexes may miss recent changes.
-
+    Use this when verifying whether MCP is querying the right project.
     Always returns project_root, index_path, cwd, resolution_method,
-    index_exists, symbol_count, edge_count, and project-binding warnings
-    so you can verify which project CodeGraph is querying.
+    index_exists, symbol_count, edge_count, and project-binding warnings.
+    Also reports index freshness (fresh/stale/missing) and suggested fix.
 
     Args:
         root: Optional project root path override

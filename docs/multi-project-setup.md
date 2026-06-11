@@ -64,10 +64,10 @@ Use `codegraph_repo_status` (MCP tool) or `codegraph doctor` (CLI) to verify whi
 codegraph doctor
 ```
 
-Look for:
+Look for section **7. MCP project binding**. It shows whether each MCP config is auto-detect or bound to a fixed project, and warns about mismatches:
 ```
-7. MCP project root validation
-  [OK]    claude: auto-detect (MCP follows CWD)
+7. MCP project binding
+  [OK]    claude: Global MCP config uses auto-detect project root.
 ```
 
 ---
@@ -128,17 +128,21 @@ Project-level config (`.mcp.json` or `.cursor/mcp.json`) is placed inside the pr
 
 ### How to detect
 
-Run `codegraph doctor`:
+Run `codegraph doctor` and check section 7:
 
 ```
-[warn] claude: MCP config is bound to a different project than CWD
-       MCP root:   D:\project\CodeGraph-Explorer
-       CWD:         D:\project\other-project
-       This may cause CodeGraph MCP to query the wrong index.
-       Suggested fix:
-         codegraph configure all --force
-       or use project config:
-         codegraph configure --project
+[warn] claude: Global MCP config is bound to a fixed project:
+       D:\project\CodeGraph-Explorer
+
+     Current project (CWD):
+       D:\project\other-project
+
+     This may cause CodeGraph MCP to query the wrong index.
+
+     Suggested fix:
+       codegraph configure all --force
+     or use project-scoped config:
+       codegraph configure all --project
 ```
 
 ### Fix
@@ -155,14 +159,21 @@ codegraph configure all --root $(pwd) --force
 
 ## Troubleshooting: "Which project am I querying?"
 
-### Via MCP tool
+### Via MCP tool (from your Agent)
 
-Call `codegraph_repo_status` and check:
+Ask your agent:
 
-- `project_root` — the resolved project root
+```
+Please call codegraph_repo_status and tell me the project_root and index_path.
+```
+
+The response includes:
+
+- `project_root` — the resolved project root CodeGraph is querying
+- `index_path` — the `.codegraph/` directory path
 - `cwd` — current working directory
 - `resolution_method` — how the root was resolved (`env`, `walk_up`, `git_root`, `cwd`, `explicit`)
-- `warnings` — will include `fixed_project_root` if `CODEGRAPH_PROJECT_ROOT` is set
+- `warnings` — includes `fixed_project_root` if `CODEGRAPH_PROJECT_ROOT` is set, `cwd_outside_project` if CWD is under a different project, `index_missing` if no `.codegraph/` found, `index_empty` if 0 symbols
 
 ### Via CLI
 

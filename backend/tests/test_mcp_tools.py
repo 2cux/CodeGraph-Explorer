@@ -2121,16 +2121,31 @@ class TestAgentUsageGuidance:
         assert "before modifying" in doc.lower()
 
     def test_build_context_pack_description_guides_first_tool(self):
-        """build_context_pack description should mention 'first' tool."""
+        """build_context_pack description should state PRIMARY TOOL for larger tasks."""
         from codegraph.mcp_server import build_context_pack
         doc = build_context_pack.__doc__ or ""
-        assert "first" in doc.lower()
+        doc_lower = doc.lower()
+        assert "primary tool" in doc_lower, (
+            f"build_context_pack description should state PRIMARY TOOL, got: {doc[:120]}"
+        )
+        assert "larger" in doc_lower, (
+            f"build_context_pack description should mention larger tasks, got: {doc[:120]}"
+        )
 
-    def test_repo_status_description_guides_freshness_check(self):
-        """repo_status description should mention stale/fresh index check."""
+    def test_repo_status_description_guides_project_binding_check(self):
+        """repo_status description should describe it as a project binding and index health check tool."""
         from codegraph.mcp_server import repo_status
         doc = repo_status.__doc__ or ""
-        assert "fresh" in doc.lower() or "stale" in doc.lower()
+        doc_lower = doc.lower()
+        assert "which project" in doc_lower, (
+            f"repo_status description should mention 'which project', got: {doc[:120]}"
+        )
+        assert "index health" in doc_lower, (
+            f"repo_status description should mention 'index health', got: {doc[:120]}"
+        )
+        assert "bound to" in doc_lower, (
+            f"repo_status description should mention 'bound to', got: {doc[:120]}"
+        )
 
     def test_repo_summary_description_guides_use_first(self):
         """repo_summary description should mention 'use first' when entering repo."""
@@ -2154,6 +2169,51 @@ class TestAgentUsageGuidance:
             doc = tool_fn.__doc__
             assert doc is not None, f"{tool_fn.__name__} has no docstring"
             assert len(doc.strip()) > 20, f"{tool_fn.__name__} docstring too short: {doc[:50]}"
+
+    def test_mcp_instructions_contain_anti_patterns(self):
+        """MCP server instructions should include anti-patterns for agent behavior."""
+        from codegraph.mcp_server import mcp
+        instructions = mcp.instructions or ""
+        instructions_lower = instructions.lower()
+        assert "anti-patterns" in instructions_lower, (
+            "MCP instructions should include 'Anti-patterns' section"
+        )
+        assert "do not grep first" in instructions_lower, (
+            "MCP instructions should warn: Do not grep first"
+        )
+        assert "do not read many files manually" in instructions_lower, (
+            "MCP instructions should warn: Do not read many files manually before trying CodeGraph"
+        )
+        assert "codegraph_build_context_pack" in instructions_lower, (
+            "MCP instructions should reference codegraph_build_context_pack"
+        )
+        assert "use read only when exact source text is needed" in instructions_lower, (
+            "MCP instructions should guide: Use Read only when exact source text is needed"
+        )
+
+    def test_build_context_pack_is_primary_tool(self):
+        """build_context_pack description should mark it as PRIMARY TOOL."""
+        from codegraph.mcp_server import build_context_pack
+        doc = build_context_pack.__doc__ or ""
+        assert "PRIMARY TOOL" in doc, (
+            f"build_context_pack description should state PRIMARY TOOL, got: {doc[:150]}"
+        )
+
+    def test_repo_status_is_not_debugging_only(self):
+        """repo_status description should not describe it as debugging-only.
+        It should be a project binding + index health check tool."""
+        from codegraph.mcp_server import repo_status
+        doc = repo_status.__doc__ or ""
+        doc_lower = doc.lower()
+        # Should guide checking which project
+        assert "which project" in doc_lower, (
+            f"repo_status should help verify which project, got: {doc[:120]}"
+        )
+        # Should mention project_root and index_path
+        assert "project_root" in doc_lower, (
+            f"repo_status doc should mention project_root, got: {doc[:120]}"
+        )
+
 
     # ── 方案一：README/docs usage hints ────────────────────────────────────
 

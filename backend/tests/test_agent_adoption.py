@@ -59,10 +59,14 @@ class TestMcpToolDescriptions:
     """Verify MCP tool descriptions contain usage-trigger keywords."""
 
     def test_build_context_pack_first_tool_language(self):
-        """build_context_pack should be described as the first tool for larger tasks."""
+        """build_context_pack should be described as PRIMARY TOOL for larger tasks."""
         doc = inspect.getdoc(mcp_mod.build_context_pack) or ""
-        assert "first codegraph tool" in doc.lower() or "first for larger" in doc.lower(), (
-            f"build_context_pack description should state it's the first tool. Got: {doc[:120]}..."
+        doc_lower = doc.lower()
+        assert "primary tool" in doc_lower, (
+            f"build_context_pack description should state PRIMARY TOOL. Got: {doc[:120]}..."
+        )
+        assert "larger" in doc_lower, (
+            f"build_context_pack description should mention larger tasks. Got: {doc[:120]}..."
         )
 
     def test_build_context_pack_before_grep(self):
