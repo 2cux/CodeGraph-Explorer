@@ -181,6 +181,8 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     # Multi-project diagnostics (repo_status)
     "project_root", "index_path", "cwd", "resolution_method",
     "index_exists", "symbol_count", "edge_count",
+    # Source snippets & next steps (context_pack enhancement)
+    "source_snippets", "next_recommended_tools", "file", "snippet",
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -3010,6 +3012,230 @@ def get_impact(
     )
 
 
+# ── Context Pack helpers: source_snippets + next_recommended_tools ─────────
+
+
+# Keywords that trigger source snippet inclusion in context_pack
+_SOURCE_SNIPPET_TASK_KEYWORDS: set[str] = {
+    "bug", "fix", "debug", "review", "refactor",
+    "implement", "change", "modify",
+}
+
+# Mode values that trigger source snippet inclusion
+_SOURCE_SNIPPET_MODES: set[str] = {"full", "review", "debug", "implementation"}
+
+# Max source snippets and lines per snippet
+_MAX_SOURCE_SNIPPETS = 5
+_MAX_SNIPPET_LINES = 40
+
+
+def _should_include_source_snippets(task_text: str, mode: str) -> bool:
+    """Check whether source snippets should be included for this request."""
+    if mode in _SOURCE_SNIPPET_MODES:
+        return True
+    text_lower = task_text.lower()
+    import re
+    for kw in _SOURCE_SNIPPET_TASK_KEYWORDS:
+        pattern = r'\b' + re.escape(kw) + r'\b'
+        if re.search(pattern, text_lower):
+            return True
+    return False
+
+
+def _build_source_snippets(
+    store: "GraphStore",
+    pack: dict[str, Any],
+    max_snippets: int = _MAX_SOURCE_SNIPPETS,
+    max_lines: int = _MAX_SNIPPET_LINES,
+) -> list[dict[str, Any]]:
+    """Build source snippets for entry points and high-priority related symbols.
+
+    Reads actual source code from files. Each snippet is bounded to *max_lines*.
+    Returns at most *max_snippets* snippets.
+    """
+    snippets: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, int, int]] = set()
+
+    # Collect candidates: (symbol_name, file_path, line_start, line_end, reason)
+    candidates: list[tuple[str, str, int, int, str]] = []
+
+    # 1. Entry points — location data is in the pack's entry_points
+    for ep in pack.get("entry_points", []):
+        loc = ep.get("location") or {}
+        ls = loc.get("line_start", 0) or ep.get("line_start", 0)
+        le = loc.get("line_end", 0) or ep.get("line_end", 0)
+        fp = ep.get("file_path", "")
+        if ls and le and fp:
+            name = ep.get("name", ep.get("symbol_id", ""))
+            ep_reason = ep.get("reason", "Entry point matched by task keywords.")
+            candidates.append((name, fp, ls, le, f"Entry point: {ep_reason}"))
+
+    # 2. Related symbols — resolve location from store
+    related: list[dict[str, Any]] = pack.get("related_symbols", [])
+    for rs in related:
+        importance = rs.get("importance", "medium")
+        if importance not in ("critical", "high"):
+            continue
+        sym_id = rs.get("symbol_id", "")
+        if not sym_id:
+            continue
+        node = store.get_node(sym_id)
+        if node is None or node.location is None:
+            # Try fuzzy resolve
+            resolved = _resolve_node(store, sym_id)
+            if resolved is not None:
+                node = resolved
+        if node is None or node.location is None:
+            continue
+        ls = node.location.line_start
+        le = node.location.line_end
+        fp = node.file_path
+        if not ls or not le or not fp:
+            continue
+        name = node.name or sym_id.split("::")[-1] if "::" in sym_id else sym_id
+        rel = rs.get("relation", "related")
+        rel_reason = rs.get("reason", "")
+        candidates.append((
+            name, fp, ls, le,
+            f"Related symbol ({rel}): {rel_reason}",
+        ))
+
+    for symbol_name, file_path, ls, le, reason in candidates:
+        if len(snippets) >= max_snippets:
+            break
+        key = (file_path, ls, le)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        source = _read_source_snippet(
+            file_path, ls, le,
+            source_mode="body",
+            max_source_lines=max_lines,
+        )
+        if source.get("included") and source.get("content"):
+            snippet_data: dict[str, Any] = {
+                "symbol": symbol_name,
+                "file": file_path,
+                "line_start": ls,
+                "line_end": le,
+                "reason": reason[:200],
+            }
+            snippet_data["snippet"] = source["content"]
+            if source.get("truncated"):
+                snippet_data["truncated"] = True
+                original = (le - ls + 1) if le >= ls else source.get("lines", 0)
+                snippet_data["omitted_lines"] = max(0, original - source.get("lines", 0))
+            snippets.append(snippet_data)
+
+    return snippets
+
+
+def _build_next_recommended_tools(
+    pack: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Generate next_recommended_tools based on task intent and found symbols.
+
+    Returns at most 3 specific recommendations, or an empty list if no
+    clear next step can be inferred.
+    """
+    task_data = pack.get("task", {})
+    intent_raw = task_data.get("primary_intent") or task_data.get("intent", "")
+    intent = str(intent_raw) if intent_raw else ""
+
+    entry_points = pack.get("entry_points", [])
+    has_entry = len(entry_points) > 0
+    impact = pack.get("impact") or {}
+    risk_level = impact.get("risk", {}).get("level", "low") if isinstance(impact, dict) else "low"
+
+    recommendations: list[dict[str, Any]] = []
+
+    # Rule-based recommendations driven by intent + graph signals
+    if intent in ("fix_bug", "fix_bug_debug", "debug"):
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect local callers and callees around the entry point to trace the error path.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": "Check downstream impact before modifying shared code.",
+            })
+    elif intent in ("review_code", "review"):
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect all neighbors (callers, callees, tests) for review coverage.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": "Assess blast radius — what would break if this code changes.",
+            })
+    elif intent in ("refactor",):
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_callers",
+                "reason": "Trace all upstream callers before renaming or restructuring.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": "Check downstream impact before modifying shared code.",
+            })
+    elif intent in ("add_feature", "modify_existing_behavior", "implement", "implementation", "change", "modify"):
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect local relationships before editing this symbol.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": "Check downstream impact before modifying shared code.",
+            })
+    elif intent in ("analyze_impact",):
+        recommendations.append({
+            "tool": "codegraph_get_callers",
+            "reason": "Trace all upstream consumers to complete the impact picture.",
+        })
+        recommendations.append({
+            "tool": "codegraph_get_callees",
+            "reason": "Trace all downstream dependencies to understand the full chain.",
+        })
+    elif intent in ("write_tests",):
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_callees",
+                "reason": "Trace callees to identify what needs test coverage.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect existing test files and relationships around this symbol.",
+            })
+    elif intent in ("understand_code",):
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect local relationships to understand the symbol's role.",
+            })
+    else:
+        # Generic: if we have entry points, suggest the most useful next step
+        if has_entry:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Explore local callers, callees, and tests around the entry point.",
+            })
+
+    # Add get_impact for high-risk scenarios regardless of intent
+    if risk_level in ("high", "critical") and len(recommendations) < 3:
+        already_has_impact = any(r.get("tool") == "codegraph_get_impact" for r in recommendations)
+        if not already_has_impact:
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": f"Risk level is {risk_level} — verify downstream impact before any changes.",
+            })
+
+    return recommendations[:3]
+
+
 # ── Tool: build_context_pack ──────────────────────────────────────────────
 
 
@@ -3023,14 +3249,15 @@ def build_context_pack(
     mode: str = "summary",
     response_mode: str = "compact",
 ) -> dict[str, Any]:
-    """Build a Context Pack for a natural language task.
+    """PRIMARY TOOL. Answers: "What files, symbols, relationships, and source
+    snippets matter for this task?" Use first for implementation, debugging,
+    review, refactoring, or impact analysis before grep/glob/read-heavy
+    exploration.
 
-    PRIMARY TOOL for larger code investigation, bug fixing, feature
-    implementation, refactoring, or impact analysis tasks. Prefer this
-    before grep/glob/read-heavy exploration. Takes a natural language task
-    description and returns entry points, related symbols, call graph,
-    impact signals, and tests. Does NOT include reading plans or agent
-    instructions.
+    For debug, review, refactor, fix, and implementation tasks, returns
+    source_snippets with key code fragments so you don't need to immediately
+    Read files. Also returns next_recommended_tools to guide the next
+    CodeGraph calls.
 
     Args:
         task: Natural language description of what you need to do
@@ -3070,6 +3297,9 @@ def build_context_pack(
     )
 
     pack_dict = json.loads(pack.model_dump_json(exclude_none=True))
+
+    # Save full pack before summary mode strips location details
+    _full_pack_dict = pack_dict
 
     # Determine if pack exceeded budget
     used_tokens = pack_dict.get("token_budget", {}).get("used_tokens", 0)
@@ -3153,6 +3383,27 @@ def build_context_pack(
             "reason_code": "payload_truncated",
         })
 
+    # ── Source snippets (conditional) ────────────────────────────────────
+    if include_code and _should_include_source_snippets(task, mode):
+        snippets = _build_source_snippets(store, _full_pack_dict)
+        if snippets:
+            pack_dict["source_snippets"] = snippets
+            # Mark truncation if we hit a limit
+            omit_count = len(pack_dict.get("entry_points", [])) + len(
+                pack_dict.get("related_symbols", [])
+            ) - len(snippets)
+            if omit_count > 0 and len(snippets) >= _MAX_SOURCE_SNIPPETS:
+                pack_warnings.append({
+                    "type": "source_snippets_truncated",
+                    "severity": "info",
+                    "message": f"Source snippets limited to {_MAX_SOURCE_SNIPPETS}. "
+                               f"Use codegraph_get_symbol with include_source=true for more.",
+                    "reason_code": "payload_truncated",
+                })
+
+    # ── Next recommended tools ───────────────────────────────────────────
+    pack_dict["next_recommended_tools"] = _build_next_recommended_tools(pack_dict)
+
     if response_mode == "compact":
         # Strip down to essentials — only evidence, no plans/instructions
         pack_dict = {
@@ -3161,6 +3412,8 @@ def build_context_pack(
             "entry_points": pack_dict.get("entry_points", [])[:5],
             "call_graph": pack_dict.get("call_graph", {}),
             "impact": pack_dict.get("impact"),
+            "source_snippets": pack_dict.get("source_snippets", []),
+            "next_recommended_tools": pack_dict.get("next_recommended_tools", []),
             "related_tests_count": len(pack_dict.get("related_tests", [])),
             "selected_context_count": len(pack_dict.get("selected_context", [])),
             "token_budget": pack_dict.get("token_budget", {}),

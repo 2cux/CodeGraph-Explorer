@@ -1181,6 +1181,230 @@ class TestBuildContextPack:
                 assert "resolution" in sc
                 assert "evidence" in sc
 
+    def test_returns_next_recommended_tools(self, mcp_setup):
+        """build_context_pack returns next_recommended_tools list."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA", mode="summary", response_mode="standard")
+        if result["ok"]:
+            nrt = result["data"].get("next_recommended_tools", [])
+            assert isinstance(nrt, list), f"next_recommended_tools should be a list, got: {type(nrt)}"
+            # For an "add MFA" task, should have at least 1 recommendation
+            assert len(nrt) >= 1, f"Expected at least 1 recommendation, got: {nrt}"
+            for rec in nrt:
+                assert "tool" in rec, f"Recommendation missing 'tool': {rec}"
+                assert "reason" in rec, f"Recommendation missing 'reason': {rec}"
+                assert rec["tool"].startswith("codegraph_"), f"Tool name should start with codegraph_: {rec}"
+
+    def test_returns_next_recommended_tools_for_understand(self, mcp_setup):
+        """build_context_pack returns recommendations even for understand_code."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("explain login flow", mode="summary", response_mode="standard")
+        if result["ok"]:
+            nrt = result["data"].get("next_recommended_tools", [])
+            assert isinstance(nrt, list)
+
+    def test_next_recommended_tools_not_exceed_3(self, mcp_setup):
+        """next_recommended_tools should not exceed 3 items."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("fix login bug", mode="summary", response_mode="standard")
+        if result["ok"]:
+            nrt = result["data"].get("next_recommended_tools", [])
+            assert len(nrt) <= 3, f"Expected ≤ 3 recommendations, got {len(nrt)}"
+
+
+# ── Test: source_snippets in build_context_pack ──────────────────────────────
+
+
+class TestContextPackSourceSnippets:
+    """source_snippets for debug / review / implementation tasks."""
+
+    @pytest.fixture(autouse=True)
+    def _create_source_files(self, mcp_setup, tmp_path):
+        """Create real source files so _read_source_snippet can find them."""
+        import codegraph.mcp_server as mcp_mod
+        auth_dir = tmp_path.parent / "app" / "api"
+        auth_dir.mkdir(parents=True, exist_ok=True)
+        (auth_dir / "auth.py").write_text(
+            "\n".join([
+                "# auth module", "", "", "", "",
+                "def login(username: str, password: str) -> str:",
+                "    # Authenticate user",
+                "    token = hash_password(username, password)",
+                "    save_token(token)",
+                "    return token",
+                "",
+                "",
+                "",
+                "",
+                "def logout(token: str) -> None:",
+                "    # Invalidate token",
+                "    invalidate_token(token)",
+                "    return None",
+            ]), encoding="utf-8"
+        )
+        main_file = tmp_path.parent / "main.py"
+        main_file.write_text(
+            "\n".join([
+                "#!/usr/bin/env python3",
+                "from app.api.auth import login",
+                "",
+                "def main() -> None:",
+                "    token = login('user', 'pass')",
+                "    print(f'Logged in: {token}')",
+                "",
+                "if __name__ == '__main__':",
+                "    main()",
+                "",
+            ]), encoding="utf-8"
+        )
+        store_dir = tmp_path.parent / "app" / "store"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        (store_dir / "token_store.py").write_text(
+            "\n".join([
+                "# token store", "", "", "",
+                "def save_token(token: str) -> None:",
+                "    # Persist token",
+                "    with open('tokens.db', 'a') as f:",
+                "        f.write(token)",
+            ]), encoding="utf-8"
+        )
+        yield
+
+    def _call_build(self, task_text: str, mode: str = "summary", **kwargs):
+        from codegraph.mcp_server import build_context_pack
+        return build_context_pack(task_text, mode=mode, response_mode="standard", **kwargs)
+
+    def test_debug_task_returns_source_snippets(self, mcp_setup):
+        """Debug task ('fix bug') returns source_snippets."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("fix login bug", mode="summary", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list), f"source_snippets should be a list"
+            assert len(snippets) > 0, (
+                f"Debug task should return source_snippets, got empty list. "
+                f"Entry points: {result['data'].get('entry_points', [])}"
+            )
+            for s in snippets:
+                assert "symbol" in s, f"Snippet missing 'symbol': {s}"
+                assert "file" in s, f"Snippet missing 'file': {s}"
+                assert "line_start" in s, f"Snippet missing 'line_start': {s}"
+                assert "line_end" in s, f"Snippet missing 'line_end': {s}"
+                assert "reason" in s, f"Snippet missing 'reason': {s}"
+                assert "snippet" in s, f"Snippet missing 'snippet': {s}"
+                assert len(s["snippet"]) > 0, f"Snippet content is empty"
+
+    def test_review_task_returns_source_snippets(self, mcp_setup):
+        """Review task returns source_snippets."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("review auth code", mode="summary", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list)
+            assert len(snippets) > 0, (
+                f"Review task should return source_snippets"
+            )
+
+    def test_implementation_task_returns_source_snippets(self, mcp_setup):
+        """Implementation task ('implement') returns source_snippets."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("implement password reset", mode="summary", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list)
+            assert len(snippets) > 0, (
+                f"Implementation task should return source_snippets"
+            )
+
+    def test_modify_task_returns_source_snippets(self, mcp_setup):
+        """'change' / 'modify' task returns source_snippets."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("change the login handler", mode="summary", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list)
+            assert len(snippets) > 0
+
+    def test_understand_task_no_source_snippets_by_default(self, mcp_setup):
+        """Pure understand task does NOT return source_snippets in summary mode."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("explain login flow", mode="summary", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            # "explain" is understand — should NOT trigger source snippets
+            assert snippets == [] or len(snippets) == 0, (
+                f"Understand task should not return source_snippets, got: {snippets}"
+            )
+
+    def test_mode_full_returns_source_snippets(self, mcp_setup):
+        """mode='full' triggers source_snippets regardless of task text."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("explain login flow", mode="full", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list)
+            # "full" mode should trigger source snippets
+            assert len(snippets) > 0, (
+                f"mode='full' should return source_snippets even for understand tasks"
+            )
+
+    def test_mode_debug_returns_source_snippets(self, mcp_setup):
+        """mode='debug' triggers source_snippets."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("explain login", mode="debug", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list)
+            assert len(snippets) > 0
+
+    def test_source_snippets_respect_max_limit(self, mcp_setup):
+        """source_snippets should not exceed _MAX_SOURCE_SNIPPETS (5)."""
+        from codegraph.mcp_server import build_context_pack, _MAX_SOURCE_SNIPPETS
+        result = build_context_pack("fix login bug", mode="summary", response_mode="standard")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert len(snippets) <= _MAX_SOURCE_SNIPPETS, (
+                f"Should have ≤ {_MAX_SOURCE_SNIPPETS} snippets, got {len(snippets)}"
+            )
+
+    def test_include_code_false_skips_snippets(self, mcp_setup):
+        """include_code=False skips source_snippets even for debug tasks."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack(
+            "fix login bug", mode="summary", response_mode="standard",
+            include_code=False,
+        )
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert len(snippets) == 0, (
+                f"include_code=False should skip snippets, got: {snippets}"
+            )
+
+    def test_compact_mode_preserves_source_snippets(self, mcp_setup):
+        """Compact mode preserves source_snippets and next_recommended_tools."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("fix login bug", mode="summary", response_mode="compact")
+        if result["ok"]:
+            snippets = result["data"].get("source_snippets", [])
+            assert isinstance(snippets, list)
+            nrt = result["data"].get("next_recommended_tools", [])
+            assert isinstance(nrt, list)
+
+    def test_existing_context_pack_structure_unchanged(self, mcp_setup):
+        """New fields don't break existing context_pack structure."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA", mode="summary", response_mode="standard")
+        if result["ok"]:
+            # Standard fields still present
+            assert "pack_id" in result["data"]
+            assert "task" in result["data"]
+            assert "entry_points" in result["data"]
+            assert "call_graph" in result["data"]
+            assert "token_budget" in result["data"]
+            # No forbidden fields
+            assert "reading_plan" not in result["data"]
+            assert "agent_instructions" not in result["data"]
+
 
 # ── Test: Warnings and index_status integration ────────────────────────────
 
@@ -2121,15 +2345,15 @@ class TestAgentUsageGuidance:
         assert "before modifying" in doc.lower()
 
     def test_build_context_pack_description_guides_first_tool(self):
-        """build_context_pack description should state PRIMARY TOOL for larger tasks."""
+        """build_context_pack description should state PRIMARY TOOL and guide first use."""
         from codegraph.mcp_server import build_context_pack
         doc = build_context_pack.__doc__ or ""
         doc_lower = doc.lower()
         assert "primary tool" in doc_lower, (
             f"build_context_pack description should state PRIMARY TOOL, got: {doc[:120]}"
         )
-        assert "larger" in doc_lower, (
-            f"build_context_pack description should mention larger tasks, got: {doc[:120]}"
+        assert "use first" in doc_lower, (
+            f"build_context_pack description should guide 'Use first', got: {doc[:120]}"
         )
 
     def test_repo_status_description_guides_project_binding_check(self):
