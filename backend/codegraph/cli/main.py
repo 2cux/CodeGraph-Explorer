@@ -262,15 +262,15 @@ def init(
         typer.echo("CodeGraph index ready.")
         typer.echo("")
         typer.echo(
-            "To help your coding agent use CodeGraph before grep/read, "
-            "add the CodeGraph Usage block to your target project rules:"
+            "To help your coding agent remember to use CodeGraph, "
+            "add the CodeGraph Usage Reminder to your target project rules:"
         )
         typer.echo("")
         typer.echo("  - Claude Code: CLAUDE.md")
         typer.echo("  - Cursor:      .cursor/rules/codegraph.mdc")
-        typer.echo("  - Other agents: AGENTS.md or equivalent rule file")
+        typer.echo("  - Other agents: AGENTS.md or equivalent")
         typer.echo("")
-        typer.echo("See README: 让 Agent 优先使用 CodeGraph")
+        typer.echo("See README: Agent 使用建议")
     else:
         typer.echo("")
         typer.echo(

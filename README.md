@@ -75,7 +75,7 @@ codegraph doctor
 
 完成后，打开 Claude Code 或 Cursor，即可让 Agent 使用 CodeGraph 进行代码库导航。
 
-> 💡 **提示**：如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下方「让 Agent 优先使用 CodeGraph」中的提示块复制到目标项目的 CLAUDE.md、Cursor Rules 或 AGENTS.md。
+> 💡 **提示**：如果 Agent 已经配置了 CodeGraph MCP，但仍然习惯使用 grep/read，可以把下方「Agent 使用建议」中的提示块复制到目标项目的 CLAUDE.md、Cursor Rules 或 AGENTS.md。
 
 ---
 
@@ -369,11 +369,11 @@ macOS / Linux 示例：
 
 MCP Server 会自动从当前工作目录检测 `.codegraph/` 索引。如需指定固定路径，在 `env` 中设置 `CODEGRAPH_PROJECT_ROOT`。
 
-CodeGraph Explorer 本身不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。如需让 Agent 在**目标项目**中优先使用 CodeGraph，参考下方「让 Agent 优先使用 CodeGraph」中的提示块。
+CodeGraph Explorer 本身不需要修改 `CLAUDE.md`、Cursor rules 或其他 Agent 指令文件。它只提供 MCP 工具，不向 Agent 注入实现建议。如需让 Agent 在**目标项目**中优先使用 CodeGraph，参考下方「Agent 使用建议」中的提示块。
 
 ---
 
-## 让 Agent 优先使用 CodeGraph
+## Agent 使用建议
 
 CodeGraph MCP 安装完成后，Agent 不一定会自动优先使用它。Agent 仍然可能默认使用 Read / Grep / Glob。
 

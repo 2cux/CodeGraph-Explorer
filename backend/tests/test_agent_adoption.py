@@ -157,8 +157,8 @@ class TestReadmeAgentAdoption:
 
     def test_has_agent_usage_section(self, readme):
         """README should have a section about agent usage."""
-        assert "让 Agent 优先使用 CodeGraph" in readme, (
-            "README must have '让 Agent 优先使用 CodeGraph' section"
+        assert "Agent 使用建议" in readme, (
+            "README must have 'Agent 使用建议' section"
         )
 
     def test_mentions_target_project(self, readme):
@@ -268,6 +268,42 @@ class TestDocsExistence:
         )
         assert "codegraph_build_context_pack" in text, (
             "docs/mcp-tools.md workflow must include codegraph_build_context_pack"
+        )
+
+    def test_agent_usage_reminder_exists(self):
+        """docs/agent-usage-reminder.md should exist."""
+        path = _project_root() / "docs" / "agent-usage-reminder.md"
+        assert path.exists(), "docs/agent-usage-reminder.md must exist"
+
+    def test_agent_usage_reminder_has_required_sections(self):
+        """agent-usage-reminder.md should have required sections."""
+        text = _read_file("docs/agent-usage-reminder.md")
+        assert "## Why this matters" in text, (
+            "agent-usage-reminder.md must have 'Why this matters' section"
+        )
+        assert "## Recommended reminder" in text, (
+            "agent-usage-reminder.md must have 'Recommended reminder' section"
+        )
+        assert "## Where to put it" in text, (
+            "agent-usage-reminder.md must have 'Where to put it' section"
+        )
+        assert "## How to verify" in text, (
+            "agent-usage-reminder.md must have 'How to verify' section"
+        )
+        assert "CLAUDE.md" in text, (
+            "agent-usage-reminder.md must mention CLAUDE.md"
+        )
+        assert ".cursor/rules/codegraph.mdc" in text, (
+            "agent-usage-reminder.md must mention .cursor/rules/codegraph.mdc"
+        )
+        assert "AGENTS.md" in text, (
+            "agent-usage-reminder.md must mention AGENTS.md"
+        )
+        assert "codegraph_build_context_pack" in text, (
+            "agent-usage-reminder.md must mention codegraph_build_context_pack"
+        )
+        assert "does not automatically" in text.lower(), (
+            "agent-usage-reminder.md must explain agents don't auto-use CodeGraph"
         )
 
 

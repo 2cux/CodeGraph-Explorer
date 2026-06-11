@@ -69,7 +69,14 @@ from codegraph.storage.state_store import IndexStateStore
 
 # ── MCP Server ────────────────────────────────────────────────────────────
 
-mcp = FastMCP("codegraph-explorer")
+mcp = FastMCP(
+    "codegraph-explorer",
+    instructions=(
+        "Use CodeGraph MCP for codebase exploration, symbol lookup, "
+        "call graph inspection, and impact analysis before falling back "
+        "to grep/glob/read-heavy exploration."
+    ),
+)
 
 _store: GraphStore | None = None
 _cg_dir: Path | None = None
