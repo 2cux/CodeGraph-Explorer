@@ -331,7 +331,24 @@ codegraph configure all
 
 ### Claude Code
 
+**全局 auto-detect（推荐，适合多项目）：**
+
 用户级配置 `~/.claude.json`：
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "C:\\path\\to\\venv\\Scripts\\python.exe",
+      "args": ["-m", "codegraph.mcp_server"]
+    }
+  }
+}
+```
+
+不加 `env.CODEGRAPH_PROJECT_ROOT`，MCP Server 会自动根据当前工作目录查找 `.codegraph/`。
+
+**项目绑定（适合固定项目）：**
+
 ```json
 {
   "mcpServers": {
@@ -352,10 +369,7 @@ macOS / Linux 示例：
   "mcpServers": {
     "codegraph": {
       "command": "/path/to/venv/bin/python",
-      "args": ["-m", "codegraph.mcp_server"],
-      "env": {
-        "CODEGRAPH_PROJECT_ROOT": "/path/to/project"
-      }
+      "args": ["-m", "codegraph.mcp_server"]
     }
   }
 }
@@ -378,6 +392,16 @@ CodeGraph Explorer 本身不需要修改 `CLAUDE.md`、Cursor rules 或其他 Ag
 CodeGraph MCP 安装完成后，Agent 不一定会自动优先使用它。Agent 仍然可能默认使用 Read / Grep / Glob。
 
 如果希望 Agent 在某个项目里优先调用 CodeGraph MCP，需要把下面的提示块复制到**该项目的** Agent 规则文件中。
+
+### 多项目使用
+
+如果你在多个项目中使用 CodeGraph：
+
+- **推荐使用全局 auto-detect 配置**：`codegraph configure all`（不加 `--root`），MCP Server 会自动跟随当前工作目录查找 `.codegraph/`
+- **每个项目只需运行一次** `codegraph init`
+- **不推荐**在全局配置中写死 `CODEGRAPH_PROJECT_ROOT`，否则在其他项目中 MCP 会查错索引
+- 使用 `codegraph doctor` 或 MCP 工具 `codegraph_repo_status` 检查当前 MCP 查询的是哪个项目
+- 详见 [docs/multi-project-setup.md](docs/multi-project-setup.md)
 
 ### 目标位置
 
@@ -478,13 +502,27 @@ codegraph init
 
 ### 2. MCP 配置里的路径不对
 
-如果项目路径变更或配置旧了：
+**全局配置（推荐）：**
 
 ```bash
 codegraph configure all --force
 ```
 
-这会用当前项目路径更新 MCP 配置。也可以用 `codegraph configure show` 查看当前配置的路径。
+不加 `--root` 时，MCP Server 会自动跟随当前项目（auto-detect 模式），适合多项目使用。
+
+**项目绑定配置：**
+
+```bash
+codegraph configure all --root /path/to/project --force
+```
+
+如果只想让某个项目固定使用 CodeGraph，可以使用项目级配置：
+
+```bash
+codegraph configure all --project
+```
+
+> 不推荐在全局配置中写死 `CODEGRAPH_PROJECT_ROOT`。如果配置了固定的项目路径，MCP 在其他项目中会查错索引。用 `codegraph doctor` 检查是否有跨项目绑定风险。
 
 ### 3. MCP 配置中的 command 不可用
 
@@ -906,6 +944,7 @@ MIT
 | [docs/language-support.md](docs/language-support.md) | 语言与框架支持矩阵及限制 |
 | [docs/benchmark.md](docs/benchmark.md) | Benchmark 套件与 regression gate 指南 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见问题及修复 |
+| [docs/multi-project-setup.md](docs/multi-project-setup.md) | 多项目配置指南：全局 vs 项目绑定 |
 | [docs/evidence-pack.md](docs/evidence-pack.md) | Evidence Pack 格式、用法与限制 |
 | [docs/agent-adoption-test.md](docs/agent-adoption-test.md) | Agent 是否使用 CodeGraph 的验证流程 |
 | [docs/development.md](docs/development.md) | 开发环境、规范与工作流 |

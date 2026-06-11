@@ -1785,8 +1785,24 @@ def doctor(
         typer.echo("     Run: codegraph configure all")
     typer.echo()
 
-    # 7. MCP project root validation
-    typer.echo("7. MCP project root validation")
+    # 7. MCP project binding
+    typer.echo("7. MCP project binding")
+    cwd_path = Path.cwd().resolve()
+
+    # Show current project context
+    typer.echo(f"     Current CWD:")
+    typer.echo(f"       {cwd_path}")
+    if (cwd_path / ".codegraph" / "graph.json").exists():
+        ok(f"     .codegraph found in CWD")
+    else:
+        cg_found = _find_codegraph_dir(str(cwd_path))
+        if cg_found:
+            typer.echo(f"     .codegraph found at: {cg_found.parent}")
+        else:
+            warn(f"     No .codegraph in or above CWD — run: codegraph init")
+    typer.echo()
+
+    has_fixed_root = False
     for label, cfg_path in config_paths:
         data = read_config(cfg_path)
         server_cfg = data.get("mcpServers", {}).get(MCP_SERVER_NAME)
@@ -1794,27 +1810,47 @@ def doctor(
             continue
         env_root = server_cfg.get("env", {}).get("CODEGRAPH_PROJECT_ROOT")
         if not env_root:
-            fail(f"{label}: CODEGRAPH_PROJECT_ROOT is not set in config")
-            typer.echo(f"       Run: codegraph configure {'cursor' if 'Cursor' in label else 'claude'} --force")
+            # Auto-detect mode — this is the recommended global config
+            ok(f"{label}: Global MCP config uses auto-detect project root.")
             continue
+        has_fixed_root = True
         root_path = Path(env_root)
         if not root_path.exists():
-            fail(f"{label}: {env_root} — path does not exist")
+            fail(f"{label}: CODEGRAPH_PROJECT_ROOT path does not exist: {env_root}")
             typer.echo(f"       Run: codegraph configure {'cursor' if 'Cursor' in label else 'claude'} --force")
             continue
         if not root_path.is_dir():
-            fail(f"{label}: {env_root} — is not a directory")
+            fail(f"{label}: CODEGRAPH_PROJECT_ROOT is not a directory: {env_root}")
             continue
         cg_subdir = root_path / ".codegraph"
         if not cg_subdir.exists():
-            fail(f"{label}: {env_root} — no .codegraph directory")
+            fail(f"{label}: no .codegraph at CODEGRAPH_PROJECT_ROOT ({env_root})")
             typer.echo(f"       Run: cd {env_root} && codegraph init")
             continue
         if not (cg_subdir / "graph.json").exists():
-            fail(f"{label}: {env_root} — .codegraph is incomplete (missing graph.json)")
+            fail(f"{label}: .codegraph is incomplete at {env_root} (missing graph.json)")
             typer.echo(f"       Run: cd {env_root} && codegraph init --force")
             continue
-        ok(f"{label}: {env_root} — .codegraph found")
+        ok(f"{label}: .codegraph found at {env_root}")
+        # Check if CODEGRAPH_PROJECT_ROOT matches current project
+        if root_path.resolve() != cwd_path:
+            typer.echo()
+            warn(f"{label}: Global MCP config is bound to a fixed project:")
+            typer.echo(f"       {root_path.resolve()}")
+            typer.echo()
+            typer.echo(f"     Current project (CWD):")
+            typer.echo(f"       {cwd_path}")
+            typer.echo()
+            typer.echo(f"     This may cause CodeGraph MCP to query the wrong index.")
+            typer.echo()
+            typer.echo(f"     Suggested fix:")
+            typer.echo(f"       codegraph configure all --force")
+            typer.echo(f"     or use project-scoped config:")
+            typer.echo(f"       codegraph configure all --project")
+
+    if not has_fixed_root and configured_any:
+        typer.echo()
+        ok("Global MCP config uses auto-detect project root.")
     typer.echo()
 
     # 8. serve --mcp readiness
@@ -2421,15 +2457,44 @@ configure_app = typer.Typer(
 app.add_typer(configure_app)
 
 
-def _show_configure_success(root: str) -> None:
-    """Show project root and index status after a successful configure."""
+def _show_configure_success(root: str | None = None) -> None:
+    """Show project root and index status after a successful configure.
+
+    When ``root`` is None, the config is global auto-detect mode (no fixed
+    CODEGRAPH_PROJECT_ROOT). The MCP server will auto-detect the current
+    project by walking up from CWD.
+    """
     from pathlib import Path as _Path
+
+    if root is None:
+        typer.echo("Mode: global auto-detect")
+        typer.echo("  The MCP server will auto-detect the current project from CWD.")
+        typer.echo("  It walks up from the working directory to find .codegraph/.")
+        typer.echo()
+        # Check if CWD has a .codegraph index
+        cg_dir = _Path.cwd() / ".codegraph"
+        if cg_dir.exists() and (cg_dir / "graph.json").exists():
+            typer.echo(f"Current directory has index:")
+            typer.echo(f"  {_Path.cwd()}")
+        else:
+            typer.echo("Current directory:")
+            typer.echo(f"  {_Path.cwd()}")
+            typer.echo("  No .codegraph found in CWD. Run: codegraph init")
+        typer.echo()
+        typer.echo("To fix project root later:")
+        typer.echo("  codegraph configure all --force")
+        typer.echo()
+        return
 
     root_path = _Path(root).resolve()
     cg_dir = root_path / ".codegraph"
 
-    typer.echo(f"Project root:")
+    typer.echo(f"Mode: project-bound")
+    typer.echo(f"  This MCP config is bound to:")
     typer.echo(f"  {root_path}")
+    typer.echo(f"  The MCP server will always query this project.")
+    typer.echo(f"  Use global auto-detect config if you want CodeGraph to follow")
+    typer.echo(f"  the current project:  codegraph configure all --force")
     typer.echo()
 
     if cg_dir.exists() and (cg_dir / "graph.json").exists():
@@ -2510,11 +2575,16 @@ def configure_all(
     """
     from codegraph.configure import configure_target, ConfigTarget, build_server_config
 
+    # When --project is used without explicit --root, pin to CWD
+    effective_root = root
+    if project and effective_root is None:
+        effective_root = str(Path.cwd().resolve())
+
     results = []
     for target in (ConfigTarget.CLAUDE, ConfigTarget.CURSOR):
         result = configure_target(
             target,
-            root=root,
+            root=effective_root,
             command_override=command_override,
             project=project,
             force=force,
@@ -2530,16 +2600,18 @@ def configure_all(
 
     if all_already and not force:
         typer.echo("Existing CodeGraph MCP config found.")
-        typer.echo("Use --force to update CODEGRAPH_PROJECT_ROOT.\n")
+        typer.echo("Use --force to update.\n")
     else:
         # Show the actual command that was written
-        server_cfg = build_server_config(root=root, command_override=command_override)
+        server_cfg = build_server_config(root=effective_root, command_override=command_override)
         cmd_str = " ".join([server_cfg["command"]] + server_cfg["args"])
         typer.echo("Configured CodeGraph MCP.")
         typer.echo(f"Command:")
         typer.echo(f"  {cmd_str}")
         typer.echo()
-        _show_configure_success(server_cfg["env"]["CODEGRAPH_PROJECT_ROOT"])
+        # Show root info (may be None for global auto-detect)
+        cfg_root = server_cfg.get("env", {}).get("CODEGRAPH_PROJECT_ROOT")
+        _show_configure_success(cfg_root)
         typer.echo("Next:")
         typer.echo("  codegraph doctor")
         typer.echo("  Restart Claude Code / Cursor.")
@@ -2574,17 +2646,22 @@ def configure_claude(
     """
     from codegraph.configure import configure_target, ConfigTarget, build_server_config
 
+    effective_root = root
+    if project and effective_root is None:
+        effective_root = str(Path.cwd().resolve())
+
     result = configure_target(
         ConfigTarget.CLAUDE,
-        root=root,
+        root=effective_root,
         command_override=command_override,
         project=project,
         force=force,
     )
     _print_configure_result(result)
     if result["status"] in ("configured", "overwritten"):
-        server_cfg = build_server_config(root=root, command_override=command_override)
-        _show_configure_success(server_cfg["env"]["CODEGRAPH_PROJECT_ROOT"])
+        server_cfg = build_server_config(root=effective_root, command_override=command_override)
+        cfg_root = server_cfg.get("env", {}).get("CODEGRAPH_PROJECT_ROOT")
+        _show_configure_success(cfg_root)
 
 
 @configure_app.command(name="cursor")
@@ -2615,17 +2692,22 @@ def configure_cursor(
     """
     from codegraph.configure import configure_target, ConfigTarget, build_server_config
 
+    effective_root = root
+    if project and effective_root is None:
+        effective_root = str(Path.cwd().resolve())
+
     result = configure_target(
         ConfigTarget.CURSOR,
-        root=root,
+        root=effective_root,
         command_override=command_override,
         project=project,
         force=force,
     )
     _print_configure_result(result)
     if result["status"] in ("configured", "overwritten"):
-        server_cfg = build_server_config(root=root, command_override=command_override)
-        _show_configure_success(server_cfg["env"]["CODEGRAPH_PROJECT_ROOT"])
+        server_cfg = build_server_config(root=effective_root, command_override=command_override)
+        cfg_root = server_cfg.get("env", {}).get("CODEGRAPH_PROJECT_ROOT")
+        _show_configure_success(cfg_root)
 
 
 @configure_app.command(name="show")

@@ -340,7 +340,7 @@ class TestDoctor:
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
-        assert "MCP project root validation" in result.stdout
+        assert "MCP project binding" in result.stdout
         # Should report that .codegraph is missing
         assert "no .codegraph" in result.stdout.lower() or "FAIL" in result.stdout
 
@@ -357,7 +357,7 @@ class TestDoctor:
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
-        assert "MCP project root validation" in result.stdout
+        assert "MCP project binding" in result.stdout
         # Should report path does not exist
         output_lower = result.stdout.lower()
         assert "does not exist" in output_lower or "fail" in output_lower
@@ -376,7 +376,7 @@ class TestDoctor:
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
-        assert "MCP project root validation" in result.stdout
+        assert "MCP project binding" in result.stdout
         assert ".codegraph found" in result.stdout
 
     def test_doctor_reports_mcp_protocol_compliance(self, runner, tmp_path, monkeypatch):
@@ -425,7 +425,8 @@ class TestConfigureWritesServeMcp:
     """Verify configure writes Python interpreter with -m codegraph.mcp_server."""
 
     def test_configure_writes_sys_executable(self, tmp_path, monkeypatch):
-        """configure should write sys.executable with -m codegraph.mcp_server and env."""
+        """configure should write sys.executable with -m codegraph.mcp_server.
+        Global config (root=None) does NOT write CODEGRAPH_PROJECT_ROOT."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
         monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / ".cursor" / "mcp.json")
@@ -434,9 +435,8 @@ class TestConfigureWritesServeMcp:
         assert result["status"] == "configured"
         assert result["config"]["command"] == sys.executable
         assert result["config"]["args"] == ["-m", "codegraph.mcp_server"]
-        # Always writes CODEGRAPH_PROJECT_ROOT
-        assert "env" in result["config"]
-        assert "CODEGRAPH_PROJECT_ROOT" in result["config"]["env"]
+        # Global auto-detect: no CODEGRAPH_PROJECT_ROOT
+        assert "env" not in result["config"]
 
     def test_configure_with_root_writes_env(self, tmp_path, monkeypatch):
         """configure --root should set CODEGRAPH_PROJECT_ROOT to that path."""
@@ -447,14 +447,13 @@ class TestConfigureWritesServeMcp:
         assert result["config"]["command"] == sys.executable
         assert result["config"]["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/abs/path").resolve())}
 
-    def test_configure_without_root_writes_cwd_env(self, tmp_path, monkeypatch):
-        """configure without --root writes CODEGRAPH_PROJECT_ROOT from CWD."""
+    def test_configure_without_root_no_env(self, tmp_path, monkeypatch):
+        """Global config without --root does NOT write CODEGRAPH_PROJECT_ROOT."""
         import codegraph.configure as cfg
         monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / ".claude.json")
 
         result = configure_target(cfg.ConfigTarget.CLAUDE)
-        assert "env" in result["config"]
-        assert result["config"]["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
+        assert "env" not in result["config"]
 
     def test_configure_force_updates_old_config(self, tmp_path, monkeypatch):
         """--force should update old codegraph CLI config to sys.executable format."""
@@ -508,7 +507,8 @@ class TestConfigureOutputMessages:
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
         assert "Configured CodeGraph MCP" in result.stdout
-        assert "Project root:" in result.stdout
+        # Global auto-detect output (no fixed project root)
+        assert "Mode: global auto-detect" in result.stdout
         assert "Next:" in result.stdout
         assert "codegraph doctor" in result.stdout
 
@@ -545,3 +545,79 @@ class TestServeCheckNoStdio:
 
         assert result.exit_code == 0
         assert elapsed < 5.0, "--check should return quickly, not enter stdio loop"
+
+
+# ── doctor MCP project binding ────────────────────────────────────────────
+
+
+class TestDoctorMcpBinding:
+    """Tests for ``codegraph doctor`` MCP project binding checks."""
+
+    def test_doctor_shows_auto_detect_ok(self, runner, tmp_path, monkeypatch):
+        """Doctor shows OK for global auto-detect config (no CODEGRAPH_PROJECT_ROOT)."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "bindproj_auto"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
+
+        # Configure without root (global auto-detect)
+        configure_target(cfg.ConfigTarget.CLAUDE)  # root=None → no env
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP project binding" in result.stdout
+        assert "auto-detect" in result.stdout
+
+    def test_doctor_warns_fixed_root_different_project(self, runner, tmp_path, monkeypatch):
+        """Doctor warns when global config has CODEGRAPH_PROJECT_ROOT
+        pointing to a different project than CWD."""
+        import codegraph.configure as cfg
+
+        # Create the "bound" project (with .codegraph)
+        bound_project = tmp_path / "bound_project"
+        bound_project.mkdir()
+        _write_minimal_index(bound_project / ".codegraph", bound_project)
+
+        # Create the "current" project (where user actually is)
+        current_project = tmp_path / "current_project"
+        current_project.mkdir()
+        _write_minimal_index(current_project / ".codegraph", current_project)
+
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(current_project))
+        monkeypatch.chdir(current_project)
+
+        # Configure Claude with the BOUND project root
+        configure_target(cfg.ConfigTarget.CLAUDE, root=str(bound_project))
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP project binding" in result.stdout
+        # Should warn about different project
+        assert "different project" in result.stdout.lower() or \
+               "bound to a fixed project" in result.stdout.lower()
+
+    def test_doctor_auto_detect_no_env(self, runner, tmp_path, monkeypatch):
+        """Doctor shows 'auto-detect' when no CODEGRAPH_PROJECT_ROOT in config."""
+        import codegraph.configure as cfg
+
+        project = tmp_path / "bindproj_noenv"
+        project.mkdir()
+        _write_minimal_index(project / ".codegraph", project)
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "claude_cfg.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "cursor_cfg.json")
+        monkeypatch.chdir(project)
+
+        # Configure without any root (global auto-detect)
+        configure_target(cfg.ConfigTarget.CLAUDE)  # root=None
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "MCP project binding" in result.stdout
+        assert "auto-detect" in result.stdout.lower() or \
+               "auto-detect" in result.stdout

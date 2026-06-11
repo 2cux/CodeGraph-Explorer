@@ -81,6 +81,8 @@ mcp = FastMCP(
 _store: GraphStore | None = None
 _cg_dir: Path | None = None
 _project_root: str | None = None
+_resolution_method: str = "unknown"  # How _project_root was resolved
+_resolved_cwd: str | None = None  # CWD at time of resolution
 _watch_manager: Any | None = None  # WatchSyncManager when watch mode is active
 
 SCHEMA_VERSION = "1.0.0"
@@ -165,6 +167,9 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     # Misc allowed
     "exact_match", "match_reason", "module", "qualified_name",
     "signature", "visibility", "label", "callers", "callees",
+    # Multi-project diagnostics (repo_status)
+    "project_root", "index_path", "cwd", "resolution_method",
+    "index_exists", "symbol_count", "edge_count",
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -570,9 +575,15 @@ def _build_index_status(project_root: str | None = None) -> dict[str, Any]:
     Uses the lite ``get_index_status()`` path — reads persistent
     metadata only (state.json, metadata.json, fingerprints.json,
     validation_report.json).  No file scanning, no hashing.
+
+    Always includes project_root, index_path, cwd, resolution_method,
+    and index_exists for multi-project diagnostics.
     """
     root_hint = project_root or globals().get("_project_root")
     cg_dir = _find_codegraph_dir(root_hint)
+    current_cwd = str(Path.cwd().resolve())
+    resolved_method = globals().get("_resolution_method", "unknown")
+
     if cg_dir is None:
         return {
             "status": "missing",
@@ -587,6 +598,12 @@ def _build_index_status(project_root: str | None = None) -> dict[str, Any]:
                 "metadata_json": False,
             },
             "stats": {"files": 0, "symbols": 0, "edges": 0},
+            # Multi-project diagnostics
+            "project_root": root_hint or current_cwd,
+            "index_path": None,
+            "cwd": current_cwd,
+            "resolution_method": resolved_method,
+            "index_exists": False,
         }
 
     # Lite path: metadata-only, no file scanning
@@ -616,6 +633,12 @@ def _build_index_status(project_root: str | None = None) -> dict[str, Any]:
         "changed_files": [],
         "added_files": [],
         "deleted_files": [],
+        # Multi-project diagnostics
+        "project_root": str(root_path.resolve()),
+        "index_path": str(cg_dir),
+        "cwd": current_cwd,
+        "resolution_method": resolved_method,
+        "index_exists": True,
     }
 
     change_summary = lite.get("last_change_summary")
@@ -872,12 +895,16 @@ def _apply_result_shaping(
 
 
 def _get_project_info() -> dict[str, Any]:
-    """Return current project root and index path (may be partial)."""
+    """Return current project root and index path with resolution info."""
     info: dict[str, Any] = {}
     if _project_root:
         info["project_root"] = _project_root
     if _cg_dir:
         info["index_path"] = str(_cg_dir / "graph.json")
+    if _resolution_method:
+        info["resolution_method"] = _resolution_method
+    if _resolved_cwd:
+        info["cwd"] = _resolved_cwd
     return info
 
 
@@ -891,22 +918,63 @@ def _find_codegraph_dir(root: str | None = None) -> Path | None:
     return None
 
 
-def _resolve_project_root(cli_root: str | None) -> str | None:
-    """Resolve the project root from CLI arg, env var, or CWD."""
+def _resolve_project_root(cli_root: str | None) -> tuple[str | None, str]:
+    """Resolve the project root with clear priority.
+
+    Priority:
+    1. Explicit CLI argument / request parameter
+    2. CODEGRAPH_PROJECT_ROOT env var (explicit override)
+    3. Walk up from CWD to find .codegraph/
+    4. Git root (toplevel of the current git repo)
+    5. Current working directory (fallback)
+
+    Returns:
+        (project_root, resolution_method) where resolution_method is one of:
+        "explicit", "env", "walk_up", "git_root", "cwd"
+    """
     if cli_root:
-        return cli_root
+        return str(Path(cli_root).resolve()), "explicit"
+
     env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT")
     if env_root:
-        return env_root
-    return None
+        return str(Path(env_root).resolve()), "env"
+
+    # Walk up from CWD to find .codegraph/
+    cg_dir = _find_codegraph_dir(None)
+    if cg_dir is not None:
+        return str(cg_dir.parent.resolve()), "walk_up"
+
+    # Try git root
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            git_root = result.stdout.strip()
+            return str(Path(git_root).resolve()), "git_root"
+    except Exception:
+        pass
+
+    # Fallback: CWD
+    return str(Path.cwd().resolve()), "cwd"
 
 
 def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
-    """Load graph into memory (cached after first call), preferring SQLite."""
-    global _store, _cg_dir, _project_root
+    """Load graph into memory (cached after first call), preferring SQLite.
+
+    Tracks how the project root was resolved via global ``_resolution_method``
+    and ``_resolved_cwd`` for diagnostics in ``_build_index_status`` and
+    ``codegraph_repo_status``.
+    """
+    global _store, _cg_dir, _project_root, _resolution_method, _resolved_cwd
 
     if _store is not None and _cg_dir is not None:
         return _store, _cg_dir
+
+    # Track CWD at resolution time for diagnostics
+    _resolved_cwd = str(Path.cwd().resolve())
 
     cg_dir = _find_codegraph_dir(project_root)
     if cg_dir is None:
@@ -923,10 +991,21 @@ def _load_store(project_root: str | None = None) -> tuple[GraphStore, Path]:
             "Fix:",
             "  cd <your-project>",
             "  codegraph init",
-            "  codegraph configure cursor --force",
-            "  Restart Cursor",
         ])
+        if env_root:
+            lines.extend([
+                "  # Or update MCP config to remove fixed project root:",
+                "  codegraph configure all --force",
+                "  Restart your MCP client",
+            ])
         raise RuntimeError("\n".join(lines))
+
+    # Determine resolution method using unified priority resolution.
+    # _resolve_project_root already handles all 5 cases:
+    #   explicit > env > walk_up > git_root > cwd
+    # Since cg_dir was found (non-None), the result will be one of
+    # "explicit", "env", or "walk_up" — never "git_root" or "cwd".
+    _, _resolution_method = _resolve_project_root(project_root)
 
     store = GraphStore()
     sqlite_path = cg_dir / "index.sqlite"
@@ -3102,9 +3181,9 @@ def repo_status(
     healthy before relying on results. Prefer this before assuming search
     results are up-to-date — stale indexes may miss recent changes.
 
-    Returns project_root, index_status, index_health, indexed_at,
-    changed/added/deleted file counts, last_incremental_stats,
-    validation_status, and a suggested_fix action.
+    Always returns project_root, index_path, cwd, resolution_method,
+    index_exists, symbol_count, edge_count, and project-binding warnings
+    so you can verify which project CodeGraph is querying.
 
     Args:
         root: Optional project root path override
@@ -3113,46 +3192,83 @@ def repo_status(
     project_root = root or _project_root
     index_status = _build_index_status(project_root)
 
-    if index_status["status"] == "missing":
-        return _respond_ok(
-            data={
-                "project_root": project_root,
-                "index_status": "missing",
-                "index_health": "ok",
-                "indexed_at": None,
-                "changed_files_count": 0,
-                "added_files_count": 0,
-                "deleted_files_count": 0,
-                "last_incremental_stats": None,
-                "validation_status": None,
-                "suggested_fix": "codegraph init",
-                "index_files": index_status.get("index_files", {}),
-                "stats": index_status.get("stats", {}),
-                "fingerprint_health": None,
-                "last_change_summary": None,
-                "index_health_details": None,
-            },
-            tool="codegraph_repo_status",
-            warnings=[{
-                "type": "index_missing",
-                "severity": "warning",
-                "message": "No CodeGraph index found. Run: codegraph init",
-                "reason_code": "index_missing",
-            }],
-        )
+    # Extract core diagnostic fields from index_status
+    resolved_project_root = index_status.get("project_root", project_root)
+    index_path = index_status.get("index_path")
+    current_cwd = index_status.get("cwd", str(Path.cwd().resolve()))
+    resolution_method = index_status.get("resolution_method", "unknown")
+    index_exists = index_status.get("index_exists", False)
+    stats = index_status.get("stats", {"symbols": 0, "edges": 0, "files": 0})
 
-    change_summary = index_status.get("last_change_summary", {})
-    changed_count = change_summary.get("structural", 0) + change_summary.get("cosmetic", 0)
-    added_count = change_summary.get("added", 0)
-    deleted_count = change_summary.get("deleted", 0)
-    idx_health = index_status.get("index_health")
-    hook = index_status.get("hook", {})
-    hook_installed = hook.get("installed", False)
-    hook_auto_update = hook.get("auto_update_on_commit", True)
-    hook_state = hook.get("state")
-
-    # Build warnings (stale index + hook not installed)
+    # Build project-binding warnings
     warn_list: list[dict[str, Any]] = []
+
+    # Warning 1: CODEGRAPH_PROJECT_ROOT env override
+    env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT")
+    if env_root:
+        warn_list.append({
+            "type": "fixed_project_root",
+            "severity": "warning",
+            "message": (
+                "CODEGRAPH_PROJECT_ROOT is set. This MCP server is bound to "
+                "a fixed project root and will not automatically follow "
+                "other projects."
+            ),
+            "reason_code": "fixed_project_root_env",
+            "evidence": {"CODEGRAPH_PROJECT_ROOT": env_root},
+        })
+
+    # Warning 2: CWD not under project_root
+    if index_exists and resolved_project_root:
+        try:
+            cwd_path = Path(current_cwd).resolve()
+            root_path = Path(resolved_project_root).resolve()
+            # Check if CWD is not under the project root
+            try:
+                cwd_path.relative_to(root_path)
+            except ValueError:
+                warn_list.append({
+                    "type": "cwd_outside_project",
+                    "severity": "warning",
+                    "message": (
+                        "Current working directory is not under the resolved "
+                        "CodeGraph project root. MCP may be querying a "
+                        "different project."
+                    ),
+                    "reason_code": "cwd_outside_project",
+                    "evidence": {
+                        "cwd": str(cwd_path),
+                        "project_root": str(root_path),
+                    },
+                })
+        except Exception:
+            pass
+
+    # Warning 3: index is missing
+    if index_status["status"] == "missing":
+        warn_list.append({
+            "type": "index_missing",
+            "severity": "warning",
+            "message": (
+                "No .codegraph directory found for current project. "
+                "Run: codegraph init"
+            ),
+            "reason_code": "index_missing",
+        })
+
+    # Warning 4: index empty
+    if index_exists and stats.get("symbols", 0) == 0:
+        warn_list.append({
+            "type": "index_empty",
+            "severity": "warning",
+            "message": (
+                "Index contains 0 symbols. CodeGraph results may be "
+                "unusable for this project. Run: codegraph init --force"
+            ),
+            "reason_code": "index_empty",
+        })
+
+    # Add stale index warning
     if index_status["status"] == "stale":
         warn_list.append({
             "type": "stale_index",
@@ -3164,6 +3280,10 @@ def repo_status(
             "reason_code": "stale_index",
         })
 
+    # Add hook warning
+    hook = index_status.get("hook", {})
+    hook_auto_update = hook.get("auto_update_on_commit", True)
+    hook_installed = hook.get("installed", False)
     if hook_auto_update and not hook_installed:
         warn_list.append({
             "type": "hook_not_installed",
@@ -3175,12 +3295,25 @@ def repo_status(
             "reason_code": "hook_not_installed",
         })
 
+    change_summary = index_status.get("last_change_summary", {})
+    changed_count = change_summary.get("structural", 0) + change_summary.get("cosmetic", 0)
+    added_count = change_summary.get("added", 0)
+    deleted_count = change_summary.get("deleted", 0)
+    idx_health = index_status.get("index_health")
+    hook_state = hook.get("state")
+
     if response_mode == "compact":
         data: dict[str, Any] = {
-            "project_root": project_root,
+            "project_root": resolved_project_root,
+            "index_path": index_path,
+            "cwd": current_cwd,
+            "resolution_method": resolution_method,
+            "index_exists": index_exists,
             "index_status": index_status["status"],
             "index_health": idx_health["status"] if idx_health else "ok",
             "indexed_at": index_status.get("indexed_at"),
+            "symbol_count": stats.get("symbols", 0),
+            "edge_count": stats.get("edges", 0),
             "changed_files_count": changed_count,
             "added_files_count": added_count,
             "deleted_files_count": deleted_count,
@@ -3193,10 +3326,16 @@ def repo_status(
         }
     else:
         data = {
-            "project_root": project_root,
+            "project_root": resolved_project_root,
+            "index_path": index_path,
+            "cwd": current_cwd,
+            "resolution_method": resolution_method,
+            "index_exists": index_exists,
             "index_status": index_status["status"],
             "index_health": idx_health["status"] if idx_health else "ok",
             "indexed_at": index_status.get("indexed_at"),
+            "symbol_count": stats.get("symbols", 0),
+            "edge_count": stats.get("edges", 0),
             "changed_files_count": changed_count,
             "added_files_count": added_count,
             "deleted_files_count": deleted_count,
@@ -3204,7 +3343,7 @@ def repo_status(
             "validation_status": idx_health["status"] if idx_health else None,
             "suggested_fix": index_status.get("suggested_fix"),
             "index_files": index_status.get("index_files", {}),
-            "stats": index_status.get("stats", {}),
+            "stats": stats,
             "fingerprint_health": index_status.get("fingerprint_health"),
             "last_change_summary": index_status.get("last_change_summary"),
             "index_health_details": idx_health,
@@ -3517,7 +3656,7 @@ def _reload_store() -> None:
 
 
 def main() -> None:
-    global _watch_manager, _project_root
+    global _watch_manager, _project_root, _resolution_method
 
     parser = argparse.ArgumentParser(description="CodeGraph Explorer MCP Server")
     parser.add_argument(
@@ -3538,7 +3677,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    project_root = _resolve_project_root(args.project_root)
+    project_root, _resolution_method = _resolve_project_root(args.project_root)
 
     # Pre-load store so we fail fast if no index exists
     try:

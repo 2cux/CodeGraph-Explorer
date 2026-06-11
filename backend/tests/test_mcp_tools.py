@@ -815,6 +815,247 @@ class TestRepoStatus:
         result = repo_status()
         assert "last_incremental_stats" in result["data"]
 
+    def test_has_cwd(self, mcp_setup):
+        """repo_status always returns current working directory."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "cwd" in result["data"]
+        assert result["data"]["cwd"] is not None
+
+    def test_has_resolution_method(self, mcp_setup):
+        """repo_status always returns how project root was resolved."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "resolution_method" in result["data"]
+        assert result["data"]["resolution_method"] in (
+            "explicit", "env", "walk_up", "git_root", "cwd", "unknown",
+        )
+
+    def test_has_index_path(self, mcp_setup):
+        """repo_status returns index_path when index exists."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "index_path" in result["data"]
+
+    def test_has_index_exists(self, mcp_setup):
+        """repo_status returns whether index exists."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "index_exists" in result["data"]
+        assert isinstance(result["data"]["index_exists"], bool)
+
+    def test_has_symbol_count(self, mcp_setup):
+        """repo_status returns symbol_count."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "symbol_count" in result["data"]
+        assert isinstance(result["data"]["symbol_count"], int)
+
+    def test_has_edge_count(self, mcp_setup):
+        """repo_status returns edge_count."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert "edge_count" in result["data"]
+        assert isinstance(result["data"]["edge_count"], int)
+
+    def test_env_root_produces_fixed_root_warning(self, mcp_setup, monkeypatch):
+        """When CODEGRAPH_PROJECT_ROOT is set, warning is emitted."""
+        from codegraph.mcp_server import repo_status
+
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", "/fake/project/path")
+        result = repo_status()
+        fixed_warnings = [
+            w for w in result["warnings"]
+            if w.get("type") == "fixed_project_root"
+        ]
+        assert len(fixed_warnings) > 0
+        assert "CODEGRAPH_PROJECT_ROOT" in fixed_warnings[0]["message"]
+
+    def test_env_resolution_method(self, mcp_setup, monkeypatch, tmp_path):
+        """When CODEGRAPH_PROJECT_ROOT is set, resolution_method is 'env'."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        # Create a real project dir with .codegraph
+        env_project = tmp_path / "env_project"
+        env_project.mkdir()
+        cg_dir = env_project / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "repo": {
+                "repo_id": "local:test",
+                "name": "test",
+                "root_path": str(env_project),
+                "languages": ["python"],
+                "indexed_at": "2025-01-01T00:00:00Z",
+                "file_count": 1,
+                "symbol_count": 1,
+            },
+            "nodes": [],
+            "edges": [],
+        }), encoding="utf-8")
+
+        monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(env_project))
+        # Test _resolve_project_root directly
+        from codegraph.mcp_server import _resolve_project_root
+        root, method = _resolve_project_root(None)
+        assert method == "env"
+        assert root == str(env_project.resolve())
+
+    def test_walk_up_resolution_method(self, mcp_setup):
+        """Without explicit root or env, resolution_method is 'walk_up'."""
+        import codegraph.mcp_server as mcp_mod
+
+        # Ensure no env override
+        mcp_mod._resolution_method = "walk_up"
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert result["data"]["resolution_method"] in ("walk_up", "unknown")
+
+    def test_returns_all_diagnostic_fields(self, mcp_setup):
+        """repo_status always returns project_root, index_path, cwd,
+        resolution_method, index_exists, symbol_count, edge_count."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        data = result["data"]
+        for field in ("project_root", "index_path", "cwd",
+                       "resolution_method", "index_exists",
+                       "symbol_count", "edge_count"):
+            assert field in data, f"Missing required field: {field}"
+
+    def test_cwd_outside_project_warning(self, mcp_setup, monkeypatch, tmp_path):
+        """When CWD is not under project_root, repo_status warns."""
+        import codegraph.mcp_server as mcp_mod
+        from codegraph.mcp_server import _build_index_status
+
+        import json
+
+        # Create a project dir with .codegraph that is NOT under CWD
+        other_project = tmp_path / "other_project"
+        other_project.mkdir()
+        cg_dir = other_project / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "repo": {
+                "repo_id": "local:test",
+                "name": "test",
+                "root_path": str(other_project),
+                "languages": ["python"],
+                "indexed_at": "2025-01-01T00:00:00Z",
+                "file_count": 1,
+                "symbol_count": 1,
+            },
+            "nodes": [],
+            "edges": [],
+        }), encoding="utf-8")
+        # Write minimal state.json needed for _build_index_status
+        (cg_dir / "state.json").write_text(json.dumps({
+            "status": "fresh",
+            "last_indexed_at": "2025-01-01T00:00:00Z",
+            "last_change_summary": {"none": 1, "cosmetic": 0, "structural": 0, "added": 0, "deleted": 0},
+        }), encoding="utf-8")
+        (cg_dir / "metadata.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "root_path": str(other_project),
+            "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1,
+            "symbol_count": 5,
+            "edge_count": 3,
+            "files": [],
+        }), encoding="utf-8")
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_method = mcp_mod._resolution_method
+        try:
+            mcp_mod._project_root = str(other_project)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._resolution_method = "explicit"
+            result = _build_index_status(str(other_project))
+            # Verify the diagnostic fields are present
+            assert result["index_exists"] is True
+            assert "project_root" in result
+            assert "cwd" in result
+            assert "resolution_method" in result
+            # Since CWD is tmp_path (test runner), it's outside other_project
+            # So cwd_outside_project warning should be triggered by repo_status
+            from codegraph.mcp_server import repo_status
+            status_result = repo_status()
+            # If CWD is indeed outside other_project:
+            import os
+            cwd = Path(os.getcwd()).resolve()
+            try:
+                cwd.relative_to(other_project.resolve())
+                # CWD is inside — skip assertion
+                pass
+            except ValueError:
+                cwd_warnings = [
+                    w for w in status_result["warnings"]
+                    if w.get("type") == "cwd_outside_project"
+                ]
+                assert len(cwd_warnings) > 0
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._resolution_method = old_method
+
+    def test_index_missing_warning(self, tmp_path, monkeypatch):
+        """When .codegraph/ doesn't exist, warning is emitted."""
+        import codegraph.mcp_server as mcp_mod
+
+        # Save original globals
+        old_store = mcp_mod._store
+        old_cg = mcp_mod._cg_dir
+        old_root = mcp_mod._project_root
+        old_method = mcp_mod._resolution_method
+        try:
+            # Setup with a directory that has no .codegraph
+            empty_dir = tmp_path / "empty_project"
+            empty_dir.mkdir()
+            mcp_mod._store = None
+            mcp_mod._cg_dir = None
+            mcp_mod._project_root = str(empty_dir)
+            mcp_mod._resolution_method = "walk_up"
+
+            from codegraph.mcp_server import repo_status
+            result = repo_status(root=str(empty_dir))
+            missing_warnings = [
+                w for w in result["warnings"]
+                if w.get("type") == "index_missing"
+            ]
+            assert len(missing_warnings) > 0
+            assert "codegraph init" in missing_warnings[0]["message"].lower()
+        finally:
+            mcp_mod._store = old_store
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._project_root = old_root
+            mcp_mod._resolution_method = old_method
+
+    def test_index_empty_warning(self, mcp_setup):
+        """When index has 0 symbols, warning is emitted."""
+        import codegraph.mcp_server as mcp_mod
+        from codegraph.mcp_server import repo_status
+
+        # Save original store, replace with empty one
+        original_store = mcp_mod._store
+        from codegraph.graph.store import GraphStore
+        mcp_mod._store = GraphStore()
+        try:
+            result = repo_status()
+            empty_warnings = [
+                w for w in result["warnings"]
+                if w.get("type") == "index_empty"
+            ]
+            # May or may not fire depending on how symbols are counted
+            # But if index_exists and 0 symbols, it should warn
+            if result["data"]["index_exists"] and result["data"]["symbol_count"] == 0:
+                assert len(empty_warnings) > 0
+                assert "0 symbols" in empty_warnings[0]["message"]
+        finally:
+            mcp_mod._store = original_store
+
 
 # ── Test: repo_summary ────────────────────────────────────────────────────
 

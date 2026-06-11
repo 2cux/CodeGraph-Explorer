@@ -40,43 +40,50 @@ def home_tmp(monkeypatch, tmp_path):
 
 class TestBuildServerConfig:
     def test_default_uses_sys_executable_with_m_module(self):
-        """Default uses current Python interpreter absolute path with -m."""
+        """Default uses current Python interpreter absolute path with -m.
+        Global config (root=None) does NOT write CODEGRAPH_PROJECT_ROOT."""
         cfg = build_server_config()
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
-        # Always writes CODEGRAPH_PROJECT_ROOT (defaults to CWD)
-        assert "env" in cfg
-        assert "CODEGRAPH_PROJECT_ROOT" in cfg["env"]
-        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
+        # Global auto-detect mode: no env
+        assert "env" not in cfg
 
     def test_with_root_adds_env(self):
-        """When root is provided, uses that path in CODEGRAPH_PROJECT_ROOT."""
+        """When root is provided, writes CODEGRAPH_PROJECT_ROOT in env."""
         cfg = build_server_config(root="/tmp/myproject")
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/tmp/myproject").resolve())}
 
-    def test_without_root_uses_cwd_as_root(self):
-        """Without root, uses CWD as CODEGRAPH_PROJECT_ROOT."""
+    def test_without_root_no_env(self):
+        """Without root (global auto-detect), no env is written."""
         cfg = build_server_config()
-        assert "env" in cfg
-        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
+        assert "env" not in cfg
 
     def test_command_override_codegraph_uses_legacy_serve_mcp(self):
-        """command_override='codegraph' writes legacy CLI entry point."""
+        """command_override='codegraph' writes legacy CLI entry point.
+        Global config does NOT write env."""
         cfg = build_server_config(command_override="codegraph")
         assert cfg["command"] == "codegraph"
         assert cfg["args"] == ["serve", "--mcp"]
-        # Still writes env with CWD
-        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
+        # Global auto-detect: no env
+        assert "env" not in cfg
+
+    def test_command_override_codegraph_with_root_writes_env(self):
+        """command_override='codegraph' with root writes env."""
+        cfg = build_server_config(command_override="codegraph", root="/tmp/myproject")
+        assert cfg["command"] == "codegraph"
+        assert cfg["args"] == ["serve", "--mcp"]
+        assert cfg["env"] == {"CODEGRAPH_PROJECT_ROOT": str(Path("/tmp/myproject").resolve())}
 
     def test_command_override_custom_python_uses_m_module(self):
-        """Custom python path uses -m codegraph.mcp_server args."""
+        """Custom python path uses -m codegraph.mcp_server args.
+        Global config does NOT write env."""
         cfg = build_server_config(command_override="/usr/bin/python3.12")
         assert cfg["command"] == "/usr/bin/python3.12"
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
-        # Still writes env with CWD
-        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
+        # Global auto-detect: no env
+        assert "env" not in cfg
 
 
 # ── read_config ───────────────────────────────────────────────────────────
@@ -317,16 +324,16 @@ class TestCliConfigureAll:
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
         assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path("/new/path").resolve())
 
-    def test_configure_all_defaults_to_cwd_root(self, runner, home_tmp):
-        """configure all without --root writes CODEGRAPH_PROJECT_ROOT from CWD."""
+    def test_configure_all_defaults_global_auto_detect(self, runner, home_tmp):
+        """configure all without --root writes global auto-detect config (no env)."""
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cfg = claude_data["mcpServers"]["codegraph"]
         assert cfg["command"] == sys.executable
         assert cfg["args"] == ["-m", "codegraph.mcp_server"]
-        assert "env" in cfg
-        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path.cwd().resolve())
+        # Global config: no fixed CODEGRAPH_PROJECT_ROOT
+        assert "env" not in cfg
 
     def test_configure_all_with_command_codegraph_legacy(self, runner, home_tmp):
         """--command codegraph writes legacy CLI entry point."""
@@ -344,26 +351,52 @@ class TestCliConfigureAll:
         assert "Command:" in result.stdout
         assert "codegraph.mcp_server" in result.stdout
 
-    def test_configure_all_shows_project_root_in_output(self, runner, home_tmp):
-        """After configure, output shows the project root path."""
+    def test_configure_all_shows_mode_in_output(self, runner, home_tmp):
+        """After configure, output shows auto-detect mode."""
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
-        assert "Project root:" in result.stdout
+        assert "Mode: global auto-detect" in result.stdout
 
-    def test_configure_all_shows_index_status_in_output(self, runner, home_tmp):
-        """After configure, output shows the index status."""
+    def test_configure_all_shows_current_directory_in_output(self, runner, home_tmp):
+        """After configure, output shows current directory info."""
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
-        assert "Index:" in result.stdout
+        # The output should mention the current directory (auto-detect mode)
+        assert "Current directory" in result.stdout
 
-    def test_configure_all_writes_env_without_root(self, runner, home_tmp):
-        """configure all always writes CODEGRAPH_PROJECT_ROOT, even without --root."""
+    def test_configure_all_global_no_env(self, runner, home_tmp):
+        """Global config (no --root) does NOT write CODEGRAPH_PROJECT_ROOT."""
         result = runner.invoke(app, ["configure", "all"])
         assert result.exit_code == 0
         claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
         cfg = claude_data["mcpServers"]["codegraph"]
+        # Global auto-detect: no env block
+        assert "env" not in cfg
+
+    def test_configure_all_with_root_writes_env(self, runner, home_tmp):
+        """configure all --root writes CODEGRAPH_PROJECT_ROOT in env."""
+        result = runner.invoke(app, ["configure", "all", "--root", "/tmp/testproj"])
+        assert result.exit_code == 0
+        claude_data = json.loads(home_tmp.joinpath(".claude.json").read_text(encoding="utf-8"))
+        cfg = claude_data["mcpServers"]["codegraph"]
         assert "env" in cfg
-        assert "CODEGRAPH_PROJECT_ROOT" in cfg["env"]
+        assert cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(Path("/tmp/testproj").resolve())
+
+    def test_configure_project_writes_env(self, runner, tmp_path, monkeypatch):
+        """--project writes project-level config with CODEGRAPH_PROJECT_ROOT."""
+        import codegraph.configure as cfg
+        monkeypatch.setattr(cfg, "CLAUDE_USER_CONFIG", tmp_path / "home" / ".claude.json")
+        monkeypatch.setattr(cfg, "CURSOR_USER_CONFIG", tmp_path / "home" / ".cursor" / "mcp.json")
+        monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+
+        result = runner.invoke(app, ["configure", "all", "--project"])
+        assert result.exit_code == 0
+        project_cfg = tmp_path / ".mcp.json"
+        assert project_cfg.exists()
+        data = json.loads(project_cfg.read_text(encoding="utf-8"))
+        cg_cfg = data["mcpServers"]["codegraph"]
+        assert "env" in cg_cfg
+        assert cg_cfg["env"]["CODEGRAPH_PROJECT_ROOT"] == str(tmp_path.resolve())
 
 
 class TestCliConfigureClaude:
