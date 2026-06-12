@@ -3703,3 +3703,364 @@ class TestServerStartupRobustness:
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
+
+
+# ── Test: codegraph_session ──────────────────────────────────────────────────
+
+
+class TestCodegraphSession:
+    """Every successful MCP response must include a lightweight
+    ``codegraph_session`` block so the agent sees a "you are using CodeGraph"
+    reminder in-context, forming a priming effect to continue with CodeGraph
+    rather than falling back to grep/read-heavy exploration."""
+
+    def test_respond_ok_includes_codegraph_session(self):
+        """_respond_ok with a tool name includes codegraph_session."""
+        from codegraph.mcp_server import _respond_ok
+        result = _respond_ok({"key": "value"}, tool="codegraph_search_symbols")
+        assert "codegraph_session" in result, (
+            "Success response must include codegraph_session"
+        )
+        session = result["codegraph_session"]
+        assert session is not None
+        assert "tools_called_this_session" in session
+        assert "last_tool" in session
+        assert "most_used_tool" in session
+        assert "hint" in session
+
+    def test_respond_ok_without_tool_session_is_none(self):
+        """_respond_ok without a tool name sets codegraph_session to None."""
+        from codegraph.mcp_server import _respond_ok
+        result = _respond_ok({"key": "value"})
+        assert result["codegraph_session"] is None
+
+    def test_first_call_increments_to_one(self):
+        """On first successful call, tools_called_this_session must be 1."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        # Reset session state for clean test
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        result = _respond_ok({}, tool="codegraph_search_symbols")
+        assert result["codegraph_session"]["tools_called_this_session"] == 1
+        assert result["codegraph_session"]["last_tool"] == "codegraph_search_symbols"
+
+    def test_sequential_calls_increment(self):
+        """Consecutive calls increment tools_called_this_session properly."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        result1 = _respond_ok({}, tool="codegraph_search_symbols")
+        assert result1["codegraph_session"]["tools_called_this_session"] == 1
+
+        result2 = _respond_ok({}, tool="codegraph_get_neighbors")
+        assert result2["codegraph_session"]["tools_called_this_session"] == 2
+
+        result3 = _respond_ok({}, tool="codegraph_get_impact")
+        assert result3["codegraph_session"]["tools_called_this_session"] == 3
+
+    def test_last_tool_updates_correctly(self):
+        """last_tool must reflect the current tool name after each call."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        r1 = _respond_ok({}, tool="codegraph_search_symbols")
+        assert r1["codegraph_session"]["last_tool"] == "codegraph_search_symbols"
+
+        r2 = _respond_ok({}, tool="codegraph_get_impact")
+        assert r2["codegraph_session"]["last_tool"] == "codegraph_get_impact"
+
+    def test_most_used_tool_correct(self):
+        """most_used_tool must be the tool with the highest call count."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        # Call search_symbols 3 times, get_neighbors 1 time
+        for _ in range(3):
+            _respond_ok({}, tool="codegraph_search_symbols")
+        _respond_ok({}, tool="codegraph_get_neighbors")
+
+        result = _respond_ok({}, tool="codegraph_get_impact")
+        assert result["codegraph_session"]["most_used_tool"] == "codegraph_search_symbols"
+
+    def test_hint_is_short_text(self):
+        """hint must be present and be a short string (not empty, not huge)."""
+        from codegraph.mcp_server import _respond_ok
+        result = _respond_ok({}, tool="codegraph_search_symbols")
+        hint = result["codegraph_session"]["hint"]
+        assert isinstance(hint, str)
+        assert len(hint) > 0, "hint must not be empty"
+        assert len(hint) < 500, f"hint should be short, got {len(hint)} chars: {hint!r}"
+
+    def test_hint_for_first_call(self):
+        """First call hint should mention 'Start with CodeGraph'."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        result = _respond_ok({}, tool="codegraph_get_callees")
+        hint = result["codegraph_session"]["hint"]
+        assert "CodeGraph" in hint
+        assert "Start" in hint or "navigation" in hint.lower()
+
+    def test_hint_for_mid_session(self):
+        """Calls 2-5 should say 'Continue with CodeGraph'."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 1  # simulate previous call
+            _SESSION_STATE["tool_counts"] = {"codegraph_search_symbols": 1}
+            _SESSION_STATE["last_tool"] = "codegraph_search_symbols"
+
+        # Use a tool WITHOUT a per-tool hint so the count-based hint applies
+        result = _respond_ok({}, tool="codegraph_get_callers")
+        hint = result["codegraph_session"]["hint"]
+        assert "Continue" in hint
+
+    def test_hint_for_active_session(self):
+        """More than 5 calls should note 'already active'."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 6  # simulate 6 prior calls
+            _SESSION_STATE["tool_counts"] = {"codegraph_search_symbols": 6}
+            _SESSION_STATE["last_tool"] = "codegraph_search_symbols"
+
+        # Use a tool WITHOUT a per-tool hint so the count-based hint applies
+        result = _respond_ok({}, tool="codegraph_get_callers")
+        hint = result["codegraph_session"]["hint"]
+        assert "already active" in hint or "active" in hint
+
+    def test_tool_specific_hints(self):
+        """Per-tool hints are generated for build_context_pack, search_symbols,
+        get_neighbors, and get_impact."""
+        from codegraph.mcp_server import _generate_session_hint
+
+        hint = _generate_session_hint(3, "codegraph_build_context_pack")
+        assert "entry points" in hint.lower()
+
+        hint = _generate_session_hint(3, "codegraph_search_symbols")
+        assert "neighbors" in hint.lower() or "impact" in hint.lower()
+
+        hint = _generate_session_hint(3, "codegraph_get_neighbors")
+        assert "impact" in hint.lower()
+
+        hint = _generate_session_hint(3, "codegraph_get_impact")
+        assert "Read" in hint or "source text" in hint.lower()
+
+    def test_codegraph_session_no_source_code(self):
+        """codegraph_session must NOT contain any source code content."""
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        result = _respond_ok({}, tool="codegraph_search_symbols")
+        session_json = json.dumps(result["codegraph_session"])
+        # Must not contain code-like patterns
+        assert "def " not in session_json, "codegraph_session must not contain source code"
+        assert "class " not in session_json, "codegraph_session must not contain source code"
+        assert "import " not in session_json, "codegraph_session must not contain source code"
+
+    def test_codegraph_session_no_query_text(self):
+        """codegraph_session must NOT contain the search query or task text."""
+        from codegraph.mcp_server import _respond_ok
+
+        # Pass data with a query — session should NOT include it
+        result = _respond_ok(
+            {"query": "find_login_bug_fix_12345_xyz", "results": []},
+            tool="codegraph_search_symbols",
+        )
+        session_json = json.dumps(result["codegraph_session"])
+        assert "find_login_bug_fix_12345_xyz" not in session_json, (
+            "codegraph_session must not leak query text"
+        )
+
+    def test_codegraph_session_no_query_in_data(self):
+        """Even when data contains a task description, session stays clean."""
+        from codegraph.mcp_server import _respond_ok
+
+        result = _respond_ok(
+            {
+                "task": "fix the SQL injection in the login handler",
+                "entry_points": [],
+            },
+            tool="codegraph_build_context_pack",
+        )
+        session_json = json.dumps(result["codegraph_session"])
+        assert "SQL injection" not in session_json, (
+            "codegraph_session must not leak task descriptions"
+        )
+        assert "login handler" not in session_json, (
+            "codegraph_session must not leak task descriptions"
+        )
+
+    def test_concurrent_calls_do_not_crash(self):
+        """Concurrent _respond_ok calls from multiple threads must not crash
+        or corrupt session state."""
+        import threading as th
+        from codegraph.mcp_server import _respond_ok, _SESSION_STATE, _session_lock
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        errors: list[Exception] = []
+
+        def call_tool(tool_name: str, n: int) -> None:
+            try:
+                for _ in range(n):
+                    _respond_ok({}, tool=tool_name)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            th.Thread(target=call_tool, args=(f"codegraph_tool_{i}", 20))
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, (
+            f"Concurrent calls raised errors: {errors}"
+        )
+        # Total should be 4*20 = 80
+        with _session_lock:
+            total = _SESSION_STATE["total_calls"]
+        assert total == 80, (
+            f"Expected 80 total calls, got {total} (concurrent corruption?)"
+        )
+
+    def test_codegraph_session_does_not_break_next_recommended_tools(self, mcp_setup):
+        """codegraph_session must not affect next_recommended_tools in data."""
+        from codegraph.mcp_server import search_symbols
+
+        result = search_symbols("login")
+        assert result["ok"] is True
+        # codegraph_session at envelope level
+        assert "codegraph_session" in result
+        # next_recommended_tools still in data
+        assert "next_recommended_tools" in result["data"]
+        assert isinstance(result["data"]["next_recommended_tools"], list)
+
+    def test_does_not_break_existing_response_structure(self, mcp_setup):
+        """Adding codegraph_session does not break existing fields."""
+        from codegraph.mcp_server import search_symbols, get_symbol, get_neighbors
+
+        # search_symbols — all original fields preserved
+        r = search_symbols("login")
+        assert r["ok"] is True
+        assert "codegraph_session" in r, "New field missing"
+        assert "query" in r["data"]
+        assert "results" in r["data"]
+        assert "total" in r["data"]
+        assert "next_recommended_tools" in r["data"]
+
+        # get_symbol — all original fields preserved
+        r = get_symbol("app/api/auth.py::login")
+        assert r["ok"] is True
+        assert "codegraph_session" in r, "New field missing"
+        assert "symbol" in r["data"]
+        assert "relations_summary" in r["data"]
+
+        # get_neighbors — all original fields preserved
+        r = get_neighbors("app/api/auth.py::login")
+        assert r["ok"] is True
+        assert "codegraph_session" in r, "New field missing"
+        assert "center" in r["data"]
+        assert "groups" in r["data"]
+
+    def test_all_tools_have_codegraph_session(self, mcp_setup):
+        """All 9 MCP tools must return codegraph_session on success."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        tools = [
+            ("codegraph_search_symbols", lambda: search_symbols("login")),
+            ("codegraph_get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("codegraph_get_callers", lambda: get_callers("app/api/auth.py::login")),
+            ("codegraph_get_callees", lambda: get_callees("app/api/auth.py::login")),
+            ("codegraph_get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
+            ("codegraph_get_impact", lambda: get_impact("app/api/auth.py::login")),
+            ("codegraph_repo_status", lambda: repo_status()),
+            ("codegraph_repo_summary", lambda: repo_summary()),
+            ("codegraph_build_context_pack", lambda: build_context_pack(task="fix login bug")),
+        ]
+        for tool_name, fn in tools:
+            result = fn()
+            if result["ok"]:
+                assert "codegraph_session" in result, (
+                    f"{tool_name}: missing codegraph_session"
+                )
+                session = result["codegraph_session"]
+                assert session is not None, (
+                    f"{tool_name}: codegraph_session should not be None for success"
+                )
+                assert "tools_called_this_session" in session
+                assert isinstance(session["tools_called_this_session"], int)
+                assert session["tools_called_this_session"] > 0
+                assert "last_tool" in session
+                assert "most_used_tool" in session
+                assert "hint" in session
+                assert isinstance(session["hint"], str)
+                assert len(session["hint"]) > 0
+
+    def test_session_state_resettable(self):
+        """Session state can be reset manually for testing purposes."""
+        from codegraph.mcp_server import _SESSION_STATE, _session_lock, _respond_ok
+
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        result = _respond_ok({}, tool="codegraph_repo_summary")
+        assert result["codegraph_session"]["tools_called_this_session"] == 1
+
+        # Reset again
+        with _session_lock:
+            _SESSION_STATE["total_calls"] = 0
+            _SESSION_STATE["tool_counts"] = {}
+            _SESSION_STATE["last_tool"] = None
+
+        result = _respond_ok({}, tool="codegraph_repo_summary")
+        assert result["codegraph_session"]["tools_called_this_session"] == 1
+
+    def test_respond_error_no_codegraph_session(self):
+        """Error responses do NOT include codegraph_session."""
+        from codegraph.mcp_server import _respond_error
+
+        result = _respond_error(
+            code="TEST_ERROR",
+            message="Something went wrong",
+            tool="codegraph_search_symbols",
+        )
+        # Error responses should not have codegraph_session
+        assert "codegraph_session" not in result, (
+            "Error responses should not include codegraph_session"
+        )

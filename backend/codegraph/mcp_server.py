@@ -38,6 +38,7 @@ import fnmatch
 import json
 import os
 import sys
+import threading
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,112 @@ _project_root: str | None = None
 _resolution_method: str = "unknown"  # How _project_root was resolved
 _resolved_cwd: str | None = None  # CWD at time of resolution
 _watch_manager: Any | None = None  # WatchSyncManager when watch mode is active
+
+# ── Session state (process-in-memory, never persisted) ────────────────────
+# Tracks how many CodeGraph MCP tools have been called this session so the
+# agent can see a lightweight ``codegraph_session`` block in every success
+# response, forming a priming effect to continue using CodeGraph instead of
+# falling back to grep/read-heavy exploration.
+#
+# Privacy: records ONLY call counts and tool names — never source code,
+# file paths, query text, task descriptions, or any user data.
+# Resets on process restart; never written to disk.
+
+_SESSION_STATE: dict[str, Any] = {
+    "total_calls": 0,
+    "tool_counts": dict[str, int](),
+    "last_tool": None,
+}
+_session_lock = threading.Lock()
+
+
+def _update_session_state(tool_name: str) -> None:
+    """Increment session counters for a successful MCP tool call.
+
+    Thread-safe: uses a simple lock so concurrent MCP requests don't
+    corrupt the counts.
+    """
+    with _session_lock:
+        _SESSION_STATE["total_calls"] += 1
+        _SESSION_STATE["tool_counts"][tool_name] = (
+            _SESSION_STATE["tool_counts"].get(tool_name, 0) + 1
+        )
+        _SESSION_STATE["last_tool"] = tool_name
+
+
+def _generate_session_hint(total_calls: int, tool_name: str) -> str:
+    """Generate a short contextual hint based on call count and current tool.
+
+    Rules are intentionally simple — one sentence, no hard prohibitions,
+    no promise that the agent will keep using CodeGraph.
+    """
+    # Per-tool hints take priority over count-based hints
+    if tool_name == "codegraph_build_context_pack":
+        return (
+            "Next, inspect neighbors or impact for the main entry points."
+        )
+    if tool_name == "codegraph_search_symbols":
+        return (
+            "Next, inspect neighbors or impact for the selected symbol "
+            "instead of grep."
+        )
+    if tool_name == "codegraph_get_neighbors":
+        return (
+            "Use impact before editing symbols with callers or "
+            "downstream dependencies."
+        )
+    if tool_name == "codegraph_get_impact":
+        return (
+            "Use Read only for exact source text in the impacted files "
+            "or symbols."
+        )
+
+    # Count-based hints
+    if total_calls == 1:
+        return (
+            "Start with CodeGraph for navigation, then use Read only "
+            "for exact source text."
+        )
+    if 2 <= total_calls <= 5:
+        return (
+            "Continue with CodeGraph for callers, callees, neighbors, "
+            "or impact before grep/read-heavy exploration."
+        )
+    # > 5 calls
+    return (
+        "CodeGraph is already active in this session. Use impact or "
+        "neighbors before editing shared code."
+    )
+
+
+def _build_codegraph_session(tool_name: str) -> dict[str, Any]:
+    """Return the ``codegraph_session`` block for inclusion in every
+    successful MCP response.
+
+    Privacy: only includes call counts, tool names, and a short hint.
+    Never includes source code, file paths, query text, or user data.
+
+    All mutable session state is read under the lock in a single critical
+    section, then used outside the lock to build the response dict.
+    """
+    with _session_lock:
+        total = _SESSION_STATE["total_calls"]
+        counts_snapshot = dict(_SESSION_STATE["tool_counts"])
+        last = _SESSION_STATE["last_tool"]
+
+    most: str | None = None
+    if counts_snapshot:
+        most = max(counts_snapshot, key=lambda k: counts_snapshot[k])
+
+    hint = _generate_session_hint(total, tool_name)
+
+    return {
+        "tools_called_this_session": total,
+        "last_tool": last,
+        "most_used_tool": most,
+        "hint": hint,
+    }
+
 
 SCHEMA_VERSION = "1.0.0"
 
@@ -1283,7 +1390,16 @@ def _respond_ok(
     response tells the agent which CodeGraph tool to call next. Existing
     recommendations (e.g. from context_pack intent analysis) are preserved
     and merged with globally generated ones.
+
+    Also appends ``codegraph_session`` to every success response so the agent
+    sees a lightweight "you are using CodeGraph" reminder in-context, forming
+    a priming effect to continue with CodeGraph rather than falling back to
+    grep/read-heavy exploration.
     """
+    # ── Update session state ─────────────────────────────────────────────
+    if tool:
+        _update_session_state(tool)
+
     # ── Inject next_recommended_tools ────────────────────────────────────
     if isinstance(data, dict) and tool:
         existing = data.get("next_recommended_tools", [])
@@ -1300,6 +1416,7 @@ def _respond_ok(
         "ok": True,
         "tool": tool,
         "data": data,
+        "codegraph_session": _build_codegraph_session(tool) if tool else None,
         "warnings": warnings or [],
         "index_status": _build_index_status_envelope(idx),
         "index_health": _build_index_health_envelope(idx),
