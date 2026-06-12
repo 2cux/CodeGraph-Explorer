@@ -8,10 +8,10 @@ CodeGraph Explorer exposes 9 MCP tools for AI coding agents to query the code gr
 |------|---------|---------------|
 | `codegraph_search_symbols` | Search symbols by name, type, tag, or path | `query`, `types`, `paths`, `exact`, `fuzzy`, `limit` |
 | `codegraph_get_symbol` | Get symbol details (location, signature, metadata) | `symbol_id`, `include_source`, `source_mode` |
-| `codegraph_get_callers` | Query upstream callers of a symbol | `symbol_id`, `depth`, `include_tests` |
-| `codegraph_get_callees` | Query downstream callees of a symbol | `symbol_id`, `depth` |
-| `codegraph_get_neighbors` | Get local subgraph around a symbol | `symbol_id`, `depth`, `direction`, `edge_types` |
-| `codegraph_get_impact` | Analyze modification impact | `symbol_id`, `depth`, `impact_mode` |
+| `codegraph_get_callers` | Query upstream callers of a symbol | `symbol_id`, `depth`, `include_tests`, `mode` |
+| `codegraph_get_callees` | Query downstream callees of a symbol | `symbol_id`, `depth`, `mode` |
+| `codegraph_get_neighbors` | Get local subgraph around a symbol | `symbol_id`, `depth`, `direction`, `edge_types`, `mode` |
+| `codegraph_get_impact` | Analyze modification impact | `symbol_id`, `depth`, `impact_mode`, `mode` |
 | `codegraph_repo_status` | Check index freshness | — |
 | `codegraph_repo_summary` | Repository graph statistics | — |
 | `codegraph_build_context_pack` | Generate Evidence Pack snapshot | `task`, `max_tokens`, `depth`, `mode` |
@@ -77,20 +77,21 @@ Source modes: `"signature"` (default), `"body"`, `"surrounding"`.
 
 ### get_callers / get_callees
 
-Traverse call relationships. `get_callers` finds what calls the symbol (upstream), `get_callees` finds what the symbol calls (downstream).
+Traverse call relationships. `get_callers` answers "Who calls this symbol?" — use instead of grep for reference and upstream dependency lookup. `get_callees` answers "What does this symbol call or depend on?" — use before manually reading implementation dependencies.
 
 ```json
 {
   "symbol_id": "app/api/auth.py::login",
   "depth": 2,
   "include_tests": false,
-  "min_confidence": 0.6
+  "min_confidence": 0.6,
+  "mode": "quick"
 }
 ```
 
 ### get_neighbors
 
-Get the local subgraph centered on a symbol.
+Answers "What is connected to this symbol?" Get the local subgraph centered on a symbol. Use before reading multiple related files.
 
 ```json
 {
@@ -98,7 +99,8 @@ Get the local subgraph centered on a symbol.
   "depth": 1,
   "direction": "both",
   "edge_types": "calls,tested_by,imports,references",
-  "max_nodes": 25
+  "max_nodes": 25,
+  "mode": "review"
 }
 ```
 
@@ -106,14 +108,15 @@ Compact mode groups neighbors by role (callers, callees, tests, imports, externa
 
 ### get_impact
 
-Analyze what might be affected by modifying a symbol.
+Answers "If I change this symbol, what might break?" Analyze what might be affected by modifying a symbol. Use before editing shared code, public APIs, routes, services, or framework entry points.
 
 ```json
 {
   "symbol_id": "app/api/auth.py::login",
   "depth": 2,
   "impact_mode": "conservative",
-  "include_tests": true
+  "include_tests": true,
+  "mode": "review"
 }
 ```
 
@@ -161,11 +164,66 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 | `codegraph_repo_summary` | Entering a repository, before glob/grep for structure overview |
 | `codegraph_search_symbols` | Looking for functions, classes, methods, routes, before grep |
 | `codegraph_get_symbol` | You need exact metadata and location for a symbol, after search_symbols |
-| `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep |
-| `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep |
-| `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files |
-| `codegraph_get_impact` | Before modifying shared code — understand confirmed and possible impact, tests, external dependencies |
+| `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep. Use `mode=quick` for fast lookup. |
+| `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep. Use `mode=deep` for broader exploration. |
+| `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files. Use `mode=review` before code changes. |
+| `codegraph_get_impact` | Before modifying shared code — understand confirmed and possible impact. Use `mode=review` before committing. |
 | `Read` | Only when exact source text is needed beyond what CodeGraph returns |
+
+## Common Modes
+
+The four high-frequency query tools (`get_callers`, `get_callees`, `get_neighbors`, `get_impact`) support an optional `mode` parameter with three presets:
+
+| Mode | Purpose | Characteristics |
+|------|---------|----------------|
+| `quick` | Fast lookup, good replacement for grep | Shallow depth, compact output, small result limit, no explanations |
+| `deep` | Broader graph traversal for architecture or dependency exploration | Deeper depth, larger result limits, includes explanations |
+| `review` | Richer context before code changes, useful for bug fixes, refactors, and code review | Medium depth, includes tests and explanations, medium result limits |
+
+### Quick Examples
+
+```text
+Who calls this?
+→ codegraph_get_callers(symbol="MemoryService", mode="quick")
+
+What does this depend on?
+→ codegraph_get_callees(symbol="MemoryService", mode="quick")
+
+What is connected to this?
+→ codegraph_get_neighbors(symbol="MemoryService", mode="quick")
+
+What might break if I edit this?
+→ codegraph_get_impact(symbol="MemoryService", mode="quick")
+```
+
+### Advanced Parameter Override
+
+When `mode` is set, advanced parameters (e.g. `depth`, `min_confidence`, `include_tests`) can still override the mode defaults:
+
+```json
+{
+  "symbol": "MemoryService",
+  "mode": "quick",
+  "depth": 3
+}
+```
+
+### `next_recommended_tools` in Quick Mode
+
+When `mode=quick` returns many results or potential impact, the response may include `next_recommended_tools` — lightweight suggestions (up to 2) for the next useful CodeGraph call. For example:
+
+```json
+{
+  "next_recommended_tools": [
+    {
+      "tool": "codegraph_get_impact",
+      "reason": "This symbol has 8 caller(s). Run impact analysis before editing."
+    }
+  ]
+}
+```
+
+This helps agents discover the right follow-up tool without reading docs.
 
 ## Design Principles
 

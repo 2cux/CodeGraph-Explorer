@@ -121,6 +121,240 @@ ERROR_CODES = {
 ResponseMode = str  # "compact" | "standard" | "full"
 VALID_RESPONSE_MODES = {"compact", "standard", "full"}
 
+# ── Query modes ──────────────────────────────────────────────────────────────
+# "quick" / "deep" / "review" presets for high-frequency tools.
+# When mode is set, it overrides the function's standard defaults for certain
+# parameters. If the user also explicitly passes one of those parameters,
+# the explicit value wins (detected by comparing against the standard default).
+
+VALID_MODES = {"quick", "deep", "review"}
+
+# Standard defaults per tool — used to detect whether a user explicitly
+# overrode a parameter (value != standard_default → user override).
+_STD_DEFAULTS: dict[str, dict[str, Any]] = {
+    "get_callers": {
+        "depth": 1, "max_results": 20, "min_confidence": 0.6,
+        "include_tests": False, "response_mode": "compact",
+        "include_explanations": False,
+    },
+    "get_callees": {
+        "depth": 1, "max_results": 20, "min_confidence": 0.6,
+        "response_mode": "compact", "include_explanations": False,
+    },
+    "get_neighbors": {
+        "depth": 1, "max_nodes": 40, "max_edges": 80,
+        "min_confidence": 0.6, "direction": "both",
+        "group_by_role": True, "response_mode": "compact",
+        "include_explanations": False,
+    },
+    "get_impact": {
+        "depth": 2, "max_files": 30, "min_confidence": 0.6,
+        "include_tests": True, "include_possible": False,
+        "impact_mode": "conservative", "response_mode": "compact",
+        "include_explanations": False,
+    },
+}
+
+# Mode presets: {tool_name: {mode: {param: preset_value}}}
+MODE_PRESETS: dict[str, dict[str, dict[str, Any]]] = {
+    "get_callers": {
+        "quick": {
+            "depth": 1, "max_results": 10, "min_confidence": 0.6,
+            "include_tests": False, "include_explanations": False,
+            "response_mode": "compact",
+        },
+        "deep": {
+            "depth": 3, "max_results": 50, "min_confidence": 0.4,
+            "include_tests": True, "include_explanations": True,
+            "response_mode": "compact",
+        },
+        "review": {
+            "depth": 2, "max_results": 30, "min_confidence": 0.5,
+            "include_tests": True, "include_explanations": True,
+            "response_mode": "compact",
+        },
+    },
+    "get_callees": {
+        "quick": {
+            "depth": 1, "max_results": 10, "min_confidence": 0.6,
+            "response_mode": "compact", "include_explanations": False,
+        },
+        "deep": {
+            "depth": 3, "max_results": 50, "min_confidence": 0.4,
+            "response_mode": "compact", "include_explanations": True,
+        },
+        "review": {
+            "depth": 2, "max_results": 30, "min_confidence": 0.5,
+            "response_mode": "compact", "include_explanations": True,
+        },
+    },
+    "get_neighbors": {
+        "quick": {
+            "depth": 1, "max_nodes": 20, "max_edges": 40,
+            "min_confidence": 0.6, "direction": "both",
+            "group_by_role": True, "response_mode": "compact",
+            "include_explanations": False,
+        },
+        "deep": {
+            "depth": 2, "max_nodes": 60, "max_edges": 120,
+            "min_confidence": 0.4, "direction": "both",
+            "group_by_role": False, "response_mode": "standard",
+            "include_explanations": True,
+        },
+        "review": {
+            "depth": 2, "max_nodes": 40, "max_edges": 80,
+            "min_confidence": 0.5, "direction": "both",
+            "group_by_role": True, "response_mode": "compact",
+            "include_explanations": True,
+        },
+    },
+    "get_impact": {
+        "quick": {
+            "depth": 1, "max_files": 15, "min_confidence": 0.6,
+            "include_tests": False, "include_possible": False,
+            "impact_mode": "conservative", "response_mode": "compact",
+            "include_explanations": False,
+        },
+        "deep": {
+            "depth": 3, "max_files": 50, "min_confidence": 0.4,
+            "include_tests": True, "include_possible": True,
+            "impact_mode": "balanced", "response_mode": "compact",
+            "include_explanations": True,
+        },
+        "review": {
+            "depth": 2, "max_files": 30, "min_confidence": 0.5,
+            "include_tests": True, "include_possible": True,
+            "impact_mode": "balanced", "response_mode": "compact",
+            "include_explanations": True,
+        },
+    },
+}
+
+
+def _apply_mode_presets(
+    tool_name: str,
+    mode: str | None,
+    local_params: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve effective parameters from mode preset + user overrides.
+
+    When *mode* is set, preset values from ``MODE_PRESETS[tool_name][mode]``
+    are applied for parameters that the user has NOT explicitly overridden.
+    "Not overridden" means the parameter still equals the standard default
+    defined in ``_STD_DEFAULTS[tool_name]``.
+
+    Returns a dict of parameter names to their resolved values.
+    Only returns the subset of params that mode presets control.
+
+    Limitation: Cannot distinguish "user explicitly passed the standard
+    default" from "user did not pass the parameter at all".  In the rare
+    case where both mode and an explicit parameter that equals the standard
+    default are passed, the mode preset wins.  Example::
+
+        get_neighbors("foo", mode="deep", response_mode="compact")
+        # mode=deep sets response_mode="standard"; the user's explicit
+        # "compact" equals the standard default, so the preset wins.
+
+    Workaround: omit *mode* and set all parameters explicitly, or pass a
+    non-default value for the conflicting parameter.
+    """
+    if not mode or mode not in VALID_MODES:
+        return {}
+
+    presets = MODE_PRESETS.get(tool_name, {}).get(mode, {})
+    std = _STD_DEFAULTS.get(tool_name, {})
+    resolved: dict[str, Any] = {}
+
+    for key, preset_val in presets.items():
+        std_default = std.get(key)
+        current_val = local_params.get(key)
+        if std_default is not None and current_val != std_default:
+            # User explicitly overrode this param — keep their value
+            resolved[key] = current_val
+        else:
+            resolved[key] = preset_val
+
+    return resolved
+
+
+def _build_mode_next_tools(
+    tool_name: str,
+    mode: str | None,
+    result_data: dict[str, Any],
+    limit: int = 2,
+) -> list[dict[str, Any]]:
+    """Generate next_recommended_tools for mode=quick results.
+
+    Only fires when *mode* is "quick" and the result data suggests
+    a useful next step. Returns at most *limit* recommendations.
+    """
+    if mode != "quick":
+        return []
+
+    recommendations: list[dict[str, Any]] = []
+
+    if tool_name == "get_callers":
+        total = result_data.get("total", 0)
+        if total >= 5:
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": f"This symbol has {total} caller(s). Run impact analysis before editing.",
+            })
+        if total >= 3:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect local relationships (callers, callees, tests) around this symbol.",
+            })
+
+    elif tool_name == "get_callees":
+        total = result_data.get("total", 0)
+        external = len(result_data.get("external_calls", []))
+        if external > 0:
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": f"This symbol has {external} external/unresolved callee(s). Check impact before modifying.",
+            })
+        if total >= 5:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Explore the full local subgraph to understand all relationships.",
+            })
+
+    elif tool_name == "get_neighbors":
+        counts = result_data.get("counts", {})
+        caller_count = counts.get("callers", 0)
+        if caller_count >= 3:
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": f"This symbol has {caller_count} caller(s). Check downstream impact before editing.",
+            })
+        test_count = counts.get("tests", 0)
+        if test_count > 0:
+            recommendations.append({
+                "tool": "codegraph_get_callers",
+                "reason": f"{test_count} test(s) found. Trace test coverage with include_tests=true.",
+            })
+
+    elif tool_name == "get_impact":
+        risk = result_data.get("risk", {})
+        risk_level = risk.get("level", "low")
+        # get_impact returns "confirmed" in compact mode and
+        # "confirmed_impact" in standard mode. Check both keys.
+        confirmed = result_data.get("confirmed") or result_data.get("confirmed_impact", {})
+        num_files = len(confirmed.get("files", [])) if confirmed else 0
+        if risk_level in ("high", "critical"):
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": f"Risk level is {risk_level}. Inspect local relationships before making changes.",
+            })
+        if num_files >= 5:
+            recommendations.append({
+                "tool": "codegraph_get_callers",
+                "reason": f"Impact spans {num_files} file(s). Trace upstream callers for complete picture.",
+            })
+
+    return recommendations[:limit]
+
 # ── Compact field whitelist ────────────────────────────────────────────────
 # In compact mode, only fields in this set are allowed in tool response data.
 # Fields NOT in this list (e.g. full source code, full evidence, long explanations,
@@ -2201,12 +2435,14 @@ def get_callers(
     exclude_types: str | None = None,
     include_paths: str | None = None,
     exclude_paths: str | None = None,
+    # ── Mode preset ───────────────────────────────────────────────────────
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    """Get all callers of a symbol — functions that call it.
+    """Answers: "Who calls this function, method, class, route, or symbol?"
 
-    Use instead of grep for call chain and reference lookup. Prefer this
-    before grep/read for tracing upstream dependencies and understanding
-    what depends on a given function or class.
+    Use this instead of grep when checking references, upstream dependencies,
+    or call chains. Use mode=quick for fast lookup and mode=review before
+    changing shared code.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
     Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
@@ -2230,7 +2466,31 @@ def get_callers(
         exclude_types: Comma-separated types to exclude
         include_paths: Comma-separated path globs to include
         exclude_paths: Comma-separated path globs to exclude
+        mode: Preset mode — "quick" (fast, shallow, grep replacement),
+              "deep" (broader traversal), or "review" (richer context before changes).
+              Advanced parameters can override mode defaults.
     """
+    # ── Validate mode ─────────────────────────────────────────────────────
+    if mode is not None and mode not in VALID_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}",
+            tool="codegraph_get_callers",
+        )
+
+    # ── Apply mode presets (explicit user params override mode defaults) ──
+    _mode_overrides = _apply_mode_presets("get_callers", mode, {
+        "depth": depth, "max_results": max_results, "min_confidence": min_confidence,
+        "include_tests": include_tests, "response_mode": response_mode,
+        "include_explanations": include_explanations,
+    })
+    depth = _mode_overrides.get("depth", depth)
+    max_results = _mode_overrides.get("max_results", max_results)
+    min_confidence = _mode_overrides.get("min_confidence", min_confidence)
+    include_tests = _mode_overrides.get("include_tests", include_tests)
+    response_mode = _mode_overrides.get("response_mode", response_mode)
+    include_explanations = _mode_overrides.get("include_explanations", include_explanations)
+
     if response_mode not in VALID_RESPONSE_MODES:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
@@ -2328,7 +2588,7 @@ def get_callers(
         if not result["exact_match"]
         else None
     )
-    return _respond_ok(
+    rv = _respond_ok(
         data={
             "target": node.id,
             "callers": shaped["results"],
@@ -2340,6 +2600,11 @@ def get_callers(
         tool="codegraph_get_callers",
         warnings=_collect_warnings(fuzzy_warning),
     )
+    # ── Add next_recommended_tools for mode=quick ──────────────────────────
+    next_tools = _build_mode_next_tools("get_callers", mode, rv["data"])
+    if next_tools:
+        rv["data"]["next_recommended_tools"] = next_tools
+    return rv
 
 
 # ── Tool: get_callees ─────────────────────────────────────────────────────
@@ -2440,12 +2705,14 @@ def get_callees(
     exclude_types: str | None = None,
     include_paths: str | None = None,
     exclude_paths: str | None = None,
+    # ── Mode preset ───────────────────────────────────────────────────────
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    """Get all callees of a symbol — functions it calls.
+    """Answers: "What does this symbol call or depend on?"
 
-    Use instead of grep for call chain and reference lookup. Prefer this
-    before reading multiple files to trace downstream call chains and
-    external dependencies.
+    Use instead of grep for call chain and implementation
+    dependency tracing. Use mode=quick for fast lookup and mode=deep
+    for deeper dependency exploration.
 
     External/unresolved symbols are separated into ``external_calls``.
 
@@ -2471,7 +2738,29 @@ def get_callees(
         exclude_types: Comma-separated types to exclude
         include_paths: Comma-separated path globs to include
         exclude_paths: Comma-separated path globs to exclude
+        mode: Preset mode — "quick" (fast, shallow, grep replacement),
+              "deep" (broader traversal), or "review" (richer context before changes).
+              Advanced parameters can override mode defaults.
     """
+    # ── Validate mode ─────────────────────────────────────────────────────
+    if mode is not None and mode not in VALID_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}",
+            tool="codegraph_get_callees",
+        )
+
+    # ── Apply mode presets (explicit user params override mode defaults) ──
+    _mode_overrides = _apply_mode_presets("get_callees", mode, {
+        "depth": depth, "max_results": max_results, "min_confidence": min_confidence,
+        "response_mode": response_mode, "include_explanations": include_explanations,
+    })
+    depth = _mode_overrides.get("depth", depth)
+    max_results = _mode_overrides.get("max_results", max_results)
+    min_confidence = _mode_overrides.get("min_confidence", min_confidence)
+    response_mode = _mode_overrides.get("response_mode", response_mode)
+    include_explanations = _mode_overrides.get("include_explanations", include_explanations)
+
     if response_mode not in VALID_RESPONSE_MODES:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
@@ -2580,7 +2869,7 @@ def get_callees(
             "reason_code": "external_or_unresolved",
         })
 
-    return _respond_ok(
+    rv = _respond_ok(
         data={
             "target": node.id,
             "callees": shaped["results"],
@@ -2593,6 +2882,11 @@ def get_callees(
         tool="codegraph_get_callees",
         warnings=warnings,
     )
+    # ── Add next_recommended_tools for mode=quick ──────────────────────────
+    next_tools = _build_mode_next_tools("get_callees", mode, rv["data"])
+    if next_tools:
+        rv["data"]["next_recommended_tools"] = next_tools
+    return rv
 
 
 # ── Tool: get_neighbors ───────────────────────────────────────────────────
@@ -2614,13 +2908,13 @@ def get_neighbors(
     group_by_role: bool = True,
     response_mode: str = "compact",
     include_explanations: bool = False,
+    # ── Mode preset ───────────────────────────────────────────────────────
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    """Get neighbors of a symbol in the code graph — the primary local-graph tool.
+    """Answers: "What is connected to this symbol?"
 
-    Use before reading multiple files to understand relationships around
-    a symbol. Prefer this over glob/read for exploring what is connected
-    to a function, class, or method — callers, callees, tests, models,
-    and config dependencies.
+    Use this before reading multiple files to understand local
+    relationships. Use mode=review when preparing a code change.
 
     Compact mode returns neighbors grouped by role. Standard mode returns
     full nodes + edges. External/unresolved symbols are always in their
@@ -2646,7 +2940,33 @@ def get_neighbors(
         group_by_role: In compact mode, group results by role (default true)
         response_mode: "compact" (default) or "standard"
         include_explanations: If true, include reason text and evidence (default false)
+        mode: Preset mode — "quick" (fast, shallow, grep replacement),
+              "deep" (broader traversal), or "review" (richer context before changes).
+              Advanced parameters can override mode defaults.
     """
+    # ── Validate mode ─────────────────────────────────────────────────────
+    if mode is not None and mode not in VALID_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}",
+            tool="codegraph_get_neighbors",
+        )
+
+    # ── Apply mode presets (explicit user params override mode defaults) ──
+    _mode_overrides = _apply_mode_presets("get_neighbors", mode, {
+        "depth": depth, "max_nodes": max_nodes, "max_edges": max_edges,
+        "min_confidence": min_confidence, "direction": direction,
+        "group_by_role": group_by_role, "response_mode": response_mode,
+        "include_explanations": include_explanations,
+    })
+    depth = _mode_overrides.get("depth", depth)
+    max_nodes = _mode_overrides.get("max_nodes", max_nodes)
+    max_edges = _mode_overrides.get("max_edges", max_edges)
+    min_confidence = _mode_overrides.get("min_confidence", min_confidence)
+    direction = _mode_overrides.get("direction", direction)
+    group_by_role = _mode_overrides.get("group_by_role", group_by_role)
+    response_mode = _mode_overrides.get("response_mode", response_mode)
+    include_explanations = _mode_overrides.get("include_explanations", include_explanations)
     effective_depth = max(1, min(depth, 3))
     effective_max_nodes = max(1, min(max_nodes, 100))
     effective_max_edges = max(1, min(max_edges, 200))
@@ -2866,7 +3186,7 @@ def get_neighbors(
             "low_confidence_filtered": filtered_counts["low_confidence_edges"],
         }
 
-        return _respond_ok(
+        rv_grouped = _respond_ok(
             data={
                 "center": center_node.id,
                 "groups": {k: v for k, v in groups.items() if v},
@@ -2879,6 +3199,11 @@ def get_neighbors(
                 f"Fuzzy fallback used: {result['match_reason']}"
             ),
         )
+        # ── Add next_recommended_tools for mode=quick ──────────────────────
+        next_tools = _build_mode_next_tools("get_neighbors", mode, rv_grouped["data"])
+        if next_tools:
+            rv_grouped["data"]["next_recommended_tools"] = next_tools
+        return rv_grouped
 
     # Standard / non-grouped compact
     nodes_out.sort(key=lambda n: (0 if n.get("role") == "center" else 1, n.get("distance", 0), n.get("name", "")))
@@ -2888,7 +3213,7 @@ def get_neighbors(
         if not result["exact_match"]
         else None
     )
-    return _respond_ok(
+    rv_flat = _respond_ok(
         data={
             "center": center_node.id,
             "nodes": nodes_out,
@@ -2904,6 +3229,11 @@ def get_neighbors(
         tool="codegraph_get_neighbors",
         warnings=_collect_warnings(fuzzy_warning),
     )
+    # ── Add next_recommended_tools for mode=quick ──────────────────────────
+    next_tools = _build_mode_next_tools("get_neighbors", mode, rv_flat["data"])
+    if next_tools:
+        rv_flat["data"]["next_recommended_tools"] = next_tools
+    return rv_flat
 
 
 # ── Tool: get_impact ──────────────────────────────────────────────────────
@@ -2925,15 +3255,14 @@ def get_impact(
     impact_mode: str = "conservative",
     response_mode: str = "compact",
     include_explanations: bool = False,
+    # ── Mode preset ───────────────────────────────────────────────────────
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    """Analyze the impact of modifying a symbol.
+    """Answers: "If I change this symbol, what might break?"
 
-    Use before modifying shared code to understand confirmed and possible
-    impact. Prefer this before manual grep/read for tracing what files,
-    tests, and downstream callers would be affected by a change.
-
-    Returns confirmed impact, possible impact, risk level with reason codes,
-    and separates upstream/downstream/test/external items clearly.
+    Use this before modifying shared code, public APIs, routes, services, or
+    framework entry points. Use mode=quick for a fast impact check and
+    mode=review before committing a change.
 
     Returns confirmed impact, possible impact, risk level with reason codes,
     and separates upstream/downstream/test/external items clearly.
@@ -2956,9 +3285,44 @@ def get_impact(
                      — default "conservative"
         response_mode: "compact" (default) or "standard"
         include_explanations: If true, include reason text and evidence (default false)
+        mode: Preset mode — "quick" (fast, shallow, grep replacement),
+              "deep" (broader traversal), or "review" (richer context before changes).
+              Advanced parameters can override mode defaults.
     """
-    valid_modes = {"conservative", "balanced"}
-    if impact_mode not in valid_modes:
+    # ── Validate modes ────────────────────────────────────────────────────
+    if mode is not None and mode not in VALID_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}",
+            tool="codegraph_get_impact",
+        )
+
+    valid_impact_modes = {"conservative", "balanced"}
+    if impact_mode not in valid_impact_modes:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid impact_mode '{impact_mode}'. Valid: conservative, balanced",
+            tool="codegraph_get_impact",
+        )
+
+    # ── Apply mode presets (explicit user params override mode defaults) ──
+    _mode_overrides = _apply_mode_presets("get_impact", mode, {
+        "depth": depth, "max_files": max_files, "min_confidence": min_confidence,
+        "include_tests": include_tests, "include_possible": include_possible,
+        "impact_mode": impact_mode, "response_mode": response_mode,
+        "include_explanations": include_explanations,
+    })
+    depth = _mode_overrides.get("depth", depth)
+    max_files = _mode_overrides.get("max_files", max_files)
+    min_confidence = _mode_overrides.get("min_confidence", min_confidence)
+    include_tests = _mode_overrides.get("include_tests", include_tests)
+    include_possible = _mode_overrides.get("include_possible", include_possible)
+    impact_mode = _mode_overrides.get("impact_mode", impact_mode)
+    response_mode = _mode_overrides.get("response_mode", response_mode)
+    include_explanations = _mode_overrides.get("include_explanations", include_explanations)
+
+    # Re-validate impact_mode after potential mode override
+    if impact_mode not in valid_impact_modes:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
             message=f"Invalid impact_mode '{impact_mode}'. Valid: conservative, balanced",
@@ -3211,6 +3575,11 @@ def get_impact(
             "external_or_unresolved": external,
             "truncated": truncated,
         }
+
+    # ── Add next_recommended_tools for mode=quick ──────────────────────────
+    next_tools = _build_mode_next_tools("get_impact", mode, data)
+    if next_tools:
+        data["next_recommended_tools"] = next_tools
 
     return _respond_ok(
         data=data,

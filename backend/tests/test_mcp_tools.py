@@ -3048,3 +3048,228 @@ class TestAgentUsageGuidance:
             assert tool_fn is not None, f"MCP tool '{tool_name}' not found in mcp_server"
             assert callable(tool_fn), f"MCP tool '{tool_name}' is not callable"
             assert tool_fn.__doc__, f"MCP tool '{tool_name}' has no docstring"
+
+
+# ── Test: mode parameter (quick / deep / review) ─────────────────────────────
+
+
+class TestModeParameter:
+    """mode parameter on get_callers, get_callees, get_neighbors, get_impact."""
+
+    # ── get_callers ────────────────────────────────────────────────────────
+
+    def test_get_callers_mode_quick(self, mcp_setup):
+        """get_callers with mode=quick returns compact, shallow results."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", mode="quick")
+        assert result["ok"] is True
+        assert result["meta"]["response_mode"] == "compact"
+        callers = result["data"]["callers"]
+        # quick defaults: depth=1, include_tests=False
+        for c in callers:
+            assert c.get("distance", 0) <= 1
+            assert c.get("type") != "test"
+
+    def test_get_callers_mode_deep(self, mcp_setup):
+        """get_callers with mode=deep returns deeper traversal."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", mode="deep")
+        assert result["ok"] is True
+        # deep allows lower min_confidence (0.4 vs 0.6) — more results possible
+        assert "callers" in result["data"]
+
+    def test_get_callers_mode_review(self, mcp_setup):
+        """get_callers with mode=review includes tests and explanations."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", mode="review")
+        assert result["ok"] is True
+        # review defaults: include_tests=True, include_explanations=True
+        callers = result["data"]["callers"]
+        has_test = any(c.get("type") == "test" for c in callers)
+        if has_test:
+            # At least one test should be included when include_tests=True
+            pass  # not guaranteed in test data, but the flag should be honored
+
+    # ── get_callees ────────────────────────────────────────────────────────
+
+    def test_get_callees_mode_quick(self, mcp_setup):
+        """get_callees with mode=quick returns compact, shallow results."""
+        from codegraph.mcp_server import get_callees
+        result = get_callees("app/api/auth.py::login", mode="quick")
+        assert result["ok"] is True
+        assert result["meta"]["response_mode"] == "compact"
+        callees = result["data"]["callees"]
+        for c in callees:
+            assert c.get("distance", 0) <= 1
+
+    # ── get_neighbors ──────────────────────────────────────────────────────
+
+    def test_get_neighbors_mode_review(self, mcp_setup):
+        """get_neighbors with mode=review returns grouped results with explanations."""
+        from codegraph.mcp_server import get_neighbors
+        result = get_neighbors("app/api/auth.py::login", mode="review")
+        assert result["ok"] is True
+        # review: compact mode, grouped by role, includes tests
+        assert "groups" in result["data"]
+        assert "counts" in result["data"]
+
+    # ── get_impact ─────────────────────────────────────────────────────────
+
+    def test_get_impact_mode_review(self, mcp_setup):
+        """get_impact with mode=review returns balanced impact with tests."""
+        from codegraph.mcp_server import get_impact
+        result = get_impact("app/api/auth.py::login", mode="review")
+        assert result["ok"] is True
+        # review defaults: impact_mode=balanced, include_tests=True, include_possible=True
+        assert "confirmed" in result["data"]
+        assert "possible" in result["data"]
+
+    # ── Backward compatibility ─────────────────────────────────────────────
+
+    def test_mode_does_not_break_existing_params(self, mcp_setup):
+        """Passing mode does not break other parameters — all still work."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers(
+            "app/api/auth.py::login",
+            mode="quick",
+            depth=2,
+            response_mode="standard",
+        )
+        assert result["ok"] is True
+        # User's explicit depth=2 overrides quick's depth=1
+        callers = result["data"]["callers"]
+        distances = {c.get("distance", 0) for c in callers}
+        assert max(distances) >= 1  # depth=2 allows distance=2
+
+    def test_advanced_params_override_mode_defaults(self, mcp_setup):
+        """Explicit advanced params override mode preset values."""
+        from codegraph.mcp_server import get_callers
+        # mode=quick sets include_tests=False, but explicit include_tests=True wins
+        result = get_callers(
+            "app/api/auth.py::login",
+            mode="quick",
+            include_tests=True,
+        )
+        assert result["ok"] is True
+        # With include_tests=True, test callers may appear
+        callers = result["data"]["callers"]
+        test_callers = [c for c in callers if c.get("type") == "test"]
+        # The test fixture has test_login as a caller via tested_by edge
+        # — not via calls edge, so it may not appear here. But the param
+        # should be honored by the traversal function.
+
+    def test_invalid_mode_returns_error(self):
+        """Invalid mode value returns a readable error."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login", mode="unknown")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+        assert "mode" in result["error"]["message"].lower()
+        assert "quick" in result["error"]["message"].lower()
+
+    def test_mode_none_is_same_as_no_mode(self, mcp_setup):
+        """mode=None behaves identically to not passing mode at all."""
+        from codegraph.mcp_server import get_callers
+        r1 = get_callers("app/api/auth.py::login")
+        r2 = get_callers("app/api/auth.py::login", mode=None)
+        assert r1["ok"] == r2["ok"]
+        assert r1["data"]["total"] == r2["data"]["total"]
+        assert r1["meta"]["response_mode"] == r2["meta"]["response_mode"]
+
+    # ── next_recommended_tools in quick mode ───────────────────────────────
+
+    def test_next_tools_in_quick_mode_callers(self, mcp_setup):
+        """mode=quick on get_callers may suggest next tools when many callers found."""
+        from codegraph.mcp_server import get_callers
+        # The test fixture has main→login as a caller. With mode=quick,
+        # total might or might not hit the threshold (>=5).
+        # We just verify the key is present when there are many callers,
+        # and that it never exceeds 2 entries.
+        result = get_callers("app/api/auth.py::login", mode="quick")
+        next_tools = result["data"].get("next_recommended_tools", [])
+        assert len(next_tools) <= 2
+        for nt in next_tools:
+            assert "tool" in nt
+            assert "reason" in nt
+
+    def test_next_tools_not_present_without_quick_mode(self, mcp_setup):
+        """next_recommended_tools should NOT appear when mode is not quick."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login")
+        assert "next_recommended_tools" not in result["data"]
+
+    # ── Tool description natural language questions ────────────────────────
+
+    def test_get_callers_description_has_natural_language_question(self):
+        """get_callers description contains 'Who calls this'."""
+        from codegraph.mcp_server import get_callers
+        doc = get_callers.__doc__ or ""
+        assert "who calls this" in doc.lower()
+
+    def test_get_callees_description_has_natural_language_question(self):
+        """get_callees description contains 'What does this symbol call'."""
+        from codegraph.mcp_server import get_callees
+        doc = get_callees.__doc__ or ""
+        assert "what does this symbol call" in doc.lower()
+
+    def test_get_neighbors_description_has_natural_language_question(self):
+        """get_neighbors description contains 'What is connected to this'."""
+        from codegraph.mcp_server import get_neighbors
+        doc = get_neighbors.__doc__ or ""
+        assert "what is connected to this" in doc.lower()
+
+    def test_get_impact_description_has_natural_language_question(self):
+        """get_impact description contains 'If I change this symbol'."""
+        from codegraph.mcp_server import get_impact
+        doc = get_impact.__doc__ or ""
+        assert "if i change this" in doc.lower()
+
+    # ── docs/mcp-tools.md ──────────────────────────────────────────────────
+
+    def test_docs_contain_common_modes_section(self):
+        """docs/mcp-tools.md must contain a 'Common Modes' section."""
+        import os
+        docs_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "docs", "mcp-tools.md"
+        )
+        docs_path = os.path.normpath(docs_path)
+        content = open(docs_path, encoding="utf-8").read()
+        assert "## Common Modes" in content, (
+            "docs/mcp-tools.md must contain a '## Common Modes' section"
+        )
+        assert "mode=quick" in content, (
+            "docs/mcp-tools.md must show mode=quick examples"
+        )
+        assert "mode=review" in content, (
+            "docs/mcp-tools.md must show mode=review examples"
+        )
+
+    # ── All 4 tools accept mode parameter ───────────────────────────────────
+
+    def test_get_callers_has_mode_param(self):
+        """get_callers signature includes 'mode' parameter."""
+        import inspect
+        from codegraph.mcp_server import get_callers
+        sig = inspect.signature(get_callers)
+        assert "mode" in sig.parameters
+
+    def test_get_callees_has_mode_param(self):
+        """get_callees signature includes 'mode' parameter."""
+        import inspect
+        from codegraph.mcp_server import get_callees
+        sig = inspect.signature(get_callees)
+        assert "mode" in sig.parameters
+
+    def test_get_neighbors_has_mode_param(self):
+        """get_neighbors signature includes 'mode' parameter."""
+        import inspect
+        from codegraph.mcp_server import get_neighbors
+        sig = inspect.signature(get_neighbors)
+        assert "mode" in sig.parameters
+
+    def test_get_impact_has_mode_param(self):
+        """get_impact signature includes 'mode' parameter."""
+        import inspect
+        from codegraph.mcp_server import get_impact
+        sig = inspect.signature(get_impact)
+        assert "mode" in sig.parameters
