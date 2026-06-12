@@ -261,6 +261,20 @@ class TestDocsExistence:
             "agent-adoption-test.md must mention grep"
         )
 
+    def test_agent_adoption_p0_test_exists(self):
+        """docs/agent-adoption-p0-test.md should exist with P0 verification content."""
+        path = _project_root() / "docs" / "agent-adoption-p0-test.md"
+        assert path.exists(), "docs/agent-adoption-p0-test.md must exist"
+
+    def test_agent_adoption_p0_test_has_required_sections(self):
+        """agent-adoption-p0-test.md should have P0-specific verification content."""
+        text = _read_file("docs/agent-adoption-p0-test.md")
+        assert "P0" in text, "Must mention P0"
+        assert "next_recommended_tools" in text, "Must mention next_recommended_tools"
+        assert "codegraph_session" in text, "Must mention codegraph_session"
+        assert "测试任务" in text or "Test Task" in text, "Must have test tasks"
+        assert "有效" in text or "success" in text.lower(), "Must define success criteria"
+
     def test_mcp_tools_has_workflow(self):
         """docs/mcp-tools.md should have Recommended Agent Workflow section."""
         text = _read_file("docs/mcp-tools.md")

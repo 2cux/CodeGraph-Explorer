@@ -1,0 +1,231 @@
+# Agent Adoption P0 Test
+
+> P0 效果验证文档：验证 `next_recommended_tools` 和 `codegraph_session` 是否真正提升了 Agent 持续使用 MCP 的行为。
+
+## 背景
+
+P0 的核心假设是：在每个成功 MCP 响应中同时放入"下一步建议"和"本轮 MCP 使用状态"，可以降低 Agent 的选择成本（choice paralysis）和遗忘问题（forgetting）。
+
+- **`next_recommended_tools`**: 告诉 Agent 当前结果后应该调用哪个 CodeGraph 工具
+- **`codegraph_session`**: 每次响应携带本轮使用状态，形成轻量 priming 效应
+
+## 目标
+
+验证 Agent 在第一次调用 CodeGraph 后，是否会继续顺着 `next_recommended_tools` 调用第二个、第三个 CodeGraph 工具，而不是立刻回到 Read / Grep / Glob。
+
+## 前置条件
+
+```bash
+cd <target-project>
+codegraph init
+codegraph doctor
+```
+
+确认：
+
+- [ ] MCP Server 已连接到 Agent（Claude Code / Cursor）
+- [ ] `codegraph doctor` 输出 `symbols > 0`
+- [ ] `codegraph doctor` 输出 `index_health: ok`
+- [ ] `codegraph_repo_status` 返回 `recommended_action: use_codegraph`
+- [ ] `project_root` 指向正确的项目
+- [ ] 目标项目的 `CLAUDE.md` 或 `.cursor/rules/codegraph.mdc` 已放入 CodeGraph Usage 提示块
+
+## 验证清单
+
+对每个测试任务执行后，填写以下表格：
+
+| 测试任务 | 首次 MCP 工具 | next_recommended_tools 是否出现 | codegraph_session 是否出现 | 是否继续调用第二个 MCP | 第二个 MCP 工具 | 是否回退 Grep/Read | 备注 |
+|---|---|---|---|---|---|---|---|
+| 1: 代码理解 | | | | | | | |
+| 2: Bug Fix | | | | | | | |
+| 3: 引用查询 | | | | | | | |
+
+## 判断标准
+
+### ✅ 有效
+
+Agent 至少连续调用 2 个 CodeGraph tools，然后再按需 Read 精确源码。
+
+例：
+```
+codegraph_build_context_pack → codegraph_get_neighbors → codegraph_get_impact → Read（精确文件）
+```
+
+### ⚠️ 部分有效
+
+Agent 调用 1 个 CodeGraph tool，但没有 follow `next_recommended_tools` 的推荐。
+
+例：
+```
+codegraph_search_symbols → Read（手动查看找到的文件）
+```
+
+### ❌ 无效
+
+Agent 只调用一次或完全不用 CodeGraph，继续主要依赖 Grep / Read / Glob。
+
+例：
+```
+Grep → Glob → Read → Read → Read（完全不碰 MCP）
+```
+
+## 测试任务 1：代码理解
+
+### 任务描述
+
+让 Agent 执行以下 prompt：
+
+```text
+Before reading files manually, use CodeGraph to understand how MemoryService
+works and follow the recommended next tools.
+```
+
+### 观察记录
+
+| 项目 | 记录 |
+|---|---|
+| 是否先调用 `codegraph_build_context_pack` 或 `codegraph_search_symbols` | |
+| 是否继续调用 `codegraph_get_neighbors` | |
+| 是否继续调用 `codegraph_get_impact` | |
+| 第二个 MCP 调用是否匹配 `next_recommended_tools` 推荐 | |
+| 是否直接回退 Read / Grep | |
+| Read 是否发生在 CodeGraph 推荐之后 | |
+
+### 预期行为
+
+```
+codegraph_build_context_pack("MemoryService")
+  → next_recommended_tools: [get_neighbors, get_impact]
+  → Agent 调用 get_neighbors
+  → next_recommended_tools: [get_impact]
+  → Agent 调用 get_impact
+  → 然后按需 Read 精确文件
+```
+
+## 测试任务 2：Bug Fix
+
+### 任务描述
+
+让 Agent 执行以下 prompt：
+
+```text
+Before editing, use CodeGraph to inspect the likely entry points,
+dependencies, and impact for this bug fix: "login returns 500 when
+password contains special characters".
+```
+
+### 观察记录
+
+| 项目 | 记录 |
+|---|---|
+| 是否调用 `codegraph_build_context_pack` 或 `codegraph_search_symbols` | |
+| 是否调用 `codegraph_get_neighbors` / `codegraph_get_callers` / `codegraph_get_callees` | |
+| 是否调用 `codegraph_get_impact` | |
+| 是否因为 source snippets 不足而 Read | |
+| Read 是否发生在 CodeGraph 推荐之后 | |
+| 第二个 MCP 调用是否匹配 `next_recommended_tools` 推荐 | |
+
+### 预期行为
+
+```
+codegraph_build_context_pack("fix login 500 error")
+  → entry_points + source_snippets
+  → next_recommended_tools: [get_neighbors, get_impact]
+  → Agent 调用 get_neighbors 查看 login 周边关系
+  → Agent 调用 get_impact 评估修改影响
+  → Read 精确源码行
+```
+
+## 测试任务 3：引用查询
+
+### 任务描述
+
+让 Agent 执行以下 prompt：
+
+```text
+Use CodeGraph to find who calls <symbol> and follow the recommended
+next tools before using grep.
+```
+
+（将 `<symbol>` 替换为项目中一个已知被多处调用的函数）
+
+### 观察记录
+
+| 项目 | 记录 |
+|---|---|
+| 是否调用 `codegraph_search_symbols` 或 `codegraph_get_callers` | |
+| 是否 follow `next_recommended_tools` | |
+| 是否仍然 grep | |
+| grep 是否发生在 CodeGraph 查询之后 | |
+
+### 预期行为
+
+```
+codegraph_get_callers("<symbol>")
+  → callers list
+  → next_recommended_tools: [get_impact]
+  → Agent 调用 get_impact 查看影响
+  → 不再 grep
+```
+
+## P0 字段验证
+
+对所有成功 MCP 响应进行结构化检查：
+
+| 检查项 | 通过 | 备注 |
+|---|---|---|
+| 所有成功响应包含 `next_recommended_tools` | | |
+| 所有成功响应包含 `codegraph_session` | | |
+| `next_recommended_tools` 最多 3 个 | | |
+| 每个推荐包含 `tool` 和 `reason` | | |
+| `reason` 不为空且非泛泛文案 | | |
+| `codegraph_session` 包含 `tools_called_this_session` | | |
+| `codegraph_session` 包含 `most_used_tool` | | |
+| `codegraph_session` 包含 `hint` | | |
+| `search_symbols` 无结果时不推荐 `get_symbol` | | |
+| `repo_status` 为 `run_init` 时不推荐图查询 | | |
+| `repo_status` 为 `refresh_index` 时不推荐图查询 | | |
+| `repo_status` 为 `check_project_root` 时不推荐图查询 | | |
+| `get_impact` 无结果时不机械推荐 `get_neighbors` | | |
+| 不出现 `get_neighbors → get_impact → get_neighbors` 循环 | | |
+
+## 回归检查
+
+| 检查项 | 通过 | 备注 |
+|---|---|---|
+| 所有现有测试通过 (`pytest backend/tests/`) | | |
+| Benchmark gate 不退化 | | |
+| MCP Server 正常启动 | | |
+
+## 常见问题
+
+### Agent 完全不 follow `next_recommended_tools`
+
+可能原因：
+1. Agent 有自己的工具选择策略，不一定会遵循建议
+2. 推荐的工具在当前上下文中不适用
+3. `reason` 文字不够有说服力
+
+**对策**：检查 `reason` 是否具体说明了"为什么现在调用这个工具"和"它替代了什么手动步骤"。
+
+### Agent 只调用一次就回退
+
+可能原因：
+1. `codegraph_session` 的 `hint` 不够有推动力
+2. source snippets 不够，Agent 被迫 Read
+
+**对策**：检查 `hint` 文字是否与当前 tool 匹配。
+
+### 循环推荐
+
+可能原因：
+1. `get_neighbors` → `get_impact` → `get_neighbors` 循环
+2. 推荐列表没有随上下文变化
+
+**对策**：已修复 —— `get_impact` 有结果后不再推荐 `get_neighbors`。
+
+## 更新记录
+
+| 日期 | 变更 |
+|---|---|
+| 2026-06-12 | 初始版本：P0 验证文档，含 3 个测试任务、验证表格、判断标准 |

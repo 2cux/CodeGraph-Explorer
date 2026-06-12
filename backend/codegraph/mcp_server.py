@@ -138,22 +138,23 @@ def _generate_session_hint(total_calls: int, tool_name: str) -> str:
     # Per-tool hints take priority over count-based hints
     if tool_name == "codegraph_build_context_pack":
         return (
-            "Next, inspect neighbors or impact for the main entry points."
+            "Next, inspect callers/callees around the entry points "
+            "(get_neighbors) before opening files."
         )
     if tool_name == "codegraph_search_symbols":
         return (
-            "Next, inspect neighbors or impact for the selected symbol "
-            "instead of grep."
+            "Choose a symbol from the results and inspect its relationships "
+            "(get_neighbors) instead of grepping for references."
         )
     if tool_name == "codegraph_get_neighbors":
         return (
-            "Use impact before editing symbols with callers or "
-            "downstream dependencies."
+            "Check impact (get_impact) before editing symbols that have "
+            "callers or downstream dependencies."
         )
     if tool_name == "codegraph_get_impact":
         return (
-            "Use Read only for exact source text in the impacted files "
-            "or symbols."
+            "Now Read only the exact source text in the impacted files — "
+            "CodeGraph has identified what matters."
         )
 
     # Count-based hints
@@ -164,8 +165,8 @@ def _generate_session_hint(total_calls: int, tool_name: str) -> str:
         )
     if 2 <= total_calls <= 5:
         return (
-            "Continue with CodeGraph for callers, callees, neighbors, "
-            "or impact before grep/read-heavy exploration."
+            "Continue with CodeGraph — use get_neighbors or get_impact "
+            "before grep/read-heavy exploration."
         )
     # > 5 calls
     return (
@@ -414,8 +415,11 @@ def _build_global_next_tools(
     response includes this list (max 3), generated from the tool name and
     result data.
 
-    Returns at most 3 recommendations. Returns an empty list when no clear
-    next step can be inferred.
+    Returns at most 3 recommendations. Returns an empty list when:
+    - No clear next step can be inferred
+    - The natural next step is to Read files (not a CodeGraph tool)
+    - The index is not usable (run_init, refresh_index, check_project_root)
+    - The search/query returned no results
     """
     recommendations: list[dict[str, Any]] = []
 
@@ -428,34 +432,56 @@ def _build_global_next_tools(
         if entry_points:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect local relationships around the main entry points.",
+                "reason": (
+                    "Inspect callers and callees around the main entry point "
+                    "before reading multiple files."
+                ),
             })
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "Check impact before editing the suggested symbols.",
+                "reason": (
+                    "Check downstream impact of modifying the suggested entry "
+                    "points, before editing shared code."
+                ),
             })
 
     elif tool_name == "codegraph_search_symbols":
         total = data.get("total", 0)
-        if total > 5:
+        if total == 0:
+            # No results found — do not recommend further tool calls.
+            # Agent should try a different query or fall back to grep.
+            return []
+        elif total > 5:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Choose the most relevant symbol and inspect its local graph before editing.",
+                "reason": (
+                    "Choose the most relevant symbol from the results and "
+                    "inspect its callers and callees before reading files."
+                ),
             })
         elif total > 0:
             recommendations.append({
                 "tool": "codegraph_get_symbol",
-                "reason": "Open exact metadata and location for the selected symbol.",
+                "reason": (
+                    "Open exact metadata and file location for the selected "
+                    "symbol before deciding which files to read."
+                ),
             })
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect relationships around the found symbols instead of reading many files.",
+                "reason": (
+                    "Inspect callers, callees, and tests around the found "
+                    "symbol instead of reading multiple files in the vicinity."
+                ),
             })
 
     elif tool_name == "codegraph_get_symbol":
         recommendations.append({
             "tool": "codegraph_get_neighbors",
-            "reason": "Inspect connected callers, callees, imports, tests, and related symbols.",
+            "reason": (
+                "Inspect connected callers, callees, imports, and tests "
+                "before reading implementation files."
+            ),
         })
 
     elif tool_name == "codegraph_get_neighbors":
@@ -472,7 +498,10 @@ def _build_global_next_tools(
         if has_relations:
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "Assess blast radius before editing this symbol.",
+                "reason": (
+                    "This symbol has connected callers or dependencies — "
+                    "check the full blast radius before editing."
+                ),
             })
 
     elif tool_name == "codegraph_get_callers":
@@ -480,7 +509,10 @@ def _build_global_next_tools(
         if total > 0:
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "This symbol has upstream dependents. Check impact before modifying it.",
+                "reason": (
+                    f"This symbol has {total} upstream dependents — "
+                    "check the full impact before modifying it."
+                ),
             })
 
     elif tool_name == "codegraph_get_callees":
@@ -488,36 +520,51 @@ def _build_global_next_tools(
         if total > 0:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect broader local relationships before reading implementation files.",
+                "reason": (
+                    f"This symbol calls {total} downstream functions — "
+                    "inspect broader relationships before reading "
+                    "implementation files."
+                ),
             })
 
     elif tool_name == "codegraph_get_impact":
-        confirmed = data.get("confirmed") or data.get("confirmed_impact", {})
-        num_files = len(confirmed.get("files", [])) if isinstance(confirmed, dict) else 0
-        if num_files > 0:
-            recommendations.append({
-                "tool": "codegraph_get_neighbors",
-                "reason": "Inspect the most affected symbols before editing or testing.",
-            })
+        # After impact analysis, the natural next step is to Read the
+        # affected files. Do NOT recommend get_neighbors here — that would
+        # create a get_neighbors → get_impact → get_neighbors cycle.
+        #
+        # CodeGraph tool recommendations are omitted intentionally.
+        # The codegraph_session.hint guides the agent to use Read only
+        # for exact source text in the impacted files.
+        pass
 
     elif tool_name == "codegraph_repo_status":
         action = data.get("recommended_action", "")
         if action == "use_codegraph":
             recommendations.append({
                 "tool": "codegraph_build_context_pack",
-                "reason": "Index is usable. Start with a task-level context pack.",
+                "reason": (
+                    "Index is fresh and usable — start with a task-level "
+                    "context pack for your current goal."
+                ),
             })
-        # For refresh_index, run_init, check_project_root: return empty
-        # — do not recommend further graph queries until index is ready.
+        # For refresh_index, run_init, check_project_root:
+        # Return empty — do not recommend graph queries until index is ready.
+        # The response includes index_status with suggested_fix.
 
     elif tool_name == "codegraph_repo_summary":
         recommendations.append({
             "tool": "codegraph_search_symbols",
-            "reason": "Search for the specific functions, classes, routes, or services relevant to the task.",
+            "reason": (
+                "Search for the specific functions, classes, or routes "
+                "relevant to your task instead of browsing all files."
+            ),
         })
         recommendations.append({
             "tool": "codegraph_build_context_pack",
-            "reason": "Build a focused context pack for the current task.",
+            "reason": (
+                "Build a focused context pack that bundles entry points, "
+                "dependencies, and tests for your task."
+            ),
         })
 
     return recommendations[:3]

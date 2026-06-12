@@ -3359,17 +3359,35 @@ class TestGlobalNextRecommendedTools:
         assert "codegraph_get_impact" in tools
 
     def test_get_impact_returns_next_tools(self, mcp_setup):
-        """get_impact with confirmed files recommends get_neighbors."""
+        """get_impact returns next_recommended_tools list (may be empty).
+
+        After impact analysis, the natural next step is to Read the
+        affected files. CodeGraph does not recommend get_neighbors here
+        to avoid a get_neighbors → get_impact → get_neighbors cycle.
+        An empty list means "use Read for exact source text."
+        """
         from codegraph.mcp_server import get_impact
         result = get_impact("app/api/auth.py::login")
         assert result["ok"] is True
         nrt = result["data"]["next_recommended_tools"]
         assert isinstance(nrt, list)
-        confirmed_files = result["data"]["confirmed"]["files"]
-        if len(confirmed_files) > 0:
-            assert len(nrt) >= 1, f"Expected recommendations when impact found, got: {nrt}"
-            tools = [r["tool"] for r in nrt]
-            assert "codegraph_get_neighbors" in tools
+        # After get_impact, recommendations should NOT include get_neighbors
+        # (cycle prevention). May be empty or recommend non-graph tools.
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_get_neighbors" not in tools, (
+            f"get_impact must NOT recommend get_neighbors to avoid cycle. "
+            f"Got: {nrt}"
+        )
+        # Verify all recommended tools are valid CodeGraph tools
+        valid_tools = {
+            "codegraph_search_symbols", "codegraph_get_symbol",
+            "codegraph_get_callers", "codegraph_get_callees",
+            "codegraph_get_neighbors", "codegraph_get_impact",
+            "codegraph_repo_status", "codegraph_repo_summary",
+            "codegraph_build_context_pack",
+        }
+        for rec in nrt:
+            assert rec["tool"] in valid_tools, f"Invalid tool: {rec['tool']}"
 
     def test_repo_summary_returns_next_tools(self, mcp_setup):
         """repo_summary recommends search_symbols + build_context_pack."""
@@ -4063,4 +4081,311 @@ class TestCodegraphSession:
         # Error responses should not have codegraph_session
         assert "codegraph_session" not in result, (
             "Error responses should not include codegraph_session"
+        )
+
+
+# ── Test: P0 Validation Rules (Round 3) ─────────────────────────────────────
+
+
+class TestP0ValidationRules:
+    """P0 效果验证：next_recommended_tools 规则优化验证。
+
+    Verifies:
+    1. No recommendation cycles (get_neighbors → get_impact → get_neighbors)
+    2. search with 0 results → no get_symbol recommendation
+    3. repo_status non-usable → no graph query recommendations
+    4. get_impact with no confirmed → no get_neighbors
+    5. get_impact with confirmed → no get_neighbors (cycle break)
+    6. Reason text is specific, not generic boilerplate
+    7. next_recommended_tools always ≤ 3
+    """
+
+    # ── Cycle prevention ────────────────────────────────────────────────────
+
+    def test_no_get_neighbors_to_impact_cycle(self, mcp_setup):
+        """get_impact must NOT recommend get_neighbors to break the cycle.
+
+        get_neighbors → get_impact → get_neighbors → get_impact is a cycle.
+        After fixing get_impact to not recommend get_neighbors, the chain
+        naturally ends at Read (external tool).
+        """
+        from codegraph.mcp_server import get_impact
+        result = get_impact("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        tools = [r["tool"] for r in nrt]
+        # get_neighbors must NOT appear in get_impact recommendations
+        assert "codegraph_get_neighbors" not in tools, (
+            f"Cycle prevention: get_impact must not recommend get_neighbors. "
+            f"Got tools: {tools}"
+        )
+
+    def test_get_neighbors_still_can_recommend_impact(self, mcp_setup):
+        """get_neighbors SHOULD still recommend get_impact (one direction only).
+
+        The cycle is only broken in the get_impact→get_neighbors direction.
+        get_neighbors→get_impact is still valid and useful.
+        """
+        from codegraph.mcp_server import get_neighbors
+        result = get_neighbors("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        tools = [r["tool"] for r in nrt]
+        # If there are relationships, get_impact should be recommended
+        counts = result["data"].get("counts", {})
+        if counts.get("callers", 0) > 0 or counts.get("callees", 0) > 0:
+            assert "codegraph_get_impact" in tools, (
+                f"get_neighbors with relationships should recommend get_impact. "
+                f"Got tools: {tools}"
+            )
+
+    # ── Empty results — no mechanical recommendations ───────────────────────
+
+    def test_search_zero_results_no_get_symbol(self, mcp_setup):
+        """search_symbols with 0 results must NOT recommend get_symbol.
+
+        Recommending get_symbol when there's nothing to inspect is
+        confusing and wastes the agent's time.
+        """
+        from codegraph.mcp_server import _build_global_next_tools
+        nrt = _build_global_next_tools("codegraph_search_symbols", {"total": 0})
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_get_symbol" not in tools, (
+            f"search with 0 results should not recommend get_symbol. Got: {tools}"
+        )
+        assert len(nrt) == 0, (
+            f"search with 0 results should return empty recommendations. Got: {tools}"
+        )
+
+    def test_impact_no_confirmed_no_get_neighbors(self, mcp_setup):
+        """get_impact with no confirmed impact must NOT recommend get_neighbors.
+
+        If there's nothing impacted, recommending get_neighbors is mechanical
+        and unhelpful.
+        """
+        from codegraph.mcp_server import _build_global_next_tools
+        nrt = _build_global_next_tools("codegraph_get_impact", {
+            "confirmed": {"files": []},
+        })
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_get_neighbors" not in tools, (
+            f"impact with no confirmed files should not recommend get_neighbors. "
+            f"Got: {tools}"
+        )
+
+    # ── repo_status non-usable states ───────────────────────────────────────
+
+    def test_repo_status_run_init_no_graph_recommendations(self):
+        """repo_status with run_init must NOT recommend graph queries."""
+        from codegraph.mcp_server import _build_global_next_tools
+        for action in ("run_init", "refresh_index", "check_project_root"):
+            nrt = _build_global_next_tools("codegraph_repo_status", {
+                "recommended_action": action,
+            })
+            assert len(nrt) == 0, (
+                f"repo_status with action={action} should return empty "
+                f"recommendations. Got: {nrt}"
+            )
+
+    def test_repo_status_use_codegraph_does_recommend(self):
+        """repo_status with use_codegraph SHOULD recommend context_pack."""
+        from codegraph.mcp_server import _build_global_next_tools
+        nrt = _build_global_next_tools("codegraph_repo_status", {
+            "recommended_action": "use_codegraph",
+        })
+        assert len(nrt) >= 1, (
+            f"repo_status with use_codegraph should recommend tools. Got: {nrt}"
+        )
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_build_context_pack" in tools
+
+    # ── Reason quality ──────────────────────────────────────────────────────
+
+    GENERIC_REASON_PATTERNS = [
+        "Continue using CodeGraph",
+        "Inspect more information",
+        "Use more tools",
+        "Keep going",
+        "Next step",
+        "Do more things",
+    ]
+
+    def test_reasons_are_specific_not_generic(self, mcp_setup):
+        """All recommended tool reasons must be specific, actionable, and
+        explain what manual step the tool replaces.
+
+        Generic reasons like "Continue using CodeGraph" or "Inspect more
+        information" are forbidden.
+        """
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        tools = [
+            ("search_symbols", lambda: search_symbols("login")),
+            ("get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("get_callers", lambda: get_callers("app/api/auth.py::login")),
+            ("get_callees", lambda: get_callees("app/api/auth.py::login")),
+            ("get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
+            ("get_impact", lambda: get_impact("app/api/auth.py::login")),
+            ("repo_status", lambda: repo_status()),
+            ("repo_summary", lambda: repo_summary()),
+            ("build_context_pack", lambda: build_context_pack(task="fix login bug")),
+        ]
+        for tool_name, fn in tools:
+            result = fn()
+            if result["ok"]:
+                nrt = result["data"].get("next_recommended_tools", [])
+                for rec in nrt:
+                    reason = rec.get("reason", "")
+                    assert len(reason) > 0, (
+                        f"{tool_name}: recommendation has empty reason"
+                    )
+                    for pattern in self.GENERIC_REASON_PATTERNS:
+                        assert pattern.lower() not in reason.lower(), (
+                            f"{tool_name}: reason is generic boilerplate. "
+                            f"Found '{pattern}' in: '{reason}'"
+                        )
+
+    def test_reasons_explain_what_they_replace(self, mcp_setup):
+        """Reasons should explain what manual step the tool replaces
+        (reading files, grep, etc.)."""
+        from codegraph.mcp_server import search_symbols, get_symbol, get_neighbors
+
+        # search_symbols → get_neighbors reason should mention reading files or grep
+        r = search_symbols("login")
+        if r["ok"]:
+            nrt = r["data"].get("next_recommended_tools", [])
+            neighbor_recs = [rec for rec in nrt if rec["tool"] == "codegraph_get_neighbors"]
+            if neighbor_recs:
+                reason = neighbor_recs[0]["reason"].lower()
+                assert "reading" in reason or "files" in reason or "grep" in reason or "vicinity" in reason, (
+                    f"get_neighbors reason should reference what it replaces. "
+                    f"Got: '{reason}'"
+                )
+
+        # get_symbol → get_neighbors
+        r = get_symbol("app/api/auth.py::login")
+        if r["ok"]:
+            nrt = r["data"].get("next_recommended_tools", [])
+            for rec in nrt:
+                reason = rec["reason"].lower()
+                assert "reading" in reason or "files" in reason or "implementation" in reason, (
+                    f"get_symbol next-tool reason should explain replacement. "
+                    f"Got: '{reason}'"
+                )
+
+        # get_neighbors → get_impact
+        r = get_neighbors("app/api/auth.py::login")
+        if r["ok"]:
+            nrt = r["data"].get("next_recommended_tools", [])
+            for rec in nrt:
+                reason = rec["reason"].lower()
+                assert "editing" in reason or "blast" in reason or "dependen" in reason, (
+                    f"get_neighbors next-tool reason should explain "
+                    f"why impact is needed. Got: '{reason}'"
+                )
+
+    def test_reasons_are_single_sentence(self):
+        """Each reason should be one concise sentence, not a paragraph."""
+        from codegraph.mcp_server import _build_global_next_tools
+
+        # Test all tools with typical data
+        test_cases = [
+            ("codegraph_search_symbols", {"total": 3}),
+            ("codegraph_get_symbol", {}),
+            ("codegraph_get_neighbors", {"counts": {"callers": 2, "callees": 3}}),
+            ("codegraph_get_callers", {"total": 2}),
+            ("codegraph_get_callees", {"total": 3}),
+            ("codegraph_repo_status", {"recommended_action": "use_codegraph"}),
+            ("codegraph_repo_summary", {}),
+        ]
+        for tool_name, data in test_cases:
+            nrt = _build_global_next_tools(tool_name, data)
+            for rec in nrt:
+                reason = rec.get("reason", "")
+                # Should be a single sentence (only one period at end, no semicolons)
+                assert len(reason) < 300, (
+                    f"{tool_name}: reason too long ({len(reason)} chars). "
+                    f"Got: '{reason}'"
+                )
+                # Should end with a period or not have multiple sentences
+                sentence_count = reason.count(". ") + reason.count(".\n")
+                assert sentence_count <= 0, (
+                    f"{tool_name}: reason should be one sentence. "
+                    f"Got {sentence_count + 1} sentences: '{reason}'"
+                )
+
+    # ── Structural constraints ──────────────────────────────────────────────
+
+    def test_next_recommended_tools_no_invalid_mcp_tool_names(self):
+        """All recommended tool names must be actual CodeGraph MCP tools."""
+        valid_tools = {
+            "codegraph_search_symbols", "codegraph_get_symbol",
+            "codegraph_get_callers", "codegraph_get_callees",
+            "codegraph_get_neighbors", "codegraph_get_impact",
+            "codegraph_repo_status", "codegraph_repo_summary",
+            "codegraph_build_context_pack",
+        }
+        from codegraph.mcp_server import _build_global_next_tools
+
+        # Test across all tool types
+        for tool_name in valid_tools:
+            nrt = _build_global_next_tools(tool_name, {"total": 1})
+            for rec in nrt:
+                assert rec["tool"] in valid_tools, (
+                    f"{tool_name} recommended non-existent tool: {rec['tool']}"
+                )
+
+    def test_merge_next_tools_dedup_and_max_3(self):
+        """_merge_next_tools never exceeds 3 and deduplicates by tool name."""
+        from codegraph.mcp_server import _merge_next_tools
+
+        existing = [
+            {"tool": "codegraph_get_neighbors", "reason": "a"},
+            {"tool": "codegraph_get_impact", "reason": "b"},
+        ]
+        new = [
+            {"tool": "codegraph_get_impact", "reason": "c"},  # duplicate
+            {"tool": "codegraph_get_symbol", "reason": "d"},
+            {"tool": "codegraph_get_callers", "reason": "e"},  # would be 4th
+        ]
+        merged = _merge_next_tools(existing, new)
+        assert len(merged) <= 3, f"Should max at 3, got {len(merged)}: {merged}"
+        tools = [r["tool"] for r in merged]
+        # No duplicates
+        assert len(tools) == len(set(tools)), f"Should have no duplicates: {tools}"
+        # Existing items come first
+        assert merged[0]["tool"] == "codegraph_get_neighbors"
+        assert merged[1]["tool"] == "codegraph_get_impact"
+
+    # ── Documentation ────────────────────────────────────────────────────────
+
+    def test_p0_adoption_doc_exists(self):
+        """docs/agent-adoption-p0-test.md must exist with P0 verification content."""
+        import os
+        doc_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "docs",
+            "agent-adoption-p0-test.md",
+        )
+        # Normalize
+        doc_path = os.path.normpath(doc_path)
+        assert os.path.exists(doc_path), (
+            f"P0 adoption doc not found at: {doc_path}"
+        )
+        with open(doc_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # Must contain P0 verification elements
+        assert "P0" in content, "Doc must mention P0"
+        assert "next_recommended_tools" in content, "Doc must mention next_recommended_tools"
+        assert "codegraph_session" in content, "Doc must mention codegraph_session"
+        assert "有效" in content or "valid" in content.lower(), (
+            "Doc must define success criteria"
+        )
+        assert "测试任务" in content or "Test Task" in content, (
+            "Doc must have test tasks"
+        )
+        assert "验证清单" in content or "Verification" in content, (
+            "Doc must have verification checklist"
         )
