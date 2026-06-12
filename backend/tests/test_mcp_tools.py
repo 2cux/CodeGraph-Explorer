@@ -2819,28 +2819,28 @@ class TestAgentUsageGuidance:
         doc = get_callers.__doc__ or ""
         assert "instead of grep" in doc.lower()
 
-    def test_get_callees_description_guides_instead_of_read(self):
-        """get_callees description should mention 'instead of manual Read' or 'instead of' grep/read."""
+    def test_get_callees_description_guides_before_read(self):
+        """get_callees description should mention 'before manually reading' or 'depend on'."""
         from codegraph.mcp_server import get_callees
         doc = get_callees.__doc__ or ""
         doc_lower = doc.lower()
-        has_instead_of_read = "instead of manual read" in doc_lower
-        has_instead_of_grep = "instead of" in doc_lower and ("grep" in doc_lower or "read" in doc_lower)
-        assert has_instead_of_read or has_instead_of_grep, (
-            f"get_callees description should guide away from read/grep, got: {doc[:120]}"
+        has_before_manually = "before manually reading" in doc_lower
+        has_depend_on = "depend on" in doc_lower
+        assert has_before_manually or has_depend_on, (
+            f"get_callees description should guide away from manual read, got: {doc[:120]}"
         )
 
     def test_get_neighbors_description_guides_before_reading_files(self):
-        """get_neighbors description should mention 'before reading multiple files'."""
+        """get_neighbors description should mention 'Use before reading multiple'."""
         from codegraph.mcp_server import get_neighbors
         doc = get_neighbors.__doc__ or ""
-        assert "before reading multiple files" in doc.lower()
+        assert "before reading multiple" in doc.lower()
 
-    def test_get_impact_description_guides_before_modifying(self):
-        """get_impact description should mention 'before modifying shared code'."""
+    def test_get_impact_description_guides_before_editing(self):
+        """get_impact description should mention 'before editing shared'."""
         from codegraph.mcp_server import get_impact
         doc = get_impact.__doc__ or ""
-        assert "before modifying" in doc.lower()
+        assert "before editing shared" in doc.lower()
 
     def test_build_context_pack_description_guides_first_tool(self):
         """build_context_pack description should state PRIMARY TOOL and guide first use."""
@@ -2854,19 +2854,16 @@ class TestAgentUsageGuidance:
             f"build_context_pack description should guide 'Use first', got: {doc[:120]}"
         )
 
-    def test_repo_status_description_guides_project_binding_check(self):
-        """repo_status description should describe it as a project binding and index health check tool."""
+    def test_repo_status_description_guides_project_check(self):
+        """repo_status description should describe which project is being queried."""
         from codegraph.mcp_server import repo_status
         doc = repo_status.__doc__ or ""
         doc_lower = doc.lower()
         assert "which project" in doc_lower, (
             f"repo_status description should mention 'which project', got: {doc[:120]}"
         )
-        assert "index health" in doc_lower, (
-            f"repo_status description should mention 'index health', got: {doc[:120]}"
-        )
-        assert "bound to" in doc_lower, (
-            f"repo_status description should mention 'bound to', got: {doc[:120]}"
+        assert "project_root" in doc_lower, (
+            f"repo_status description should mention 'project_root', got: {doc[:120]}"
         )
 
     def test_repo_summary_description_guides_use_first(self):

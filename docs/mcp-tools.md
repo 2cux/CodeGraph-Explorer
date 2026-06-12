@@ -225,6 +225,38 @@ When `mode=quick` returns many results or potential impact, the response may inc
 
 This helps agents discover the right follow-up tool without reading docs.
 
+## Tool Description Style
+
+CodeGraph tool descriptions are example-first because coding agents often respond better to concrete calls than long steering text.
+
+Quick reference for common questions:
+
+```text
+Find a function:
+→ codegraph_search_symbols(query="login", types="function")
+
+Understand a symbol:
+→ codegraph_get_neighbors(symbol="MemoryService")
+
+Who calls this?
+→ codegraph_get_callers(symbol="MemoryService.findRelatedCCRs")
+
+What does this call?
+→ codegraph_get_callees(symbol="MemoryService")
+
+What might break if I edit this?
+→ codegraph_get_impact(symbol="MemoryService")
+
+Which project is this?
+→ codegraph_repo_status()
+
+What is this repo made of?
+→ codegraph_repo_summary()
+
+Start a larger task:
+→ codegraph_build_context_pack(task="fix MemoryService bug")
+```
+
 ## Design Principles
 
 - **Compact by default**: Tools return minimal JSON; request `standard` mode for full details

@@ -2232,11 +2232,10 @@ def search_symbols(
     file_filter: str | None = None,
     max_results: int | None = None,
 ) -> dict[str, Any]:
-    """Search for code symbols by name, file path, type, tags, or path glob.
-
+    """Find "login" function → query="login", types="function".
+    Find all routes in api/ → query="", paths="api/**", types="route".
     Use before grep when looking for functions, classes, methods, routes,
-    exports, or framework entry points. Prefer this over grep/glob for
-    finding where a symbol is defined or referenced in the codebase.
+    exports, or framework entry points.
 
     Args:
         query: Search keyword — symbol name, file path fragment, or docstring keyword
@@ -2452,11 +2451,10 @@ def get_symbol(
     response_mode: str = "compact",
     include_explanations: bool = False,
 ) -> dict[str, Any]:
-    """Get detailed information about a specific code symbol.
-
-    Use after search_symbols when you need exact metadata, location,
-    signature, and docstring for a symbol. Prefer this before Read
-    when you only need symbol-level information rather than full file content.
+    """Open details for a selected symbol from search results.
+    Example: get exact file, line range, metadata, and source snippet for
+    "MemoryService.findRelatedCCRs".
+    Use after search_symbols when you need symbol-level detail before reading a file.
 
     Supports fuzzy lookup with resolve mode. Returns AMBIGUOUS_SYMBOL
     error when multiple candidates match.
@@ -2678,11 +2676,9 @@ def get_callers(
     # ── Mode preset ───────────────────────────────────────────────────────
     mode: str | None = None,
 ) -> dict[str, Any]:
-    """Answers: "Who calls this function, method, class, route, or symbol?"
-
-    Use this instead of grep when checking references, upstream dependencies,
-    or call chains. Use mode=quick for fast lookup and mode=review before
-    changing shared code.
+    """Ask: "Who calls this function?" → use symbol="MemoryService.findRelatedCCRs".
+    Use instead of grep for upstream references, callers, and call chains.
+    Run impact next before editing shared code.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
     Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
@@ -2944,11 +2940,9 @@ def get_callees(
     # ── Mode preset ───────────────────────────────────────────────────────
     mode: str | None = None,
 ) -> dict[str, Any]:
-    """Answers: "What does this symbol call or depend on?"
-
-    Use instead of grep for call chain and implementation
-    dependency tracing. Use mode=quick for fast lookup and mode=deep
-    for deeper dependency exploration.
+    """Ask: "What does this symbol call or depend on?" → use symbol="MemoryService".
+    Shows downstream calls, dependencies, and invoked symbols.
+    Use before manually reading implementation dependencies.
 
     External/unresolved symbols are separated into ``external_calls``.
 
@@ -3143,10 +3137,9 @@ def get_neighbors(
     # ── Mode preset ───────────────────────────────────────────────────────
     mode: str | None = None,
 ) -> dict[str, Any]:
-    """Answers: "What is connected to this symbol?"
-
-    Use this before reading multiple files to understand local
-    relationships. Use mode=review when preparing a code change.
+    """Ask: "What is connected to this symbol?" → use symbol="MemoryService".
+    Shows callers, callees, imports, tests, routes, and nearby related symbols.
+    Use before reading multiple related files.
 
     Compact mode returns neighbors grouped by role. Standard mode returns
     full nodes + edges. External/unresolved symbols are always in their
@@ -3482,14 +3475,10 @@ def get_impact(
     # ── Mode preset ───────────────────────────────────────────────────────
     mode: str | None = None,
 ) -> dict[str, Any]:
-    """Answers: "If I change this symbol, what might break?"
-
-    Use this before modifying shared code, public APIs, routes, services, or
-    framework entry points. Use mode=quick for a fast impact check and
-    mode=review before committing a change.
-
-    Returns confirmed impact, possible impact, risk level with reason codes,
-    and separates upstream/downstream/test/external items clearly.
+    """Ask: "If I change this symbol, what might break?" → use symbol="MemoryService".
+    Use before editing shared services, public APIs, routes, framework entry
+    points, or widely-used functions.
+    Helps identify affected callers, tests, files, and confidence levels.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
     Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
@@ -4048,15 +4037,11 @@ def build_context_pack(
     mode: str = "summary",
     response_mode: str = "compact",
 ) -> dict[str, Any]:
-    """PRIMARY TOOL. Answers: "What files, symbols, relationships, and source
-    snippets matter for this task?" Use first for implementation, debugging,
-    review, refactoring, or impact analysis before grep/glob/read-heavy
-    exploration.
-
-    For debug, review, refactor, fix, and implementation tasks, returns
-    source_snippets with key code fragments so you don't need to immediately
-    Read files. Also returns next_recommended_tools to guide the next
-    CodeGraph calls.
+    """PRIMARY TOOL. Task: "fix MemoryService bug" → call this with task="fix MemoryService bug".
+    Task: "implement repo profile service" → returns relevant files, symbols,
+    relationships, source snippets, and next tools.
+    Use first for implementation, debugging, review, refactoring, or impact
+    analysis before grep/glob/read-heavy exploration.
 
     Args:
         task: Natural language description of what you need to do
@@ -4244,12 +4229,10 @@ def repo_status(
     root: str | None = None,
     response_mode: str = "compact",
 ) -> dict[str, Any]:
-    """Check index health and which project CodeGraph is currently bound to.
-
-    Use this when verifying whether MCP is querying the right project.
-    Always returns project_root, index_path, cwd, resolution_method,
-    index_exists, symbol_count, edge_count, and project-binding warnings.
-    Also reports index freshness (fresh/stale/missing) and suggested fix.
+    """Ask: "Which project is CodeGraph querying right now?" → returns project_root,
+    index_path, cwd, freshness, and warnings.
+    Use when MCP may be connected but results look wrong or stale.
+    Run before relying on CodeGraph in a new project.
 
     Args:
         root: Optional project root path override
@@ -4487,13 +4470,10 @@ def repo_summary(
     response_mode: str = "compact",
     include_explanations: bool = False,
 ) -> dict[str, Any]:
-    """Get a summary of the indexed repository.
-
-    Use first when entering a repository or checking overall structure
-    before glob/grep exploration. Prefer this before glob/grep/read for
-    getting an overview of the codebase — file count, symbol breakdown,
-    top modules, entry points, test coverage, framework detection, and
-    language support levels.
+    """Ask: "What is this repository made of?" → returns languages, major files,
+    symbol counts, and framework signals.
+    Use first when entering a repository before glob/grep/read exploration.
+    For a specific task, use build_context_pack next.
 
     Args:
         response_mode: "compact" (default) or "standard"

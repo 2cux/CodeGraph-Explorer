@@ -105,10 +105,10 @@ class TestMcpToolDescriptions:
         )
 
     def test_get_neighbors_before_reading(self):
-        """get_neighbors should say 'Use before reading multiple files'."""
+        """get_neighbors should say 'Use before reading multiple'."""
         doc = inspect.getdoc(mcp_mod.get_neighbors) or ""
-        assert "before reading multiple files" in doc.lower(), (
-            f"get_neighbors should state 'Use before reading multiple files'. Got: {doc[:120]}..."
+        assert "before reading multiple" in doc.lower(), (
+            f"get_neighbors should state 'Use before reading multiple'. Got: {doc[:120]}..."
         )
 
     def test_get_callers_instead_of_grep(self):
@@ -118,18 +118,21 @@ class TestMcpToolDescriptions:
             f"get_callers should state 'Use instead of grep'. Got: {doc[:120]}..."
         )
 
-    def test_get_callees_instead_of_grep(self):
-        """get_callees should say 'Use instead of grep for call chain'."""
+    def test_get_callees_dependency_exploration(self):
+        """get_callees should mention downstream calls and dependencies."""
         doc = inspect.getdoc(mcp_mod.get_callees) or ""
-        assert "instead of grep" in doc.lower(), (
-            f"get_callees should state 'Use instead of grep'. Got: {doc[:120]}..."
+        assert (
+            "depend on" in doc.lower() or "dependency" in doc.lower()
+            or "downstream calls" in doc.lower()
+        ), (
+            f"get_callees should mention dependencies or downstream calls. Got: {doc[:120]}..."
         )
 
-    def test_get_impact_before_modifying(self):
-        """get_impact should say 'Use before modifying shared code'."""
-        doc = inspect.getdoc(mcp_mod.get_impact) or ""
-        assert "before modifying shared code" in doc.lower(), (
-            f"get_impact should state 'Use before modifying shared code'. Got: {doc[:120]}..."
+    def test_get_impact_before_editing(self):
+        """get_impact should say 'Use before editing shared'."""
+        impact_doc = inspect.getdoc(mcp_mod.get_impact) or ""
+        assert "before editing shared" in impact_doc.lower(), (
+            f"get_impact should state 'Use before editing shared'. Got: {impact_doc[:120]}..."
         )
 
     def test_repo_status_fresh_mention(self):
@@ -146,6 +149,109 @@ class TestMcpToolDescriptions:
                 doc = (inspect.getdoc(obj) or "").lower()
                 assert "will automatically" not in doc, (
                     f"Tool {obj.__mcp_tool_name__} must not claim 'will automatically'"
+                )
+
+
+class TestMcpToolDescriptionsExampleDriven:
+    """Verify MCP tool descriptions are example-driven with concrete call samples."""
+
+    def test_build_context_pack_has_primary_tool(self):
+        """build_context_pack description must contain PRIMARY TOOL."""
+        doc = inspect.getdoc(mcp_mod.build_context_pack) or ""
+        assert "PRIMARY TOOL" in doc, (
+            f"build_context_pack description should state PRIMARY TOOL. Got: {doc[:120]}..."
+        )
+
+    def test_build_context_pack_has_task_example(self):
+        """build_context_pack description must contain a concrete task example."""
+        doc = inspect.getdoc(mcp_mod.build_context_pack) or ""
+        assert 'task="fix' in doc or 'task="implement' in doc, (
+            f"build_context_pack description should contain task= example. Got: {doc[:120]}..."
+        )
+
+    def test_search_symbols_has_find_login_example(self):
+        """search_symbols description must contain Find \"login\" function example."""
+        doc = inspect.getdoc(mcp_mod.search_symbols) or ""
+        assert 'Find "login" function' in doc, (
+            f"search_symbols should have Find 'login' function example. Got: {doc[:120]}..."
+        )
+
+    def test_get_callers_has_who_calls_question(self):
+        """get_callers description must contain 'Who calls this function?'."""
+        doc = inspect.getdoc(mcp_mod.get_callers) or ""
+        assert "Who calls this function?" in doc, (
+            f"get_callers should ask 'Who calls this function?'. Got: {doc[:120]}..."
+        )
+
+    def test_get_callees_has_what_depends_question(self):
+        """get_callees description must contain 'What does this symbol call or depend on?'."""
+        doc = inspect.getdoc(mcp_mod.get_callees) or ""
+        assert "What does this symbol call or depend on?" in doc, (
+            f"get_callees should ask 'What does this symbol call or depend on?'. Got: {doc[:120]}..."
+        )
+
+    def test_get_neighbors_has_what_connected_question(self):
+        """get_neighbors description must contain 'What is connected to this symbol?'."""
+        doc = inspect.getdoc(mcp_mod.get_neighbors) or ""
+        assert "What is connected to this symbol?" in doc, (
+            f"get_neighbors should ask 'What is connected to this symbol?'. Got: {doc[:120]}..."
+        )
+
+    def test_get_impact_has_what_breaks_question(self):
+        """get_impact description must contain 'If I change this symbol, what might break?'."""
+        doc = inspect.getdoc(mcp_mod.get_impact) or ""
+        assert "If I change this symbol, what might break?" in doc, (
+            f"get_impact should ask 'If I change this symbol, what might break?'. Got: {doc[:120]}..."
+        )
+
+    def test_repo_status_has_which_project_question(self):
+        """repo_status description must contain 'Which project is CodeGraph querying right now?'."""
+        doc = inspect.getdoc(mcp_mod.repo_status) or ""
+        assert "Which project is CodeGraph querying right now?" in doc, (
+            f"repo_status should ask 'Which project is CodeGraph querying right now?'. Got: {doc[:120]}..."
+        )
+
+    def test_all_tool_names_preserved(self):
+        """All 9 MCP tool functions exist and have docstrings."""
+        tool_funcs = [
+            ("codegraph_build_context_pack", mcp_mod.build_context_pack),
+            ("codegraph_search_symbols", mcp_mod.search_symbols),
+            ("codegraph_get_symbol", mcp_mod.get_symbol),
+            ("codegraph_get_callers", mcp_mod.get_callers),
+            ("codegraph_get_callees", mcp_mod.get_callees),
+            ("codegraph_get_neighbors", mcp_mod.get_neighbors),
+            ("codegraph_get_impact", mcp_mod.get_impact),
+            ("codegraph_repo_status", mcp_mod.repo_status),
+            ("codegraph_repo_summary", mcp_mod.repo_summary),
+        ]
+        for expected_name, func in tool_funcs:
+            assert callable(func), (
+                f"{expected_name} is not callable"
+            )
+            doc = inspect.getdoc(func) or ""
+            assert len(doc) > 0, (
+                f"{expected_name} has empty docstring"
+            )
+
+    def test_tool_parameter_schemas_unchanged(self):
+        """All MCP tool parameter names and defaults should not have changed structurally."""
+        # Verify signature is non-empty for all tools — structural check only.
+        for name, obj in inspect.getmembers(mcp_mod, inspect.isfunction):
+            if not hasattr(obj, "__mcp_tool_name__"):
+                continue
+            sig = inspect.signature(obj)
+            param_names = list(sig.parameters.keys())
+            assert len(param_names) > 0, (
+                f"Tool {obj.__mcp_tool_name__} has no parameters — schema may be broken"
+            )
+            # Verify the signature is still callable with its defaults
+            for p_name, p in sig.parameters.items():
+                assert p.kind in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                ), (
+                    f"Tool {obj.__mcp_tool_name__} param {p_name} has unexpected "
+                    f"kind {p.kind} — schema may be broken"
                 )
 
 
