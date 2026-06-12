@@ -34,6 +34,7 @@ Diagnostics:
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import json
 import os
@@ -634,6 +635,8 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "index_exists", "symbol_count", "edge_count",
     # Source snippets & next steps (context_pack enhancement)
     "source_snippets", "next_recommended_tools", "file", "snippet",
+    # Scan mode (Progressive Context Pack Stage 1)
+    "next_token", "related_files", "mode", "summary", "task", "symbol",
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -4035,6 +4038,182 @@ def _build_next_recommended_tools(
     return recommendations[:3]
 
 
+# ── Scan mode helpers (Progressive Context Pack Stage 1) ──────────────────
+
+_SCAN_TOKEN_VERSION = "1"
+
+# Max counts for scan mode output
+_SCAN_MAX_ENTRY_POINTS = 5
+_SCAN_MAX_RELATED_FILES = 5
+
+
+def _generate_scan_token(
+    task: str,
+    entry_points: list[dict[str, Any]],
+    related_files: list[dict[str, Any]],
+) -> str | None:
+    """Generate a lightweight next_token for scan mode.
+
+    The token is a base64-encoded JSON object containing only the minimal
+    information needed for a future ``mode=deepen`` call. No source code,
+    no full context pack, no disk writes.
+
+    Returns ``None`` if there are no entry points to carry forward.
+    """
+    if not entry_points:
+        return None
+
+    try:
+        from datetime import datetime, timezone
+        payload = {
+            "v": _SCAN_TOKEN_VERSION,
+            "task": task,
+            "selected_symbols": [
+                ep.get("symbol_id", "") for ep in entry_points
+            ],
+            "selected_files": [
+                rf.get("file", "") for rf in related_files
+            ],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        json_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(json_bytes).rstrip(b"=").decode("ascii")
+    except Exception:
+        # Token generation failure must not cause the entire tool to fail.
+        return None
+
+
+def _decode_scan_token(token: str) -> dict[str, Any] | None:
+    """Decode a scan token back to its payload dict.
+
+    Returns ``None`` on any decode error — token is best-effort.
+    """
+    try:
+        # Restore padding
+        padding = 4 - len(token) % 4
+        if padding != 4:
+            token += "=" * padding
+        json_bytes = base64.urlsafe_b64decode(token.encode("ascii"))
+        return json.loads(json_bytes)
+    except Exception:
+        return None
+
+
+def _build_scan_result(
+    store: "GraphStore",
+    task_description: str,
+) -> dict[str, Any]:
+    """Build a lightweight scan-mode result.
+
+    Calls the full context pack builder internally to discover entry points,
+    then strips it down to only: entry_points, related_files, summary, next_token.
+
+    Does NOT return: subgraph, impact, source code, selected_context.
+    """
+    from codegraph.context.pack_builder import build_context_pack as _build_full
+
+    # Use the existing builder to find entry points — but with minimal budget
+    pack = _build_full(
+        store=store,
+        task_description=task_description,
+        max_tokens=2000,
+        max_files=_SCAN_MAX_ENTRY_POINTS,
+        depth=1,
+        include_tests=False,
+    )
+
+    # ── Entry points (3-5) ──────────────────────────────────────────────
+    entry_points: list[dict[str, Any]] = []
+    for ep in pack.entry_points[:_SCAN_MAX_ENTRY_POINTS]:
+        entry_points.append({
+            "symbol_id": ep.symbol_id,
+            "symbol": ep.name,
+            "file": ep.file_path,
+            "line_start": ep.location.line_start if ep.location else None,
+            "line_end": ep.location.line_end if ep.location else None,
+            "reason": ep.reason or "Likely entry point for the requested task.",
+            "confidence": round(ep.score, 4),
+        })
+
+    # ── Related files (3-5, deduplicated) ────────────────────────────────
+    seen_files: set[str] = set()
+    related_files: list[dict[str, Any]] = []
+
+    # Priority 1: entry point files
+    for ep in entry_points:
+        fp = ep.get("file", "")
+        if fp and fp not in seen_files:
+            seen_files.add(fp)
+            related_files.append({
+                "file": fp,
+                "reason": "Contains the highest-confidence entry point.",
+            })
+
+    # Priority 2: files from related_symbols
+    for rs in pack.related_symbols:
+        if len(related_files) >= _SCAN_MAX_RELATED_FILES:
+            break
+        # RelatedSymbol has symbol_id (e.g. "app/api/auth.py::login"),
+        # extract file path from it
+        sid = rs.symbol_id
+        fp = sid.split("::", 1)[0] if "::" in sid else ""
+        if not fp:
+            continue
+        if fp not in seen_files:
+            seen_files.add(fp)
+            related_files.append({
+                "file": fp,
+                "reason": rs.reason or "Related to entry points via call graph or imports.",
+            })
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    ep_count = len(entry_points)
+    rf_count = len(related_files)
+    if ep_count == 0:
+        summary = "No entry points found for this task. Try rephrasing or use search_symbols directly."
+    elif ep_count == 1:
+        summary = (
+            f"Found 1 likely entry point and {rf_count} related file(s). "
+            "Use get_neighbors to inspect relationships around the entry point."
+        )
+    else:
+        summary = (
+            f"Found {ep_count} likely entry points and {rf_count} related file(s). "
+            "Use get_neighbors or get_impact to narrow down before reading multiple files."
+        )
+
+    # ── Next token ───────────────────────────────────────────────────────
+    next_token = _generate_scan_token(task_description, entry_points, related_files)
+
+    # ── Next recommended tools (conservative: only existing tools) ───────
+    next_tools: list[dict[str, Any]] = []
+    if entry_points:
+        next_tools.append({
+            "tool": "codegraph_get_neighbors",
+            "reason": (
+                "Inspect relationships around the highest-confidence entry point "
+                "before reading multiple files."
+            ),
+        })
+        next_tools.append({
+            "tool": "codegraph_get_impact",
+            "reason": (
+                "Check impact before editing the suggested entry point."
+            ),
+        })
+
+    return {
+        "ok": True,
+        "mode": "scan",
+        "task": task_description,
+        "entry_points": entry_points,
+        "related_files": related_files,
+        "summary": summary,
+        "next_token": next_token,
+        "next_recommended_tools": next_tools,
+    }
+
+
 # ── Tool: build_context_pack ──────────────────────────────────────────────
 
 
@@ -4064,10 +4243,41 @@ def build_context_pack(
         include_tests: Whether to include related tests (default true)
         include_code: Whether to include source code snippets (default true)
         mode: Output mode — "full" (complete JSON), "summary" (key insights only),
-              or "markdown" (returns markdown file path) (default "summary")
+              "markdown" (returns markdown file path), or "scan" (lightweight
+              entry point discovery) (default "summary")
         response_mode: "compact" or "standard" (default)"
     """
     from codegraph.context.pack_builder import build_context_pack as _build
+
+    # ── Scan mode: lightweight entry point discovery ─────────────────────
+    if mode == "scan":
+        try:
+            store, cg_dir = _load_store()
+        except RuntimeError as e:
+            return _respond_error(
+                code=ERROR_CODES["INDEX_MISSING"],
+                message=str(e),
+                tool="codegraph_build_context_pack",
+            )
+        scan_result = _build_scan_result(store, task)
+        scan_warnings = _collect_warnings()
+        if scan_result.get("next_token") is None and scan_result.get("entry_points"):
+            scan_warnings.append({
+                "type": "next_token_failed",
+                "severity": "info",
+                "message": "Could not generate next_token for scan mode. "
+                           "The scan result is still usable.",
+                "reason_code": "next_token_generation_failed",
+            })
+        pack_warnings_for_scan: list[dict[str, Any]] = scan_warnings
+        return _respond_ok(
+            data=scan_result,
+            tool="codegraph_build_context_pack",
+            warnings=pack_warnings_for_scan,
+            response_mode=response_mode,
+            item_count=len(scan_result.get("entry_points", [])),
+            truncated=False,
+        )
 
     # ── Enforce hard max token budget ───────────────────────────────────
     HARD_MAX_TOKENS = 20000

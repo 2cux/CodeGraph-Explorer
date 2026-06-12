@@ -142,6 +142,37 @@ Get high-level statistics: file count, symbol count, type breakdown, edge count,
 
 Generate an optional task-oriented evidence snapshot. See [Evidence Pack docs](evidence-pack.md).
 
+Supports a progressive pipeline via the `mode` parameter:
+
+| mode | Description |
+|------|-------------|
+| `summary` (default) | Key insights only — entry points, related symbols, call graph summary, impact, tests |
+| `full` | Complete JSON output with all evidence fields |
+| `markdown` | Export to markdown file, returns file path |
+| `scan` | Lightweight entry point discovery (Stage 1 of progressive pipeline) |
+
+## Progressive Context Pack
+
+`codegraph_build_context_pack` supports a lightweight scan mode for broad tasks where you want entry points first, before committing to a full context pack.
+
+Use scan mode when the task is broad and you want entry points first:
+
+```text
+codegraph_build_context_pack(task="fix MemoryService bug", mode="scan")
+```
+
+Scan mode returns:
+
+- **`entry_points`** (3–5): Likely entry point symbols with file, line range, reason, and confidence
+- **`related_files`** (3–5): Files related to the entry points
+- **`summary`**: Short human-readable summary of findings
+- **`next_token`**: Opaque token for future `mode=deepen` (planned)
+- **`next_recommended_tools`**: Suggested next CodeGraph tools to call (e.g. `get_neighbors`, `get_impact`)
+
+It avoids returning a large context pack up front — no subgraph, no impact analysis, no source snippets. The goal is to help the agent pick the right entry point before deepening.
+
+`mode=full` and `mode=summary` remain available for backward compatibility.
+
 ## Recommended Agent Workflow
 
 When working in a codebase indexed by CodeGraph, follow this workflow instead of grep/glob/read-heavy exploration:

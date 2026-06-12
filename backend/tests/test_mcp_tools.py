@@ -1323,6 +1323,194 @@ class TestBuildContextPack:
             assert len(nrt) <= 3, f"Expected ≤ 3 recommendations, got {len(nrt)}"
 
 
+# ── Test: build_context_pack mode=scan (Progressive Context Pack Stage 1) ────
+
+
+class TestBuildContextPackScanMode:
+    """mode=scan returns lightweight entry point discovery."""
+
+    def test_mode_scan_returns_entry_points(self, mcp_setup):
+        """mode=scan returns entry_points list."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"], f"Expected ok=true, got: {result}"
+        data = result["data"]
+        assert "entry_points" in data, f"scan result missing entry_points: {data.keys()}"
+        assert isinstance(data["entry_points"], list)
+        assert len(data["entry_points"]) >= 1, f"Expected at least 1 entry point"
+
+    def test_mode_scan_returns_related_files(self, mcp_setup):
+        """mode=scan returns related_files list."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        data = result["data"]
+        assert "related_files" in data, f"scan result missing related_files"
+        assert isinstance(data["related_files"], list)
+
+    def test_mode_scan_returns_summary(self, mcp_setup):
+        """mode=scan returns a short summary string."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        data = result["data"]
+        assert "summary" in data, f"scan result missing summary"
+        assert isinstance(data["summary"], str)
+        assert len(data["summary"]) > 0
+
+    def test_mode_scan_returns_next_token(self, mcp_setup):
+        """mode=scan returns next_token when entry points exist."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        data = result["data"]
+        assert "next_token" in data, f"scan result missing next_token"
+        token = data["next_token"]
+        assert token is not None, "next_token should not be None when entry points exist"
+        assert isinstance(token, str)
+        assert len(token) > 0
+
+    def test_mode_scan_no_subgraph(self, mcp_setup):
+        """mode=scan does NOT return a full call_graph/subgraph."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        data = result["data"]
+        assert "call_graph" not in data, "scan mode should not include call_graph"
+        assert "subgraph" not in data, "scan mode should not include subgraph"
+
+    def test_mode_scan_no_impact(self, mcp_setup):
+        """mode=scan does NOT return impact analysis."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        data = result["data"]
+        assert "impact" not in data, "scan mode should not include impact"
+
+    def test_mode_scan_no_source_code(self, mcp_setup):
+        """mode=scan does NOT include source snippets or code content."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        data = result["data"]
+        assert "source_snippets" not in data, "scan mode should not include source_snippets"
+        assert "selected_context" not in data, "scan mode should not include selected_context"
+
+    def test_mode_scan_shorter_than_full(self, mcp_setup):
+        """mode=scan output is significantly shorter than mode=full."""
+        from codegraph.mcp_server import build_context_pack
+        import json
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        full_result = build_context_pack("add MFA to login", mode="full", response_mode="standard")
+
+        scan_size = len(json.dumps(scan_result))
+        full_size = len(json.dumps(full_result))
+
+        # Scan mode should be noticeably shorter than full mode
+        assert scan_size < full_size, (
+            f"scan ({scan_size} bytes) should be shorter than full ({full_size} bytes)"
+        )
+
+    def test_mode_scan_next_token_no_source_code(self, mcp_setup):
+        """next_token does not contain source code."""
+        from codegraph.mcp_server import build_context_pack, _decode_scan_token
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        token = result["data"].get("next_token")
+        assert token is not None
+
+        decoded = _decode_scan_token(token)
+        assert decoded is not None, "token should be decodable"
+        # Verify decoded token only has expected keys
+        expected_keys = {"v", "task", "selected_symbols", "selected_files", "created_at"}
+        actual_keys = set(decoded.keys())
+        assert actual_keys == expected_keys, (
+            f"Token keys {actual_keys} should be exactly {expected_keys}"
+        )
+        # No source code in token
+        token_str = str(decoded)
+        assert "def " not in token_str, "token should not contain source code"
+        assert "class " not in token_str, "token should not contain source code"
+
+    def test_mode_scan_next_recommended_tools_existing_only(self, mcp_setup):
+        """mode=scan next_recommended_tools only recommends existing tools."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+
+        # _respond_ok merges scan_result's own next_recommended_tools with global ones
+        nrt = result["data"].get("next_recommended_tools", [])
+        assert isinstance(nrt, list)
+        for rec in nrt:
+            tool = rec.get("tool", "")
+            assert tool.startswith("codegraph_"), f"Tool should start with codegraph_: {rec}"
+            # Must not recommend unimplemented tools
+            assert "deepen" not in tool.lower(), (
+                f"Should not recommend unimplemented deepen mode: {rec}"
+            )
+
+    def test_mode_scan_backward_compat_no_mode(self, mcp_setup):
+        """Not passing mode keeps existing behavior (summary mode)."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login")
+        assert result["ok"]
+        data = result["data"]
+        # Default mode=summary behavior: has entry_points, call_graph, impact
+        assert "entry_points" in data
+        # Summary mode should have call_graph (as summary) and impact
+        # but NOT have mode="scan" specific structure
+        assert data.get("mode") != "scan"
+
+    def test_mode_scan_backward_compat_mode_full(self, mcp_setup):
+        """mode=full keeps existing full context pack behavior."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="full", response_mode="standard")
+        assert result["ok"]
+        data = result["data"]
+        # Full mode should have comprehensive data
+        assert "entry_points" in data
+        # Full mode should NOT have scan-specific fields
+        assert data.get("mode") != "scan"
+
+    def test_mode_scan_entry_points_have_required_fields(self, mcp_setup):
+        """Each entry_point in scan mode has symbol, file, reason, confidence."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        for ep in result["data"].get("entry_points", []):
+            assert "symbol" in ep, f"entry_point missing 'symbol': {ep}"
+            assert "file" in ep, f"entry_point missing 'file': {ep}"
+            assert "reason" in ep, f"entry_point missing 'reason': {ep}"
+            assert "confidence" in ep, f"entry_point missing 'confidence': {ep}"
+
+    def test_mode_scan_entry_points_count_limited(self, mcp_setup):
+        """mode=scan entry_points count should be 3-5 max."""
+        from codegraph.mcp_server import build_context_pack, _SCAN_MAX_ENTRY_POINTS
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        eps = result["data"].get("entry_points", [])
+        assert len(eps) <= _SCAN_MAX_ENTRY_POINTS, (
+            f"entry_points count {len(eps)} exceeds max {_SCAN_MAX_ENTRY_POINTS}"
+        )
+
+    def test_mode_scan_related_files_count_limited(self, mcp_setup):
+        """mode=scan related_files count should be 3-5 max."""
+        from codegraph.mcp_server import build_context_pack, _SCAN_MAX_RELATED_FILES
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert result["ok"]
+        rfs = result["data"].get("related_files", [])
+        assert len(rfs) <= _SCAN_MAX_RELATED_FILES, (
+            f"related_files count {len(rfs)} exceeds max {_SCAN_MAX_RELATED_FILES}"
+        )
+
+    def test_mode_scan_has_codegraph_session(self, mcp_setup):
+        """mode=scan response includes codegraph_session."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("add MFA to login", mode="scan")
+        assert "codegraph_session" in result, "scan response missing codegraph_session"
+
+
 # ── Test: source_snippets in build_context_pack ──────────────────────────────
 
 
