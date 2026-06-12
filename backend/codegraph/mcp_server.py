@@ -277,83 +277,143 @@ def _apply_mode_presets(
     return resolved
 
 
-def _build_mode_next_tools(
-    tool_name: str,
-    mode: str | None,
-    result_data: dict[str, Any],
-    limit: int = 2,
+def _merge_next_tools(
+    existing: list[dict[str, Any]],
+    new: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Generate next_recommended_tools for mode=quick results.
+    """Merge two lists of tool recommendations, deduplicating by tool name.
 
-    Only fires when *mode* is "quick" and the result data suggests
-    a useful next step. Returns at most *limit* recommendations.
+    Preserves order: existing items first, then new items.
+    Returns at most 3 recommendations.
     """
-    if mode != "quick":
-        return []
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for rec in existing + new:
+        tool = rec.get("tool", "")
+        if tool and tool not in seen:
+            seen.add(tool)
+            merged.append(rec)
+    return merged[:3]
 
+
+def _build_global_next_tools(
+    tool_name: str,
+    data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build next recommended CodeGraph tool calls for every successful response.
+
+    This removes tool-choice paralysis by telling the agent what to call next
+    after it consumes the current CodeGraph result. Every successful MCP
+    response includes this list (max 3), generated from the tool name and
+    result data.
+
+    Returns at most 3 recommendations. Returns an empty list when no clear
+    next step can be inferred.
+    """
     recommendations: list[dict[str, Any]] = []
 
-    if tool_name == "get_callers":
-        total = result_data.get("total", 0)
-        if total >= 5:
-            recommendations.append({
-                "tool": "codegraph_get_impact",
-                "reason": f"This symbol has {total} caller(s). Run impact analysis before editing.",
-            })
-        if total >= 3:
-            recommendations.append({
-                "tool": "codegraph_get_neighbors",
-                "reason": "Inspect local relationships (callers, callees, tests) around this symbol.",
-            })
-
-    elif tool_name == "get_callees":
-        total = result_data.get("total", 0)
-        external = len(result_data.get("external_calls", []))
-        if external > 0:
-            recommendations.append({
-                "tool": "codegraph_get_impact",
-                "reason": f"This symbol has {external} external/unresolved callee(s). Check impact before modifying.",
-            })
-        if total >= 5:
+    if tool_name == "codegraph_build_context_pack":
+        # Intent-based recommendations are handled by the context_pack-specific
+        # _build_next_recommended_tools() which runs before _respond_ok.
+        # The global function provides a simple fallback: if entry points
+        # were found, suggest inspecting them further.
+        entry_points = data.get("entry_points", [])
+        if entry_points:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Explore the full local subgraph to understand all relationships.",
+                "reason": "Inspect local relationships around the main entry points.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": "Check impact before editing the suggested symbols.",
             })
 
-    elif tool_name == "get_neighbors":
-        counts = result_data.get("counts", {})
+    elif tool_name == "codegraph_search_symbols":
+        total = data.get("total", 0)
+        if total > 5:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Choose the most relevant symbol and inspect its local graph before editing.",
+            })
+        elif total > 0:
+            recommendations.append({
+                "tool": "codegraph_get_symbol",
+                "reason": "Open exact metadata and location for the selected symbol.",
+            })
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect relationships around the found symbols instead of reading many files.",
+            })
+
+    elif tool_name == "codegraph_get_symbol":
+        recommendations.append({
+            "tool": "codegraph_get_neighbors",
+            "reason": "Inspect connected callers, callees, imports, tests, and related symbols.",
+        })
+
+    elif tool_name == "codegraph_get_neighbors":
+        # Check both grouped mode (counts) and flat mode (nodes/edges)
+        counts = data.get("counts", {})
         caller_count = counts.get("callers", 0)
-        if caller_count >= 3:
+        callee_count = counts.get("callees", 0)
+        nodes = data.get("nodes", [])
+        edges = data.get("edges", [])
+        has_relations = (
+            caller_count > 0 or callee_count > 0
+            or len(nodes) > 1 or len(edges) > 0
+        )
+        if has_relations:
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": f"This symbol has {caller_count} caller(s). Check downstream impact before editing.",
-            })
-        test_count = counts.get("tests", 0)
-        if test_count > 0:
-            recommendations.append({
-                "tool": "codegraph_get_callers",
-                "reason": f"{test_count} test(s) found. Trace test coverage with include_tests=true.",
+                "reason": "Assess blast radius before editing this symbol.",
             })
 
-    elif tool_name == "get_impact":
-        risk = result_data.get("risk", {})
-        risk_level = risk.get("level", "low")
-        # get_impact returns "confirmed" in compact mode and
-        # "confirmed_impact" in standard mode. Check both keys.
-        confirmed = result_data.get("confirmed") or result_data.get("confirmed_impact", {})
-        num_files = len(confirmed.get("files", [])) if confirmed else 0
-        if risk_level in ("high", "critical"):
+    elif tool_name == "codegraph_get_callers":
+        total = data.get("total", 0)
+        if total > 0:
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": "This symbol has upstream dependents. Check impact before modifying it.",
+            })
+
+    elif tool_name == "codegraph_get_callees":
+        total = data.get("total", 0)
+        if total > 0:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": f"Risk level is {risk_level}. Inspect local relationships before making changes.",
-            })
-        if num_files >= 5:
-            recommendations.append({
-                "tool": "codegraph_get_callers",
-                "reason": f"Impact spans {num_files} file(s). Trace upstream callers for complete picture.",
+                "reason": "Inspect broader local relationships before reading implementation files.",
             })
 
-    return recommendations[:limit]
+    elif tool_name == "codegraph_get_impact":
+        confirmed = data.get("confirmed") or data.get("confirmed_impact", {})
+        num_files = len(confirmed.get("files", [])) if isinstance(confirmed, dict) else 0
+        if num_files > 0:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": "Inspect the most affected symbols before editing or testing.",
+            })
+
+    elif tool_name == "codegraph_repo_status":
+        action = data.get("recommended_action", "")
+        if action == "use_codegraph":
+            recommendations.append({
+                "tool": "codegraph_build_context_pack",
+                "reason": "Index is usable. Start with a task-level context pack.",
+            })
+        # For refresh_index, run_init, check_project_root: return empty
+        # — do not recommend further graph queries until index is ready.
+
+    elif tool_name == "codegraph_repo_summary":
+        recommendations.append({
+            "tool": "codegraph_search_symbols",
+            "reason": "Search for the specific functions, classes, routes, or services relevant to the task.",
+        })
+        recommendations.append({
+            "tool": "codegraph_build_context_pack",
+            "reason": "Build a focused context pack for the current task.",
+        })
+
+    return recommendations[:3]
 
 # ── Compact field whitelist ────────────────────────────────────────────────
 # In compact mode, only fields in this set are allowed in tool response data.
@@ -367,7 +427,7 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "relation", "distance", "direction",
     # Confidence / resolution
     "confidence", "confidence_level", "resolution", "resolution_category",
-    "reason_codes", "reason_code", "provenance",
+    "reason", "reason_codes", "reason_code", "provenance",
     # Language / framework (Phase 1 multi-language)
     "language_id", "language", "framework_id", "support_level",
     "evidence_summary",
@@ -1217,7 +1277,23 @@ def _respond_ok(
     max_items: int | None = None,
     max_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Wrap a successful tool result in the standard envelope with payload meta."""
+    """Wrap a successful tool result in the standard envelope with payload meta.
+
+    Injects ``next_recommended_tools`` into *data* so that every successful
+    response tells the agent which CodeGraph tool to call next. Existing
+    recommendations (e.g. from context_pack intent analysis) are preserved
+    and merged with globally generated ones.
+    """
+    # ── Inject next_recommended_tools ────────────────────────────────────
+    if isinstance(data, dict) and tool:
+        existing = data.get("next_recommended_tools", [])
+        if isinstance(existing, list):
+            global_recs = _build_global_next_tools(tool, data)
+            merged = _merge_next_tools(existing, global_recs)
+            # Always set the key so agents can rely on its presence.
+            # An empty list means "no further CodeGraph tools recommended."
+            data["next_recommended_tools"] = merged
+
     estimated_tokens = _estimate_payload_tokens(data)
     idx = _build_index_status()
     return {
@@ -2600,10 +2676,6 @@ def get_callers(
         tool="codegraph_get_callers",
         warnings=_collect_warnings(fuzzy_warning),
     )
-    # ── Add next_recommended_tools for mode=quick ──────────────────────────
-    next_tools = _build_mode_next_tools("get_callers", mode, rv["data"])
-    if next_tools:
-        rv["data"]["next_recommended_tools"] = next_tools
     return rv
 
 
@@ -2882,10 +2954,6 @@ def get_callees(
         tool="codegraph_get_callees",
         warnings=warnings,
     )
-    # ── Add next_recommended_tools for mode=quick ──────────────────────────
-    next_tools = _build_mode_next_tools("get_callees", mode, rv["data"])
-    if next_tools:
-        rv["data"]["next_recommended_tools"] = next_tools
     return rv
 
 
@@ -3199,10 +3267,6 @@ def get_neighbors(
                 f"Fuzzy fallback used: {result['match_reason']}"
             ),
         )
-        # ── Add next_recommended_tools for mode=quick ──────────────────────
-        next_tools = _build_mode_next_tools("get_neighbors", mode, rv_grouped["data"])
-        if next_tools:
-            rv_grouped["data"]["next_recommended_tools"] = next_tools
         return rv_grouped
 
     # Standard / non-grouped compact
@@ -3229,10 +3293,6 @@ def get_neighbors(
         tool="codegraph_get_neighbors",
         warnings=_collect_warnings(fuzzy_warning),
     )
-    # ── Add next_recommended_tools for mode=quick ──────────────────────────
-    next_tools = _build_mode_next_tools("get_neighbors", mode, rv_flat["data"])
-    if next_tools:
-        rv_flat["data"]["next_recommended_tools"] = next_tools
     return rv_flat
 
 
@@ -3575,11 +3635,6 @@ def get_impact(
             "external_or_unresolved": external,
             "truncated": truncated,
         }
-
-    # ── Add next_recommended_tools for mode=quick ──────────────────────────
-    next_tools = _build_mode_next_tools("get_impact", mode, data)
-    if next_tools:
-        data["next_recommended_tools"] = next_tools
 
     return _respond_ok(
         data=data,

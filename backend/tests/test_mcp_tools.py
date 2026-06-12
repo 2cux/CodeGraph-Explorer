@@ -225,7 +225,10 @@ class TestUnifiedEnvelope:
         result = _respond_ok({"key": "value"}, tool="test_tool")
         assert result["ok"] is True
         assert result["tool"] == "test_tool"
-        assert result["data"] == {"key": "value"}
+        assert result["data"]["key"] == "value"
+        # Global next_recommended_tools is always injected
+        assert "next_recommended_tools" in result["data"]
+        assert isinstance(result["data"]["next_recommended_tools"], list)
         assert "warnings" in result
         assert "index_status" in result
         assert "index_health" in result
@@ -3179,24 +3182,30 @@ class TestModeParameter:
     # ── next_recommended_tools in quick mode ───────────────────────────────
 
     def test_next_tools_in_quick_mode_callers(self, mcp_setup):
-        """mode=quick on get_callers may suggest next tools when many callers found."""
+        """mode=quick on get_callers includes global next_recommended_tools."""
         from codegraph.mcp_server import get_callers
-        # The test fixture has main→login as a caller. With mode=quick,
-        # total might or might not hit the threshold (>=5).
-        # We just verify the key is present when there are many callers,
-        # and that it never exceeds 2 entries.
         result = get_callers("app/api/auth.py::login", mode="quick")
         next_tools = result["data"].get("next_recommended_tools", [])
-        assert len(next_tools) <= 2
+        assert len(next_tools) <= 3
         for nt in next_tools:
             assert "tool" in nt
             assert "reason" in nt
+            assert nt["tool"].startswith("codegraph_")
 
-    def test_next_tools_not_present_without_quick_mode(self, mcp_setup):
-        """next_recommended_tools should NOT appear when mode is not quick."""
+    def test_next_tools_present_on_all_successful_responses(self, mcp_setup):
+        """next_recommended_tools is now a global response-level field — present on all successful responses."""
         from codegraph.mcp_server import get_callers
         result = get_callers("app/api/auth.py::login")
-        assert "next_recommended_tools" not in result["data"]
+        # After global next_recommended_tools injection, all successful
+        # responses include this field (not just mode=quick).
+        assert "next_recommended_tools" in result["data"]
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        assert len(nrt) <= 3
+        for rec in nrt:
+            assert "tool" in rec
+            assert "reason" in rec
+            assert rec["tool"].startswith("codegraph_")
 
     # ── Tool description natural language questions ────────────────────────
 
@@ -3273,6 +3282,273 @@ class TestModeParameter:
         from codegraph.mcp_server import get_impact
         sig = inspect.signature(get_impact)
         assert "mode" in sig.parameters
+
+
+# ── Test: Global next_recommended_tools ──────────────────────────────────────
+
+
+class TestGlobalNextRecommendedTools:
+    """Every successful MCP response must include next_recommended_tools
+    to guide the agent to the next CodeGraph tool call."""
+
+    def test_search_symbols_returns_next_tools_with_hits(self, mcp_setup):
+        """search_symbols with results recommends get_symbol + get_neighbors."""
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        assert len(nrt) >= 1, f"Expected at least 1 recommendation, got: {nrt}"
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_get_symbol" in tools or "codegraph_get_neighbors" in tools
+
+    def test_search_symbols_many_results_recommends_neighbors(self, mcp_setup):
+        """search_symbols with many results prioritizes get_neighbors."""
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("auth")
+        if result["ok"] and result["data"].get("total", 0) > 5:
+            nrt = result["data"]["next_recommended_tools"]
+            tools = [r["tool"] for r in nrt]
+            assert "codegraph_get_neighbors" in tools
+
+    def test_get_symbol_returns_next_tools(self, mcp_setup):
+        """get_symbol recommends get_neighbors."""
+        from codegraph.mcp_server import get_symbol
+        result = get_symbol("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        assert len(nrt) >= 1, f"get_symbol should recommend next tools, got: {nrt}"
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_get_neighbors" in tools
+
+    def test_get_callers_returns_next_tools(self, mcp_setup):
+        """get_callers with results recommends get_impact."""
+        from codegraph.mcp_server import get_callers
+        result = get_callers("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        if result["data"].get("total", 0) > 0:
+            assert len(nrt) >= 1, f"Expected recommendations when callers exist, got: {nrt}"
+            tools = [r["tool"] for r in nrt]
+            assert "codegraph_get_impact" in tools
+
+    def test_get_callees_returns_next_tools(self, mcp_setup):
+        """get_callees with results recommends get_neighbors."""
+        from codegraph.mcp_server import get_callees
+        result = get_callees("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        if result["data"].get("total", 0) > 0:
+            assert len(nrt) >= 1, f"Expected recommendations when callees exist, got: {nrt}"
+            tools = [r["tool"] for r in nrt]
+            assert "codegraph_get_neighbors" in tools
+
+    def test_get_neighbors_returns_next_tools(self, mcp_setup):
+        """get_neighbors with relationships recommends get_impact."""
+        from codegraph.mcp_server import get_neighbors
+        result = get_neighbors("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        # Our fixture has callers and callees, so we should get recommendations
+        assert len(nrt) >= 1, f"Expected recommendations for connected symbol, got: {nrt}"
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_get_impact" in tools
+
+    def test_get_impact_returns_next_tools(self, mcp_setup):
+        """get_impact with confirmed files recommends get_neighbors."""
+        from codegraph.mcp_server import get_impact
+        result = get_impact("app/api/auth.py::login")
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        confirmed_files = result["data"]["confirmed"]["files"]
+        if len(confirmed_files) > 0:
+            assert len(nrt) >= 1, f"Expected recommendations when impact found, got: {nrt}"
+            tools = [r["tool"] for r in nrt]
+            assert "codegraph_get_neighbors" in tools
+
+    def test_repo_summary_returns_next_tools(self, mcp_setup):
+        """repo_summary recommends search_symbols + build_context_pack."""
+        from codegraph.mcp_server import repo_summary
+        result = repo_summary()
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        assert len(nrt) >= 1, f"repo_summary should recommend next tools, got: {nrt}"
+        tools = [r["tool"] for r in nrt]
+        assert "codegraph_search_symbols" in tools or "codegraph_build_context_pack" in tools
+
+    def test_repo_status_usable_recommends_context_pack(self, mcp_setup):
+        """repo_status in usable state recommends build_context_pack."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert result["ok"] is True
+        nrt = result["data"]["next_recommended_tools"]
+        assert isinstance(nrt, list)
+        if result["data"].get("recommended_action") == "use_codegraph":
+            assert len(nrt) >= 1, f"Expected recommendation when index is usable, got: {nrt}"
+            tools = [r["tool"] for r in nrt]
+            assert "codegraph_build_context_pack" in tools
+
+    def test_repo_status_not_usable_returns_empty(self, tmp_path, monkeypatch):
+        """repo_status in non-usable state returns empty next_recommended_tools."""
+        import codegraph.mcp_server as mcp_mod
+
+        old_store = mcp_mod._store
+        old_cg = mcp_mod._cg_dir
+        old_root = mcp_mod._project_root
+        old_method = mcp_mod._resolution_method
+        try:
+            empty_dir = tmp_path / "empty_project"
+            empty_dir.mkdir()
+            mcp_mod._store = None
+            mcp_mod._cg_dir = None
+            mcp_mod._project_root = str(empty_dir)
+            mcp_mod._resolution_method = "walk_up"
+
+            from codegraph.mcp_server import repo_status
+            result = repo_status(root=str(empty_dir))
+            nrt = result["data"]["next_recommended_tools"]
+            assert isinstance(nrt, list)
+            # When action is run_init/refresh_index/check_project_root, no graph tools recommended
+            if result["data"].get("recommended_action") != "use_codegraph":
+                assert len(nrt) == 0, (
+                    f"Should not recommend graph tools when index is not usable, got: {nrt}"
+                )
+        finally:
+            mcp_mod._store = old_store
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._project_root = old_root
+            mcp_mod._resolution_method = old_method
+
+    def test_next_recommended_tools_max_3(self, mcp_setup):
+        """next_recommended_tools never exceeds 3 items for any tool."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        tools = [
+            ("search_symbols", lambda: search_symbols("login")),
+            ("get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("get_callers", lambda: get_callers("app/api/auth.py::login")),
+            ("get_callees", lambda: get_callees("app/api/auth.py::login")),
+            ("get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
+            ("get_impact", lambda: get_impact("app/api/auth.py::login")),
+            ("repo_status", lambda: repo_status()),
+            ("repo_summary", lambda: repo_summary()),
+            ("build_context_pack", lambda: build_context_pack(task="fix login bug")),
+        ]
+        for tool_name, fn in tools:
+            result = fn()
+            if result["ok"]:
+                nrt = result["data"].get("next_recommended_tools", [])
+                assert len(nrt) <= 3, (
+                    f"{tool_name}: next_recommended_tools should have ≤ 3 items, "
+                    f"got {len(nrt)}: {nrt}"
+                )
+
+    def test_next_recommended_tools_no_invalid_names(self, mcp_setup):
+        """All recommended tool names must be valid CodeGraph MCP tools."""
+        valid_tools = {
+            "codegraph_search_symbols", "codegraph_get_symbol",
+            "codegraph_get_callers", "codegraph_get_callees",
+            "codegraph_get_neighbors", "codegraph_get_impact",
+            "codegraph_repo_status", "codegraph_repo_summary",
+            "codegraph_build_context_pack",
+        }
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        tools = [
+            ("search_symbols", lambda: search_symbols("login")),
+            ("get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("get_callers", lambda: get_callers("app/api/auth.py::login")),
+            ("get_callees", lambda: get_callees("app/api/auth.py::login")),
+            ("get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
+            ("get_impact", lambda: get_impact("app/api/auth.py::login")),
+            ("repo_status", lambda: repo_status()),
+            ("repo_summary", lambda: repo_summary()),
+            ("build_context_pack", lambda: build_context_pack(task="fix login bug")),
+        ]
+        for tool_name, fn in tools:
+            result = fn()
+            if result["ok"]:
+                nrt = result["data"].get("next_recommended_tools", [])
+                for rec in nrt:
+                    assert rec["tool"] in valid_tools, (
+                        f"{tool_name} recommended invalid tool: {rec['tool']}"
+                    )
+                    assert "reason" in rec, f"{tool_name} recommendation missing reason"
+                    assert len(rec["reason"]) > 0, f"{tool_name} recommendation has empty reason"
+
+    def test_context_pack_merges_existing_next_tools(self, mcp_setup):
+        """context_pack already generates intent-based next_tools; global
+        injection merges without overwriting or duplicating."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("fix login bug", mode="summary", response_mode="standard")
+        if result["ok"]:
+            nrt = result["data"].get("next_recommended_tools", [])
+            assert isinstance(nrt, list)
+            # context_pack intent="fix_bug" generates get_neighbors + get_impact
+            # Global may also suggest get_impact. Dedup should prevent duplicates.
+            tools = [r["tool"] for r in nrt]
+            assert len(tools) == len(set(tools)), (
+                f"next_recommended_tools should have no duplicates, got: {tools}"
+            )
+
+    def test_existing_structure_unchanged_by_next_tools(self, mcp_setup):
+        """Adding next_recommended_tools does not remove existing data fields."""
+        from codegraph.mcp_server import search_symbols, get_symbol, get_neighbors
+        # search_symbols
+        r = search_symbols("login")
+        assert "query" in r["data"]
+        assert "results" in r["data"]
+        assert "total" in r["data"]
+        # get_symbol
+        r = get_symbol("app/api/auth.py::login")
+        assert "symbol" in r["data"]
+        assert "relations_summary" in r["data"]
+        # get_neighbors
+        r = get_neighbors("app/api/auth.py::login")
+        assert "center" in r["data"]
+        assert "groups" in r["data"]
+
+    def test_all_tools_have_next_recommended_tools_field(self, mcp_setup):
+        """All 9 MCP tools return next_recommended_tools on success."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        tools = [
+            ("codegraph_search_symbols", lambda: search_symbols("login")),
+            ("codegraph_get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("codegraph_get_callers", lambda: get_callers("app/api/auth.py::login")),
+            ("codegraph_get_callees", lambda: get_callees("app/api/auth.py::login")),
+            ("codegraph_get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
+            ("codegraph_get_impact", lambda: get_impact("app/api/auth.py::login")),
+            ("codegraph_repo_status", lambda: repo_status()),
+            ("codegraph_repo_summary", lambda: repo_summary()),
+            ("codegraph_build_context_pack", lambda: build_context_pack(task="fix login bug")),
+        ]
+        for tool_name, fn in tools:
+            result = fn()
+            if result["ok"]:
+                assert "next_recommended_tools" in result["data"], (
+                    f"{tool_name}: missing next_recommended_tools in data"
+                )
+                nrt = result["data"]["next_recommended_tools"]
+                assert isinstance(nrt, list), (
+                    f"{tool_name}: next_recommended_tools should be a list, "
+                    f"got {type(nrt)}"
+                )
 
 
 # ── Test: server startup robustness (no .codegraph/) ─────────────────────────
