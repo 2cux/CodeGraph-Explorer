@@ -4386,3 +4386,382 @@ class TestP0ValidationRules:
         assert "验证清单" in content or "Verification" in content, (
             "Doc must have verification checklist"
         )
+
+
+# ── Test: Round 5 — Cost Hints ──────────────────────────────────────────────
+
+
+class TestCostHintsInToolDescriptions:
+    """Tool descriptions must include qualitative cost hints and avoid
+    unverified benchmark numbers."""
+
+    def _get_tool_docstrings(self):
+        """Collect all MCP tool function docstrings."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        return {
+            "codegraph_search_symbols": (search_symbols.__doc__ or ""),
+            "codegraph_get_symbol": (get_symbol.__doc__ or ""),
+            "codegraph_get_callers": (get_callers.__doc__ or ""),
+            "codegraph_get_callees": (get_callees.__doc__ or ""),
+            "codegraph_get_neighbors": (get_neighbors.__doc__ or ""),
+            "codegraph_get_impact": (get_impact.__doc__ or ""),
+            "codegraph_repo_status": (repo_status.__doc__ or ""),
+            "codegraph_repo_summary": (repo_summary.__doc__ or ""),
+            "codegraph_build_context_pack": (build_context_pack.__doc__ or ""),
+        }
+
+    def test_descriptions_contain_cost_hints(self):
+        """Each tool description should contain at least one qualitative cost hint."""
+        docs = self._get_tool_docstrings()
+        cost_keywords = [
+            "Lower cost", "Lower token cost",
+            "before reading", "before opening", "before broad",
+            "before manually",
+            "instead of", "without manually", "without repeated",
+            "avoid",
+            "relationship-aware",
+            "Use this before",
+        ]
+        for tool_name, docstring in docs.items():
+            has_hint = any(kw.lower() in docstring.lower() for kw in cost_keywords)
+            assert has_hint, (
+                f"{tool_name}: description must contain a qualitative cost hint.\n"
+                f"Got: {docstring[:120]}..."
+            )
+
+    def test_descriptions_no_time_numbers(self):
+        """No description should contain unverified time measurements (e.g. ~0.02s)."""
+        import re
+        docs = self._get_tool_docstrings()
+        time_pattern = re.compile(r'~?\d+\.?\d*\s*(s|sec|second|ms|millisecond)', re.IGNORECASE)
+        for tool_name, docstring in docs.items():
+            match = time_pattern.search(docstring)
+            assert match is None, (
+                f"{tool_name}: description must not contain time numbers, "
+                f"found: '{match.group()}'"
+            )
+
+    def test_descriptions_no_token_numbers(self):
+        """No description should contain unverified token counts (e.g. ~200 tokens)."""
+        import re
+        docs = self._get_tool_docstrings()
+        token_pattern = re.compile(
+            r'(save|saves|saving|cuts?|reduce|reduces?|reducing|use|uses|using)?'
+            r'\s*'
+            r'~?\d+[%]?\s*(tokens?|token)',
+            re.IGNORECASE,
+        )
+        for tool_name, docstring in docs.items():
+            match = token_pattern.search(docstring)
+            assert match is None, (
+                f"{tool_name}: description must not contain token numbers, "
+                f"found: '{match.group()}'"
+            )
+
+    def test_descriptions_no_performance_claims(self):
+        """No description should contain unverified percentage claims."""
+        import re
+        docs = self._get_tool_docstrings()
+        pct_pattern = re.compile(r'(saves?|cuts?|reduces?)\s+~?\d+[%]', re.IGNORECASE)
+        for tool_name, docstring in docs.items():
+            match = pct_pattern.search(docstring)
+            assert match is None, (
+                f"{tool_name}: description must not contain percentage claims, "
+                f"found: '{match.group()}'"
+            )
+
+
+class TestCostHintsInNextRecommendedTools:
+    """next_recommended_tools.reason must include cost-aware rationale."""
+
+    def test_reasons_are_specific_not_generic(self):
+        """Reasons must reference the specific context, not be generic."""
+        from codegraph.mcp_server import _build_global_next_tools
+
+        # Test that different tool paths produce different reason patterns
+        reasons_seen: set[str] = set()
+        for tool_name, data in [
+            ("codegraph_build_context_pack", {"entry_points": [{"symbol_id": "x"}]}),
+            ("codegraph_search_symbols", {"total": 6}),
+            ("codegraph_search_symbols", {"total": 3}),
+            ("codegraph_get_symbol", {}),
+            ("codegraph_get_neighbors", {"counts": {"callers": 3}}),
+            ("codegraph_get_callers", {"total": 5}),
+            ("codegraph_get_callees", {"total": 3}),
+            ("codegraph_repo_status", {"recommended_action": "use_codegraph"}),
+            ("codegraph_repo_summary", {}),
+        ]:
+            recs = _build_global_next_tools(tool_name, data)
+            for rec in recs:
+                reasons_seen.add(rec.get("reason", ""))
+
+        # We should have at least several distinct reasons
+        assert len(reasons_seen) >= 5, (
+            f"Expected at least 5 distinct reason patterns, got {len(reasons_seen)}: {reasons_seen}"
+        )
+
+    def test_reasons_include_cost_rationale(self):
+        """At least some reasons should reference cost advantage."""
+        from codegraph.mcp_server import _build_global_next_tools
+
+        cost_indicators = [
+            "before reading", "instead of", "before broad",
+            "before manually", "avoids", "before opening",
+            "file by file", "without manually",
+        ]
+        all_reasons: list[str] = []
+        for tool_name, data in [
+            ("codegraph_build_context_pack", {"entry_points": [{"symbol_id": "x"}]}),
+            ("codegraph_search_symbols", {"total": 3}),
+            ("codegraph_get_symbol", {}),
+            ("codegraph_get_neighbors", {"counts": {"callers": 3}}),
+            ("codegraph_get_callers", {"total": 5}),
+            ("codegraph_get_callees", {"total": 3}),
+            ("codegraph_repo_summary", {}),
+        ]:
+            recs = _build_global_next_tools(tool_name, data)
+            for rec in recs:
+                all_reasons.append(rec.get("reason", ""))
+
+        cost_reasons = [
+            r for r in all_reasons
+            if any(ind in r.lower() for ind in cost_indicators)
+        ]
+        assert len(cost_reasons) >= 3, (
+            f"Expected at least 3 reasons with cost rationale, got {len(cost_reasons)}: {cost_reasons}"
+        )
+
+    def test_context_pack_reasons_have_cost_rationale(self):
+        """_build_next_recommended_tools reasons should include cost hints."""
+        from codegraph.mcp_server import _build_next_recommended_tools
+
+        cost_indicators = [
+            "before reading", "instead of", "before broad",
+            "before manually", "avoids", "before opening",
+            "file by file", "without manually", "without repeated",
+        ]
+        for intent in ("fix_bug", "review_code", "refactor", "add_feature",
+                        "analyze_impact", "write_tests", "understand_code"):
+            pack = {
+                "task": {"primary_intent": intent},
+                "entry_points": [{"symbol_id": "x"}],
+                "impact": {"risk": {"level": "low"}},
+            }
+            recs = _build_next_recommended_tools(pack)
+            for rec in recs:
+                has_cost = any(ind in rec.get("reason", "").lower() for ind in cost_indicators)
+                assert has_cost, (
+                    f"Intent '{intent}' → {rec['tool']}: reason must include cost rationale.\n"
+                    f"Got: '{rec.get('reason')}'"
+                )
+
+
+class TestCostHintsInSessionHint:
+    """codegraph_session.hint must not prohibit Read/Grep and must not
+    contain fake benchmark numbers."""
+
+    def _get_hints(self) -> dict[str, str]:
+        """Generate all possible session hints."""
+        from codegraph.mcp_server import _generate_session_hint
+        hints: dict[str, str] = {}
+        for total in (1, 3, 6):
+            hints[f"count_{total}"] = _generate_session_hint(total, "codegraph_search_symbols")
+        for tool in ("codegraph_build_context_pack", "codegraph_search_symbols",
+                      "codegraph_get_neighbors", "codegraph_get_impact"):
+            hints[f"tool_{tool}"] = _generate_session_hint(3, tool)
+        return hints
+
+    def test_hints_do_not_prohibit_read(self):
+        """Session hints must not say 'Never use Read' or 'Do not use Read'."""
+        hints = self._get_hints()
+        prohibited = ["never use read", "do not use read", "don't use read",
+                       "never use grep", "do not grep", "don't grep"]
+        for key, hint in hints.items():
+            hint_lower = hint.lower()
+            for phrase in prohibited:
+                assert phrase not in hint_lower, (
+                    f"Hint '{key}' must not prohibit Read/Grep.\n"
+                    f"Found prohibited phrase: '{phrase}'\n"
+                    f"Hint: '{hint}'"
+                )
+
+    def test_hints_no_benchmark_numbers(self):
+        """Session hints must not contain fake benchmark numbers."""
+        import re
+        hints = self._get_hints()
+        patterns = [
+            (r'\d+\.?\d*\s*seconds?', "time number"),
+            (r'\d+\.?\d*\s*ms\b', "milliseconds"),
+            (r'\d+\s*tokens?', "token count"),
+            (r'saves?\s+\d+', "save claim with number"),
+            (r'\d+[%]', "percentage"),
+        ]
+        for key, hint in hints.items():
+            for pattern, label in patterns:
+                match = re.search(pattern, hint, re.IGNORECASE)
+                assert match is None, (
+                    f"Hint '{key}' must not contain {label}.\n"
+                    f"Found: '{match.group()}'\n"
+                    f"Hint: '{hint}'"
+                )
+
+    def test_hints_are_one_sentence(self):
+        """Each hint should be at most one sentence."""
+        hints = self._get_hints()
+        for key, hint in hints.items():
+            # A single sentence should not contain ". " mid-text
+            # (allow trailing period)
+            stripped = hint.rstrip(".")
+            assert ". " not in stripped, (
+                f"Hint '{key}' should be one sentence.\n"
+                f"Got: '{hint}'"
+            )
+
+    def test_get_impact_hint_guides_to_read(self):
+        """After get_impact, hint should guide to Read exact source."""
+        from codegraph.mcp_server import _generate_session_hint
+        hint = _generate_session_hint(3, "codegraph_get_impact")
+        assert "Read" in hint, (
+            f"After get_impact, hint should mention Read.\nGot: '{hint}'"
+        )
+
+
+class TestCostHintsDocs:
+    """docs/mcp-tools.md must include CodeGraph vs Grep / Read section."""
+
+    def test_docs_has_cost_comparison_section(self):
+        import os
+        doc_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "docs", "mcp-tools.md",
+        )
+        doc_path = os.path.normpath(doc_path)
+        content = open(doc_path, "r", encoding="utf-8").read()
+        assert "## CodeGraph vs Grep / Read" in content, (
+            "docs/mcp-tools.md must have 'CodeGraph vs Grep / Read' section"
+        )
+        assert "CodeGraph should guide what to read next" in content, (
+            "docs/mcp-tools.md must clarify that CodeGraph guides Read, not replaces it"
+        )
+
+
+class TestCostHintsRegression:
+    """Round 5 must not break existing MCP tool names, schemas, or structure."""
+
+    def test_tool_names_unchanged(self):
+        """All 9 MCP tool names must remain unchanged."""
+        from codegraph.mcp_server import mcp
+
+        expected_names = {
+            "codegraph_search_symbols",
+            "codegraph_get_symbol",
+            "codegraph_get_callers",
+            "codegraph_get_callees",
+            "codegraph_get_neighbors",
+            "codegraph_get_impact",
+            "codegraph_repo_status",
+            "codegraph_repo_summary",
+            "codegraph_build_context_pack",
+        }
+        # Get registered MCP tool names from FastMCP's tool manager
+        registered_tools = getattr(mcp, "_tool_manager", None)
+        if registered_tools is not None:
+            actual_names = set(registered_tools._tools.keys())
+        else:
+            # Fallback: check the function objects for the MCP-decorated wrappers
+            from codegraph.mcp_server import (
+                search_symbols, get_symbol, get_callers, get_callees,
+                get_neighbors, get_impact, repo_status, repo_summary,
+                build_context_pack,
+            )
+            actual_names = set()
+            for fn in (search_symbols, get_symbol, get_callers, get_callees,
+                        get_neighbors, get_impact, repo_status, repo_summary,
+                        build_context_pack):
+                # The MCP tool decorator stores the name in __mcp_tool_name__
+                actual_names.add(
+                    getattr(fn, "__mcp_tool_name__", fn.__name__)
+                )
+
+        assert actual_names == expected_names, (
+            f"Tool names must not change. Diff: {expected_names ^ actual_names}"
+        )
+
+    def test_respond_ok_envelope_unchanged(self, mcp_setup):
+        """The response envelope structure remains unchanged."""
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        # All required envelope fields present
+        for key in ("ok", "tool", "data", "warnings",
+                     "index_status", "index_health", "meta"):
+            assert key in result, f"Required envelope field '{key}' missing"
+
+        # codegraph_session must be present in success responses
+        assert "codegraph_session" in result, (
+            "codegraph_session must be present in all success responses"
+        )
+        session = result["codegraph_session"]
+        for key in ("tools_called_this_session", "last_tool", "most_used_tool", "hint"):
+            assert key in session, f"codegraph_session missing field: {key}"
+
+        # next_recommended_tools must be present in data
+        assert "next_recommended_tools" in result["data"], (
+            "next_recommended_tools must be present in all success responses"
+        )
+
+    def test_search_symbols_params_unchanged(self):
+        """search_symbols parameter names must not change."""
+        import inspect
+        from codegraph.mcp_server import search_symbols
+        sig = inspect.signature(search_symbols)
+        param_names = set(sig.parameters.keys())
+        # Core params must be present
+        required_params = {
+            "query", "type", "types", "tags", "paths",
+            "file_path", "path_prefix", "layer",
+            "include_tests", "exclude_external",
+            "min_score", "exact", "fuzzy",
+            "limit", "offset", "sort_by",
+            "response_mode", "include_explanations",
+            "language_id",
+        }
+        missing = required_params - param_names
+        assert not missing, f"search_symbols missing params: {missing}"
+
+    def test_get_neighbors_params_unchanged(self):
+        """get_neighbors parameter names must not change."""
+        import inspect
+        from codegraph.mcp_server import get_neighbors
+        sig = inspect.signature(get_neighbors)
+        param_names = set(sig.parameters.keys())
+        required_params = {
+            "symbol_id", "symbol", "resolve",
+            "expected_type", "path_hint",
+            "depth", "max_nodes", "max_edges",
+            "edge_types", "min_confidence",
+            "direction", "group_by_role",
+            "response_mode", "include_explanations",
+            "mode",
+        }
+        missing = required_params - param_names
+        assert not missing, f"get_neighbors missing params: {missing}"
+
+    def test_get_impact_params_unchanged(self):
+        """get_impact parameter names must not change."""
+        import inspect
+        from codegraph.mcp_server import get_impact
+        sig = inspect.signature(get_impact)
+        param_names = set(sig.parameters.keys())
+        required_params = {
+            "symbol_id", "symbol", "resolve",
+            "expected_type", "path_hint",
+            "depth", "max_files", "min_confidence",
+            "include_tests", "include_possible",
+            "impact_mode", "response_mode", "include_explanations",
+            "mode",
+        }
+        missing = required_params - param_names
+        assert not missing, f"get_impact missing params: {missing}"

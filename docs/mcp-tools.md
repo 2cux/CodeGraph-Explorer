@@ -257,6 +257,23 @@ Start a larger task:
 → codegraph_build_context_pack(task="fix MemoryService bug")
 ```
 
+## CodeGraph vs Grep / Read
+
+Use CodeGraph for code navigation:
+- finding symbols
+- following callers and callees
+- inspecting local relationships
+- checking impact before edits
+- avoiding broad file-by-file exploration
+
+Use Grep / Read for:
+- exact source text
+- raw text patterns
+- confirming implementation details
+- editing a specific file
+
+CodeGraph should guide what to read next; it does not replace reading exact source when needed.
+
 ## Design Principles
 
 - **Compact by default**: Tools return minimal JSON; request `standard` mode for full details

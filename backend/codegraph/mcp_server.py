@@ -153,25 +153,25 @@ def _generate_session_hint(total_calls: int, tool_name: str) -> str:
         )
     if tool_name == "codegraph_get_impact":
         return (
-            "Now Read only the exact source text in the impacted files — "
-            "CodeGraph has identified what matters."
+            "Use Read next only for exact source text in the "
+            "highest-impact files or symbols."
         )
 
     # Count-based hints
     if total_calls == 1:
         return (
-            "Start with CodeGraph for navigation, then use Read only "
+            "Use CodeGraph for navigation first, then Read only "
             "for exact source text."
         )
     if 2 <= total_calls <= 5:
         return (
-            "Continue with CodeGraph — use get_neighbors or get_impact "
-            "before grep/read-heavy exploration."
+            "Continue with CodeGraph for callers, callees, neighbors, "
+            "or impact before broad grep/read exploration."
         )
     # > 5 calls
     return (
-        "CodeGraph is already active in this session. Use impact or "
-        "neighbors before editing shared code."
+        "CodeGraph is active in this session. Use it for relationship "
+        "and impact checks before editing shared code."
     )
 
 
@@ -440,8 +440,8 @@ def _build_global_next_tools(
             recommendations.append({
                 "tool": "codegraph_get_impact",
                 "reason": (
-                    "Check downstream impact of modifying the suggested entry "
-                    "points, before editing shared code."
+                    "Check impact before editing the suggested symbols "
+                    "instead of manually following call chains."
                 ),
             })
 
@@ -455,8 +455,8 @@ def _build_global_next_tools(
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
                 "reason": (
-                    "Choose the most relevant symbol from the results and "
-                    "inspect its callers and callees before reading files."
+                    "Inspect relationships around the found symbols "
+                    "before reading multiple files."
                 ),
             })
         elif total > 0:
@@ -480,7 +480,8 @@ def _build_global_next_tools(
             "tool": "codegraph_get_neighbors",
             "reason": (
                 "Inspect connected callers, callees, imports, and tests "
-                "before reading implementation files."
+                "before reading implementation files — relationship-aware "
+                "lookup avoids broad file-by-file exploration."
             ),
         })
 
@@ -500,7 +501,8 @@ def _build_global_next_tools(
                 "tool": "codegraph_get_impact",
                 "reason": (
                     "This symbol has connected callers or dependencies — "
-                    "check the full blast radius before editing."
+                    "assess blast radius before editing instead of manually "
+                    "tracing callers and affected files."
                 ),
             })
 
@@ -511,7 +513,8 @@ def _build_global_next_tools(
                 "tool": "codegraph_get_impact",
                 "reason": (
                     f"This symbol has {total} upstream dependents — "
-                    "check the full impact before modifying it."
+                    "check the full impact before modifying it instead "
+                    "of manually tracing affected callers."
                 ),
             })
 
@@ -523,7 +526,7 @@ def _build_global_next_tools(
                 "reason": (
                     f"This symbol calls {total} downstream functions — "
                     "inspect broader relationships before reading "
-                    "implementation files."
+                    "dependency implementations file by file."
                 ),
             })
 
@@ -556,7 +559,7 @@ def _build_global_next_tools(
             "tool": "codegraph_search_symbols",
             "reason": (
                 "Search for the specific functions, classes, or routes "
-                "relevant to your task instead of browsing all files."
+                "relevant to your task before broad grep/read exploration."
             ),
         })
         recommendations.append({
@@ -2236,6 +2239,8 @@ def search_symbols(
     Find all routes in api/ → query="", paths="api/**", types="route".
     Use before grep when looking for functions, classes, methods, routes,
     exports, or framework entry points.
+    Lower cost than repeated grep when looking for functions, classes,
+    methods, routes, exports, or framework entry points.
 
     Args:
         query: Search keyword — symbol name, file path fragment, or docstring keyword
@@ -2455,6 +2460,7 @@ def get_symbol(
     Example: get exact file, line range, metadata, and source snippet for
     "MemoryService.findRelatedCCRs".
     Use after search_symbols when you need symbol-level detail before reading a file.
+    Use this to confirm exact symbol location before opening a file.
 
     Supports fuzzy lookup with resolve mode. Returns AMBIGUOUS_SYMBOL
     error when multiple candidates match.
@@ -2679,6 +2685,7 @@ def get_callers(
     """Ask: "Who calls this function?" → use symbol="MemoryService.findRelatedCCRs".
     Use instead of grep for upstream references, callers, and call chains.
     Run impact next before editing shared code.
+    Lower token cost than repeated grep for upstream references and call chains.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
     Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
@@ -2943,6 +2950,7 @@ def get_callees(
     """Ask: "What does this symbol call or depend on?" → use symbol="MemoryService".
     Shows downstream calls, dependencies, and invoked symbols.
     Use before manually reading implementation dependencies.
+    Use before reading dependency implementations file by file.
 
     External/unresolved symbols are separated into ``external_calls``.
 
@@ -3140,6 +3148,7 @@ def get_neighbors(
     """Ask: "What is connected to this symbol?" → use symbol="MemoryService".
     Shows callers, callees, imports, tests, routes, and nearby related symbols.
     Use before reading multiple related files.
+    Relationship-aware lookup before reading multiple related files.
 
     Compact mode returns neighbors grouped by role. Standard mode returns
     full nodes + edges. External/unresolved symbols are always in their
@@ -3479,6 +3488,8 @@ def get_impact(
     Use before editing shared services, public APIs, routes, framework entry
     points, or widely-used functions.
     Helps identify affected callers, tests, files, and confidence levels.
+    Use before editing shared code to avoid manually tracing affected
+    callers and tests.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
     Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
@@ -3943,73 +3954,73 @@ def _build_next_recommended_tools(
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect local callers and callees around the entry point to trace the error path.",
+                "reason": "Inspect local callers and callees around the entry point to trace the error path before reading multiple files.",
             })
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "Check downstream impact before modifying shared code.",
+                "reason": "Check downstream impact instead of manually tracing affected callers and tests.",
             })
     elif intent in ("review_code", "review"):
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect all neighbors (callers, callees, tests) for review coverage.",
+                "reason": "Inspect all neighbors (callers, callees, tests) for review coverage before opening files.",
             })
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "Assess blast radius — what would break if this code changes.",
+                "reason": "Assess blast radius instead of manually following all call chains and dependencies.",
             })
     elif intent in ("refactor",):
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_callers",
-                "reason": "Trace all upstream callers before renaming or restructuring.",
+                "reason": "Trace all upstream callers before renaming — avoids repeated grep for every reference.",
             })
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "Check downstream impact before modifying shared code.",
+                "reason": "Check downstream impact before modifying shared code instead of manually tracing affected files.",
             })
     elif intent in ("add_feature", "modify_existing_behavior", "implement", "implementation", "change", "modify"):
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect local relationships before editing this symbol.",
+                "reason": "Inspect local relationships around this symbol before reading related files.",
             })
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": "Check downstream impact before modifying shared code.",
+                "reason": "Check downstream impact before modifying shared code — avoids manual caller tracing.",
             })
     elif intent in ("analyze_impact",):
         recommendations.append({
             "tool": "codegraph_get_callers",
-            "reason": "Trace all upstream consumers to complete the impact picture.",
+            "reason": "Trace all upstream consumers to complete the impact picture without repeated grep.",
         })
         recommendations.append({
             "tool": "codegraph_get_callees",
-            "reason": "Trace all downstream dependencies to understand the full chain.",
+            "reason": "Trace all downstream dependencies — relationship-aware before reading files.",
         })
     elif intent in ("write_tests",):
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_callees",
-                "reason": "Trace callees to identify what needs test coverage.",
+                "reason": "Trace callees to identify test coverage gaps without manually reading each file.",
             })
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect existing test files and relationships around this symbol.",
+                "reason": "Inspect existing test relationships around this symbol before opening test files.",
             })
     elif intent in ("understand_code",):
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Inspect local relationships to understand the symbol's role.",
+                "reason": "Inspect local relationships to understand the symbol's role before reading implementation files.",
             })
     else:
         # Generic: if we have entry points, suggest the most useful next step
         if has_entry:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
-                "reason": "Explore local callers, callees, and tests around the entry point.",
+                "reason": "Explore local callers, callees, and tests around the entry point before broad file-by-file exploration.",
             })
 
     # Add get_impact for high-risk scenarios regardless of intent
@@ -4018,7 +4029,7 @@ def _build_next_recommended_tools(
         if not already_has_impact:
             recommendations.append({
                 "tool": "codegraph_get_impact",
-                "reason": f"Risk level is {risk_level} — verify downstream impact before any changes.",
+                "reason": f"Risk level is {risk_level} — verify downstream impact before any changes instead of manually tracing affected code.",
             })
 
     return recommendations[:3]
@@ -4042,6 +4053,8 @@ def build_context_pack(
     relationships, source snippets, and next tools.
     Use first for implementation, debugging, review, refactoring, or impact
     analysis before grep/glob/read-heavy exploration.
+    Lower token cost than reading many files up front; use Read only for
+    exact source text after the pack identifies relevant files and symbols.
 
     Args:
         task: Natural language description of what you need to do
@@ -4233,6 +4246,8 @@ def repo_status(
     index_path, cwd, freshness, and warnings.
     Use when MCP may be connected but results look wrong or stale.
     Run before relying on CodeGraph in a new project.
+    Use this before relying on results if the project root, index freshness,
+    or MCP binding may be wrong.
 
     Args:
         root: Optional project root path override
@@ -4474,6 +4489,7 @@ def repo_summary(
     symbol counts, and framework signals.
     Use first when entering a repository before glob/grep/read exploration.
     For a specific task, use build_context_pack next.
+    Use this before glob/read-heavy exploration when entering a repository.
 
     Args:
         response_mode: "compact" (default) or "standard"
