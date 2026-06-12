@@ -4582,19 +4582,48 @@ def main() -> None:
 
     project_root, _resolution_method = _resolve_project_root(args.project_root)
 
-    # Pre-load store so we fail fast if no index exists
+    # Store resolved project_root globally for tool functions.
+    # (_project_root is already declared global at the top of main().)
+    _project_root = project_root
+
+    # --check mode: validate and exit BEFORE loading the store.
+    # Must not require an existing .codegraph/ directory — the check
+    # should succeed even when the user hasn't run "codegraph init" yet.
+    if args.check:
+        _log("CodeGraph MCP check passed.")
+        _log(f"  Python:         {sys.executable}")
+        _log(f"  Package:        codegraph (importable)")
+
+        # Resolved project root
+        if project_root:
+            _log(f"  Project root:   {project_root}")
+        else:
+            _log(f"  Project root:   (not resolved)")
+        _log(f"  Resolution:     {_resolution_method}")
+
+        # .codegraph directory
+        cg_dir = _find_codegraph_dir(project_root)
+        if cg_dir:
+            _log(f"  Index dir:      {cg_dir}")
+            _log(f"  Index:          found — ready for MCP queries.")
+        else:
+            _log(f"  Index dir:      (not found)")
+            _log(f"  Warning: no .codegraph directory found from current cwd.")
+            _log(f"  Tools will return errors until user runs: codegraph init")
+
+        # FastMCP constructible
+        _log(f"  MCP transport:  stdio (FastMCP ready)")
+        sys.exit(0)
+
+    # Lazy-load the store. If no .codegraph/ directory exists, log a
+    # warning but do NOT exit — the MCP server must stay alive so that
+    # codegraph_repo_status and other tools can return structured errors
+    # instead of causing "Connection closed" on the MCP client side.
     try:
         _load_store(project_root)
     except RuntimeError as e:
-        _log(f"Error: {e}")
-        sys.exit(1)
-
-    # --check mode: validate and exit
-    if args.check:
-        _log(f"CodeGraph MCP check passed")
-        _log(f"Project root: {project_root}")
-        _log(f"Index dir:   {_cg_dir}")
-        sys.exit(0)
+        _log(f"Warning: {e}")
+        _log("MCP server starting without index. Run 'codegraph init' in the target project.")
 
     # Start watch mode if requested
     if args.watch and _cg_dir is not None:

@@ -993,12 +993,16 @@ def mcp(
 
 
 def _validate_serve_env(root_path: str | None) -> Path:
-    """Validate the environment for ``serve --mcp`` startup.
+    """Resolve and validate the environment for ``serve --mcp`` startup.
 
-    Checks CODEGRAPH_PROJECT_ROOT, directory existence, .codegraph presence,
-    and index file completeness. Returns the resolved project root Path.
+    Checks CODEGRAPH_PROJECT_ROOT, directory existence, and .codegraph
+    presence. Returns the resolved project root Path.
 
-    Exits with a clear message on any failure (no traceback).
+    **Graceful startup**: Does NOT exit when the .codegraph directory is
+    missing or incomplete.  The MCP server must stay alive so that tools
+    like ``codegraph_repo_status`` can return structured diagnostics and
+    guide the user to run ``codegraph init``.  Only truly fatal conditions
+    (project root path does not exist or is not a directory) cause an exit.
     """
     # Resolve project root
     env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT", "")
@@ -1016,7 +1020,7 @@ def _validate_serve_env(root_path: str | None) -> Path:
         else:
             resolved = Path.cwd().resolve()
 
-    # Check 1: path exists
+    # Check 1: path exists (fatal — nowhere to serve from)
     if not resolved.exists():
         typer.echo(
             f"ERROR: Project root does not exist.\n"
@@ -1026,7 +1030,7 @@ def _validate_serve_env(root_path: str | None) -> Path:
         )
         raise typer.Exit(1)
 
-    # Check 2: path is a directory
+    # Check 2: path is a directory (fatal)
     if not resolved.is_dir():
         typer.echo(
             f"ERROR: Project root is not a directory.\n"
@@ -1037,34 +1041,31 @@ def _validate_serve_env(root_path: str | None) -> Path:
 
     cg_dir = resolved / ".codegraph"
 
-    # Check 3: .codegraph directory exists
+    # Check 3: .codegraph directory — warn but do not exit.
+    # The MCP server starts without an index and tools return structured
+    # errors asking the user to run "codegraph init".
     if not cg_dir.exists():
         typer.echo(
-            f"No CodeGraph index found.\n"
-            f"Project root: {resolved}\n"
-            f"Run:\n"
+            f"Warning: No CodeGraph index found at {cg_dir}\n"
+            f"Run 'codegraph init' in the target project.\n"
             f"  cd {resolved}\n"
             f"  codegraph init",
             err=True,
         )
-        raise typer.Exit(1)
-
-    # Check 4: index files are complete
-    missing_files: list[str] = []
-    for fname in ("graph.json", "nodes.json", "edges.json", "metadata.json"):
-        if not (cg_dir / fname).exists():
-            missing_files.append(fname)
-
-    if missing_files:
-        typer.echo(
-            f"CodeGraph index is incomplete — missing files: {', '.join(missing_files)}\n"
-            f"Project root: {resolved}\n"
-            f"Run:\n"
-            f"  cd {resolved}\n"
-            f"  codegraph init --force",
-            err=True,
-        )
-        raise typer.Exit(1)
+    else:
+        # Check 4: index completeness — warn but do not exit
+        missing_files: list[str] = []
+        for fname in ("graph.json", "nodes.json", "edges.json", "metadata.json"):
+            if not (cg_dir / fname).exists():
+                missing_files.append(fname)
+        if missing_files:
+            typer.echo(
+                f"Warning: CodeGraph index is incomplete — missing files: {', '.join(missing_files)}\n"
+                f"Run 'codegraph init --force' in the target project.\n"
+                f"  cd {resolved}\n"
+                f"  codegraph init --force",
+                err=True,
+            )
 
     return resolved
 
@@ -1116,19 +1117,28 @@ def serve(
     if check:
         # Check mode: validate and exit
         typer.echo("CodeGraph MCP check passed.")
-        typer.echo(f"  Project root:  {project_root}")
-        typer.echo(f"  Index path:    {project_root / '.codegraph'}")
-        metadata_path = project_root / ".codegraph" / "metadata.json"
-        if metadata_path.exists():
-            from codegraph.graph.models import IndexMetadata
-            try:
-                meta = IndexMetadata.model_validate_json(metadata_path.read_text("utf-8"))
-                typer.echo(f"  Indexed at:    {meta.indexed_at}")
-                typer.echo(f"  Symbols:       {meta.symbol_count}")
-                typer.echo(f"  Edges:         {meta.edge_count}")
-                typer.echo(f"  Files:         {meta.file_count}")
-            except Exception:
-                pass
+        typer.echo(f"  Python:         {sys.executable}")
+        typer.echo(f"  Package:        codegraph (importable)")
+        typer.echo(f"  Project root:   {project_root}")
+        typer.echo(f"  Index dir:      {project_root / '.codegraph'}")
+
+        index_found = (project_root / ".codegraph").exists()
+        if index_found:
+            metadata_path = project_root / ".codegraph" / "metadata.json"
+            if metadata_path.exists():
+                from codegraph.graph.models import IndexMetadata
+                try:
+                    meta = IndexMetadata.model_validate_json(metadata_path.read_text("utf-8"))
+                    typer.echo(f"  Index:          found ({meta.symbol_count} symbols, {meta.edge_count} edges)")
+                    typer.echo(f"  Indexed at:     {meta.indexed_at}")
+                except Exception:
+                    typer.echo(f"  Index:          found (metadata unreadable)")
+            else:
+                typer.echo(f"  Index:          found (no metadata)")
+        else:
+            typer.echo(f"  Index:          NOT FOUND")
+            typer.echo(f"  Warning: No .codegraph directory found. Tools will return errors")
+            typer.echo(f"           until the user runs: codegraph init")
 
         # MCP protocol compliance: verify tools return dicts, not double-encoded strings
         from codegraph.mcp_server import _respond_ok, _respond_error, ZERO_TELEMETRY_STATEMENT
@@ -1139,6 +1149,13 @@ def serve(
         else:
             typer.echo("  [FAIL] MCP tools return strings (double-encoded JSON)", err=True)
         typer.echo(f"  [OK] Zero telemetry: {ZERO_TELEMETRY_STATEMENT[:80]}...")
+
+        if not index_found:
+            typer.echo("")
+            typer.echo("Next steps:")
+            typer.echo(f"  1. cd {project_root}")
+            typer.echo(f"  2. codegraph init")
+            typer.echo(f"  3. codegraph serve --mcp --check   # re-validate")
         return
 
     # Set env for the MCP server subprocess

@@ -101,19 +101,19 @@ class TestServeMcpCheck:
         assert "CodeGraph MCP check passed" in result.stdout
         assert str(project) in result.stdout
 
-    def test_check_fails_without_index(self, runner, tmp_path, monkeypatch):
-        """Without a .codegraph index, --check should exit with clear error."""
+    def test_check_passes_without_index(self, runner, tmp_path, monkeypatch):
+        """Without a .codegraph index, --check should pass with warning."""
         project = tmp_path / "noproject"
         project.mkdir()
         monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
 
         result = runner.invoke(app, ["serve", "--mcp", "--check"])
-        assert result.exit_code != 0
-        assert "No CodeGraph index found" in result.stderr or "No CodeGraph index found" in result.stdout
-        assert "codegraph init" in result.stderr or "codegraph init" in result.stdout
+        assert result.exit_code == 0
+        assert "CodeGraph MCP check passed" in result.stdout
+        assert "codegraph init" in result.stdout
 
-    def test_check_fails_with_incomplete_index(self, runner, tmp_path, monkeypatch):
-        """If index files are missing, --check should report incomplete."""
+    def test_check_warns_with_incomplete_index(self, runner, tmp_path, monkeypatch):
+        """If index files are missing, --check should pass with warning."""
         project = tmp_path / "partial"
         project.mkdir()
         cg_dir = project / ".codegraph"
@@ -125,8 +125,8 @@ class TestServeMcpCheck:
         monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
 
         result = runner.invoke(app, ["serve", "--mcp", "--check"])
-        assert result.exit_code != 0
-        assert "incomplete" in result.stderr.lower() or "incomplete" in result.stdout.lower()
+        assert result.exit_code == 0
+        assert "CodeGraph MCP check passed" in result.stdout
 
     def test_check_fails_with_nonexistent_root(self, runner, monkeypatch):
         """If CODEGRAPH_PROJECT_ROOT doesn't exist, report path error."""
@@ -250,15 +250,16 @@ class TestDoctor:
         assert "serve --mcp readiness" in result.stdout
         assert "serve --mcp can start" in result.stdout
 
-    def test_doctor_reports_serve_readiness_fail(self, runner, tmp_path, monkeypatch):
-        """doctor should report serve --mcp failure when index is missing."""
+    def test_doctor_reports_serve_readiness_warn(self, runner, tmp_path, monkeypatch):
+        """doctor should report serve --mcp readiness even when index is missing."""
         project = tmp_path / "failproj"
         project.mkdir()
         monkeypatch.setenv("CODEGRAPH_PROJECT_ROOT", str(project))
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
-        assert "serve --mcp would fail" in result.stdout
+        # MCP server now starts without index — doctor shows warning, not failure
+        assert "serve --mcp can start" in result.stdout
 
     def test_doctor_checks_mcp_command_exists(self, runner, tmp_path, monkeypatch):
         """doctor should report MCP command existence (check 8)."""

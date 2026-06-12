@@ -3273,3 +3273,157 @@ class TestModeParameter:
         from codegraph.mcp_server import get_impact
         sig = inspect.signature(get_impact)
         assert "mode" in sig.parameters
+
+
+# ── Test: server startup robustness (no .codegraph/) ─────────────────────────
+
+
+class TestServerStartupRobustness:
+    """MCP server must start even without a .codegraph/ directory."""
+
+    def test_main_does_not_exit_without_index(self, tmp_path, monkeypatch):
+        """mcp_server.main() with --check must NOT sys.exit when index is missing."""
+        import sys
+        import io
+        from codegraph.mcp_server import main as mcp_main
+
+        empty_dir = tmp_path / "empty_project"
+        empty_dir.mkdir()
+        monkeypatch.chdir(empty_dir)
+
+        # Capture stderr to verify warning output
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+
+        try:
+            # Simulate: python -m codegraph.mcp_server --check
+            monkeypatch.setattr(sys, "argv", ["codegraph.mcp_server", "--check"])
+            # main() calls sys.exit(0) on check success — catch it
+            with pytest.raises(SystemExit) as exc_info:
+                mcp_main()
+            assert exc_info.value.code == 0, (
+                f"--check should exit 0 even without index, got {exc_info.value.code}"
+            )
+            stderr_output = sys.stderr.getvalue()
+            assert "CodeGraph MCP check passed" in stderr_output
+            assert "codegraph init" in stderr_output.lower()
+        finally:
+            sys.stderr = old_stderr
+
+    def test_repo_status_without_index_returns_warning(self, tmp_path, monkeypatch):
+        """repo_status must return structured warning, not crash, without index."""
+        import codegraph.mcp_server as mcp_mod
+
+        empty_dir = tmp_path / "another_empty"
+        empty_dir.mkdir()
+        monkeypatch.chdir(empty_dir)
+
+        # Clear cached store/project_root so repo_status does a fresh resolve
+        mcp_mod._store = None
+        mcp_mod._cg_dir = None
+        mcp_mod._project_root = None
+        mcp_mod._resolution_method = "unknown"
+
+        result = mcp_mod.repo_status()
+        assert result["ok"] is True
+        assert result["tool"] == "codegraph_repo_status"
+        assert "data" in result
+        data = result["data"]
+        assert "project_root" in data
+        assert "index_exists" in data
+        # Without index: index_exists should be False
+        if not data.get("index_exists", True):
+            # Should have suggested_fix or warnings
+            has_guidance = (
+                data.get("suggested_fix") is not None
+                or len(result.get("warnings", [])) > 0
+            )
+            assert has_guidance, (
+                "repo_status without index should provide guidance to user"
+            )
+
+    def test_repo_status_with_index_works_normally(self, mcp_setup):
+        """repo_status with index must return expected data (no regression)."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        assert result["ok"] is True
+        assert "data" in result
+        assert "index_status" in result["data"]
+        assert "project_root" in result["data"]
+
+    def test_stdout_is_clean_in_mcp_tool_responses(self, mcp_setup):
+        """MCP tool responses must be pure JSON dicts (no log text mixed in stdout).
+
+        Each tool function returns a dict directly — this is the MCP protocol
+        contract.  The FastMCP framework serializes the dict to JSON-RPC on
+        stdout.  Any stray print() to stdout would break the protocol.
+        """
+        from codegraph.mcp_server import repo_status, search_symbols
+
+        r1 = repo_status()
+        r2 = search_symbols("login")
+
+        # Both responses must be pure dicts with expected envelope keys
+        for result in (r1, r2):
+            assert isinstance(result, dict), f"Expected dict, got {type(result)}"
+            assert "ok" in result
+            assert "tool" in result
+            assert "meta" in result
+            # index_status must be a structured dict, never a bare string
+            assert isinstance(result.get("index_status"), dict), (
+                "index_status must be a structured dict, not a string"
+            )
+            assert isinstance(result.get("index_health"), dict), (
+                "index_health must be a structured dict, not a string"
+            )
+
+    def test_configure_uses_absolute_python_path(self):
+        """configure builds config with sys.executable (absolute path)."""
+        import sys
+        from codegraph.configure import build_server_config
+        config = build_server_config()
+        assert config["command"] == sys.executable, (
+            f"Expected sys.executable ({sys.executable}), got {config['command']}"
+        )
+        assert config["args"] == ["-m", "codegraph.mcp_server"]
+
+    def test_configure_global_has_no_project_root(self):
+        """Global configure (root=None) must NOT write CODEGRAPH_PROJECT_ROOT."""
+        from codegraph.configure import build_server_config
+        config = build_server_config(root=None)
+        assert "env" not in config, (
+            "Global config must NOT hardcode CODEGRAPH_PROJECT_ROOT"
+        )
+
+    def test_configure_with_root_has_env(self):
+        """Project-scoped configure writes CODEGRAPH_PROJECT_ROOT."""
+        from codegraph.configure import build_server_config
+        config = build_server_config(root="/some/project")
+        assert "env" in config
+        assert "CODEGRAPH_PROJECT_ROOT" in config["env"]
+
+    def test_log_function_writes_to_stderr(self):
+        """_log() must write to stderr, never stdout."""
+        import sys
+        import io
+        from codegraph.mcp_server import _log
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        fake_out = io.StringIO()
+        fake_err = io.StringIO()
+        sys.stdout = fake_out
+        sys.stderr = fake_err
+        try:
+            _log("test message 12345")
+            stdout_content = fake_out.getvalue()
+            stderr_content = fake_err.getvalue()
+            assert "test message 12345" in stderr_content, (
+                "Log message should appear in stderr"
+            )
+            assert "test message 12345" not in stdout_content, (
+                "Log message must NOT appear in stdout (breaks MCP protocol)"
+            )
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
