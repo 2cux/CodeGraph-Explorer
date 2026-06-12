@@ -150,6 +150,7 @@ Supports a progressive pipeline via the `mode` parameter:
 | `full` | Complete JSON output with all evidence fields |
 | `markdown` | Export to markdown file, returns file path |
 | `scan` | Lightweight entry point discovery (Stage 1 of progressive pipeline) |
+| `deepen` | Local relationships and source snippets around scan entry points (Stage 2 of progressive pipeline) |
 
 ## Progressive Context Pack
 
@@ -166,10 +167,33 @@ Scan mode returns:
 - **`entry_points`** (3–5): Likely entry point symbols with file, line range, reason, and confidence
 - **`related_files`** (3–5): Files related to the entry points
 - **`summary`**: Short human-readable summary of findings
-- **`next_token`**: Opaque token for future `mode=deepen` (planned)
-- **`next_recommended_tools`**: Suggested next CodeGraph tools to call (e.g. `get_neighbors`, `get_impact`)
+- **`next_token`**: Opaque token for `mode=deepen` — pass this to the next stage
 
 It avoids returning a large context pack up front — no subgraph, no impact analysis, no source snippets. The goal is to help the agent pick the right entry point before deepening.
+
+### Deepen mode
+
+After scan mode returns entry points and a `next_token`, use deepen mode to inspect local relationships and source snippets around the selected entry point.
+
+```text
+codegraph_build_context_pack(
+  task="fix MemoryService bug",
+  mode="deepen",
+  next_token="..."
+)
+```
+
+Deepen mode returns:
+
+- **`selected_entry_points`**: Resolved entry point symbols with file and line range
+- **`local_relationships`**: Local callers, callees, neighbors, and related tests around the entry points (each limited to ~5)
+- **`related_files`**: Files related to the entry points and their relationships
+- **`source_snippets`** (3–5): Bounded source snippets for entry points and high-confidence related symbols — each snippet includes symbol, file, line_start, line_end, reason, and snippet text
+- **`summary`**: Short human-readable summary of what was found
+- **`next_token`**: New token for a future impact-stage analysis (carries forward entry points + newly discovered relationship symbols)
+- **`next_recommended_tools`**: Recommends `get_impact` and optionally `get_neighbors` — only existing tools, no unimplemented modes
+
+It does NOT return full impact analysis, full subgraph, or complete source files. The output is more focused than `mode=full` but richer than `mode=scan`.
 
 `mode=full` and `mode=summary` remain available for backward compatibility.
 

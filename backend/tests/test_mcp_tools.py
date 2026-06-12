@@ -1423,7 +1423,7 @@ class TestBuildContextPackScanMode:
         decoded = _decode_scan_token(token)
         assert decoded is not None, "token should be decodable"
         # Verify decoded token only has expected keys
-        expected_keys = {"v", "task", "selected_symbols", "selected_files", "created_at"}
+        expected_keys = {"v", "task", "selected_symbols", "selected_files", "created_at", "stage"}
         actual_keys = set(decoded.keys())
         assert actual_keys == expected_keys, (
             f"Token keys {actual_keys} should be exactly {expected_keys}"
@@ -1509,6 +1509,259 @@ class TestBuildContextPackScanMode:
         from codegraph.mcp_server import build_context_pack
         result = build_context_pack("add MFA to login", mode="scan")
         assert "codegraph_session" in result, "scan response missing codegraph_session"
+
+
+# ── Test: build_context_pack mode=deepen (Progressive Context Pack Stage 2) ──
+
+
+class TestBuildContextPackDeepenMode:
+    """mode=deepen returns local relationships and snippets around scan entry points."""
+
+    def test_mode_deepen_requires_next_token(self, mcp_setup):
+        """mode=deepen without next_token returns error."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("fix MemoryService bug", mode="deepen")
+        assert result["ok"] is False, f"Expected ok=False, got: {result}"
+        assert result["error"]["code"] == "INVALID_ARGUMENT", (
+            f"Expected INVALID_ARGUMENT, got: {result['error'].get('code')}"
+        )
+
+    def test_mode_deepen_invalid_token(self, mcp_setup):
+        """mode=deepen with an invalid token returns error."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack(
+            "fix MemoryService bug", mode="deepen", next_token="not-a-valid-token!!!"
+        )
+        assert result["ok"] is False, f"Expected ok=False, got: {result}"
+        assert result["error"]["code"] == "INVALID_CONTEXT_PACK_TOKEN", (
+            f"Expected INVALID_CONTEXT_PACK_TOKEN, got: {result['error'].get('code')}"
+        )
+
+    def test_mode_deepen_returns_selected_entry_points(self, mcp_setup):
+        """mode=deepen returns selected_entry_points when given valid token."""
+        from codegraph.mcp_server import build_context_pack
+        # First scan
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None, "scan did not produce a token"
+
+        # Then deepen
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "selected_entry_points" in data, f"deepen result missing selected_entry_points: {data.keys()}"
+        assert isinstance(data["selected_entry_points"], list)
+        assert len(data["selected_entry_points"]) >= 1, f"Expected at least 1 entry point"
+
+    def test_mode_deepen_returns_local_relationships(self, mcp_setup):
+        """mode=deepen returns local_relationships with callers/callees/neighbors/tests."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "local_relationships" in data, (
+            f"deepen result missing local_relationships: {data.keys()}"
+        )
+        rels = data["local_relationships"]
+        assert "callers" in rels
+        assert "callees" in rels
+        assert "neighbors" in rels
+        assert "related_tests" in rels
+        for key in ("callers", "callees", "neighbors", "related_tests"):
+            assert isinstance(rels[key], list), f"{key} should be a list"
+
+    def test_mode_deepen_returns_source_snippets(self, mcp_setup):
+        """mode=deepen returns source_snippets with required fields."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "source_snippets" in data, f"deepen result missing source_snippets"
+        snippets = data["source_snippets"]
+        assert isinstance(snippets, list)
+
+        if len(snippets) > 0:
+            snippet = snippets[0]
+            for key in ("symbol", "file", "line_start", "line_end", "reason", "snippet"):
+                assert key in snippet, f"snippet missing field: {key}"
+
+    def test_mode_deepen_snippets_not_full_file(self, mcp_setup):
+        """mode=deepen snippets are bounded, not full file contents."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"]
+        snippets = result["data"].get("source_snippets", [])
+        for s in snippets:
+            snippet_text = s.get("snippet", "")
+            # A full file would be very long; each snippet should be limited
+            assert len(snippet_text.splitlines()) <= 60, (
+                f"Snippet exceeds reasonable line limit: {len(snippet_text.splitlines())} lines"
+            )
+
+    def test_mode_deepen_returns_new_next_token(self, mcp_setup):
+        """mode=deepen returns a new next_token for the impact stage."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"]
+        data = result["data"]
+        assert "next_token" in data, "deepen result missing next_token"
+        new_token = data["next_token"]
+        assert new_token is not None
+        assert isinstance(new_token, str)
+        assert len(new_token) > 0
+
+    def test_mode_deepen_new_token_no_source_code(self, mcp_setup):
+        """New next_token from deepen does NOT contain source code."""
+        from codegraph.mcp_server import build_context_pack, _decode_context_pack_token
+        import json as _json
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"]
+        new_token = result["data"].get("next_token")
+        assert new_token is not None
+
+        decoded = _decode_context_pack_token(new_token)
+        assert decoded is not None, "new token should be decodable"
+        # Check token does not contain source code
+        token_str = _json.dumps(decoded)
+        assert "def " not in token_str.lower(), "token should not contain source code"
+        assert "class " not in token_str.lower(), "token should not contain source code"
+        assert "import " not in token_str.lower(), "token should not contain source code"
+        # Should have stage set to deepen
+        assert decoded.get("stage") == "deepen", (
+            f"Expected stage=deepen, got: {decoded.get('stage')}"
+        )
+
+    def test_mode_deepen_no_impact(self, mcp_setup):
+        """mode=deepen does NOT return full impact analysis."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"]
+        data = result["data"]
+        assert "impact" not in data, "deepen mode should not include full impact"
+        # Also no full call_graph
+        assert "call_graph" not in data, "deepen mode should not include call_graph"
+
+    def test_mode_deepen_no_break_scan(self, mcp_setup):
+        """mode=deepen does NOT break mode=scan behavior."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"], f"scan mode still works: {scan_result}"
+        data = scan_result["data"]
+        assert "entry_points" in data
+        assert "next_token" in data
+        assert "call_graph" not in data  # scan still excludes subgraph
+
+    def test_mode_deepen_no_break_full(self, mcp_setup):
+        """mode=deepen does NOT break default full behavior."""
+        from codegraph.mcp_server import build_context_pack
+        full_result = build_context_pack("add MFA to login", mode="full", response_mode="standard")
+        assert full_result["ok"], f"full mode still works: {full_result}"
+        data = full_result["data"]
+        # Full mode should have impact, call_graph, etc.
+        assert "pack_id" in data, "full mode should have pack_id"
+
+    def test_mode_deepen_next_recommended_tools_existing_only(self, mcp_setup):
+        """mode=deepen next_recommended_tools only recommends existing tools."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"]
+        recs = result["data"].get("next_recommended_tools", [])
+        valid_tools = {
+            "codegraph_search_symbols", "codegraph_get_symbol",
+            "codegraph_get_callers", "codegraph_get_callees",
+            "codegraph_get_neighbors", "codegraph_get_impact",
+            "codegraph_repo_status", "codegraph_repo_summary",
+            "codegraph_build_context_pack",
+        }
+        for rec in recs:
+            tool = rec.get("tool", "")
+            assert tool in valid_tools, (
+                f"Recommended tool '{tool}' is not a real MCP tool"
+            )
+            # No unimplemented modes
+            if tool == "codegraph_build_context_pack":
+                assert "impact" not in rec.get("reason", "").lower(), (
+                    "Should not recommend unimplemented impact mode"
+                )
+
+    def test_mode_deepen_no_symbols_without_token(self, mcp_setup):
+        """mode=deepen without token returns clear error, not crash."""
+        from codegraph.mcp_server import build_context_pack
+        # Calling deepen without next_token and without explicit symbol should error
+        result = build_context_pack("some task", mode="deepen")
+        assert result["ok"] is False
+        error = result.get("error", {})
+        assert "next_token" in error.get("message", "").lower(), (
+            f"Error should mention next_token: {error.get('message')}"
+        )
+
+    def test_mode_deepen_has_codegraph_session(self, mcp_setup):
+        """mode=deepen response includes codegraph_session."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        result = build_context_pack("add MFA to login", mode="deepen", next_token=token)
+        assert result["ok"]
+        assert "codegraph_session" in result, "deepen response missing codegraph_session"
+        assert "index_status" in result, "deepen response missing index_status"
+        assert "index_health" in result, "deepen response missing index_health"
+
+    def test_mode_deepen_token_can_parse_scan_token(self, mcp_setup):
+        """_decode_context_pack_token can parse scan stage token."""
+        from codegraph.mcp_server import _generate_context_pack_token, _decode_context_pack_token
+
+        token = _generate_context_pack_token(
+            "test task",
+            [{"symbol_id": "app/api/auth.py::login"}],
+            [{"file": "app/api/auth.py"}],
+            stage="scan",
+        )
+        assert token is not None
+        decoded = _decode_context_pack_token(token)
+        assert decoded is not None
+        assert decoded.get("task") == "test task"
+        assert "app/api/auth.py::login" in decoded.get("selected_symbols", [])
+        assert decoded.get("stage") == "scan"
 
 
 # ── Test: source_snippets in build_context_pack ──────────────────────────────

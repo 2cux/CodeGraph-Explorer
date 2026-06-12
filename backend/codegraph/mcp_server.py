@@ -635,8 +635,12 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "index_exists", "symbol_count", "edge_count",
     # Source snippets & next steps (context_pack enhancement)
     "source_snippets", "next_recommended_tools", "file", "snippet",
+    "omitted_lines", "omitted_note",  # snippet truncation metadata
     # Scan mode (Progressive Context Pack Stage 1)
     "next_token", "related_files", "mode", "summary", "task", "symbol",
+    # Deepen mode (Progressive Context Pack Stage 2)
+    "selected_entry_points", "local_relationships",
+    "selected_symbols", "relationship_symbols",
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -4038,24 +4042,34 @@ def _build_next_recommended_tools(
     return recommendations[:3]
 
 
-# ── Scan mode helpers (Progressive Context Pack Stage 1) ──────────────────
+# ── Progressive Context Pack helpers (Stages 1-3) ──────────────────────
 
-_SCAN_TOKEN_VERSION = "1"
+_TOKEN_VERSION = "1"
 
-# Max counts for scan mode output
+# Max counts for scan/deepen mode output
 _SCAN_MAX_ENTRY_POINTS = 5
 _SCAN_MAX_RELATED_FILES = 5
 
+# Max sizes for deepen mode
+_DEEPEN_MAX_CALLERS = 5
+_DEEPEN_MAX_CALLEES = 5
+_DEEPEN_MAX_NEIGHBORS = 5
+_DEEPEN_MAX_TESTS = 5
+_DEEPEN_MAX_SNIPPETS = 5
+_DEEPEN_MAX_SNIPPET_LINES = 50
 
-def _generate_scan_token(
+
+def _generate_context_pack_token(
     task: str,
     entry_points: list[dict[str, Any]],
     related_files: list[dict[str, Any]],
+    stage: str = "scan",
+    relationship_symbols: list[str] | None = None,
 ) -> str | None:
-    """Generate a lightweight next_token for scan mode.
+    """Generate a lightweight next_token for progressive context pack pipeline.
 
     The token is a base64-encoded JSON object containing only the minimal
-    information needed for a future ``mode=deepen`` call. No source code,
+    information needed for the next pipeline stage. No source code,
     no full context pack, no disk writes.
 
     Returns ``None`` if there are no entry points to carry forward.
@@ -4065,8 +4079,8 @@ def _generate_scan_token(
 
     try:
         from datetime import datetime, timezone
-        payload = {
-            "v": _SCAN_TOKEN_VERSION,
+        payload: dict[str, Any] = {
+            "v": _TOKEN_VERSION,
             "task": task,
             "selected_symbols": [
                 ep.get("symbol_id", "") for ep in entry_points
@@ -4075,7 +4089,10 @@ def _generate_scan_token(
                 rf.get("file", "") for rf in related_files
             ],
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "stage": stage,
         }
+        if relationship_symbols:
+            payload["relationship_symbols"] = relationship_symbols
         json_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         return base64.urlsafe_b64encode(json_bytes).rstrip(b"=").decode("ascii")
     except Exception:
@@ -4083,9 +4100,10 @@ def _generate_scan_token(
         return None
 
 
-def _decode_scan_token(token: str) -> dict[str, Any] | None:
-    """Decode a scan token back to its payload dict.
+def _decode_context_pack_token(token: str) -> dict[str, Any] | None:
+    """Decode a context pack token back to its payload dict.
 
+    Supports tokens from all pipeline stages (scan, deepen).
     Returns ``None`` on any decode error — token is best-effort.
     """
     try:
@@ -4097,6 +4115,11 @@ def _decode_scan_token(token: str) -> dict[str, Any] | None:
         return json.loads(json_bytes)
     except Exception:
         return None
+
+
+# Keep backward-compatible aliases (used by tests)
+_generate_scan_token = _generate_context_pack_token
+_decode_scan_token = _decode_context_pack_token
 
 
 def _build_scan_result(
@@ -4214,6 +4237,395 @@ def _build_scan_result(
     }
 
 
+# ── Deepen mode (Progressive Context Pack Stage 2) ──────────────────────
+
+
+def _build_deepen_result(
+    store: "GraphStore",
+    task_description: str,
+    token: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a deepen-mode result around the entry points from the scan token.
+
+    Queries local relationships (callers, callees, neighbors, tests) around
+    the selected symbols from the scan stage. Returns limited source snippets,
+    a new next_token for impact stage, and summary.
+
+    Does NOT return: full impact, full subgraph, full source files.
+    """
+    selected_symbols: list[str] = token.get("selected_symbols", [])
+    selected_files: list[str] = token.get("selected_files", [])
+    relationship_symbols: list[str] = token.get("relationship_symbols", [])
+
+    if not selected_symbols:
+        return {
+            "ok": True,
+            "mode": "deepen",
+            "task": task_description,
+            "selected_entry_points": [],
+            "local_relationships": {
+                "callers": [],
+                "callees": [],
+                "neighbors": [],
+                "related_tests": [],
+            },
+            "source_snippets": [],
+            "related_files": [],
+            "summary": "No entry points found in token. Run mode=scan again.",
+            "next_token": None,
+            "next_recommended_tools": [],
+        }
+
+    # ── Resolve entry points from store ─────────────────────────────────
+    selected_entry_points: list[dict[str, Any]] = []
+    for sym_id in selected_symbols:
+        node = store.get_node(sym_id)
+        if node is None:
+            # Try fuzzy resolve
+            resolved = _resolve_node(store, sym_id)
+            if resolved is not None:
+                node = resolved
+        if node is not None:
+            selected_entry_points.append({
+                "symbol": node.name,
+                "file": node.file_path,
+                "line_start": node.location.line_start if node.location else None,
+                "line_end": node.location.line_end if node.location else None,
+                "reason": "Selected from scan results.",
+            })
+        else:
+            # Symbol not found in index — still include with warning
+            name = sym_id.split("::")[-1] if "::" in sym_id else sym_id
+            fp = sym_id.split("::")[0] if "::" in sym_id else ""
+            selected_entry_points.append({
+                "symbol": name,
+                "file": fp,
+                "line_start": None,
+                "line_end": None,
+                "reason": "Selected from scan results (symbol not found in current index).",
+            })
+
+    if not selected_entry_points:
+        return {
+            "ok": True,
+            "mode": "deepen",
+            "task": task_description,
+            "selected_entry_points": [],
+            "local_relationships": {
+                "callers": [],
+                "callees": [],
+                "neighbors": [],
+                "related_tests": [],
+            },
+            "source_snippets": [],
+            "related_files": [],
+            "summary": "Could not resolve any entry point symbols from token. Run mode=scan again.",
+            "next_token": None,
+            "next_recommended_tools": [],
+        }
+
+    # ── Query local relationships around selected symbols ───────────────
+    callers: list[dict[str, Any]] = []
+    callees: list[dict[str, Any]] = []
+    neighbors: list[dict[str, Any]] = []
+    related_tests: list[dict[str, Any]] = []
+    seen_caller_ids: set[str] = set()
+    seen_callee_ids: set[str] = set()
+    seen_test_ids: set[str] = set()
+
+    for sym_id in selected_symbols:
+        # Callers (incoming call edges)
+        for edge in store.get_incoming_edges(sym_id):
+            if edge.type == EdgeType.calls and edge.source not in seen_caller_ids:
+                caller_node = store.get_node(edge.source)
+                if caller_node is not None and caller_node.type == NodeType.test:
+                    if edge.source not in seen_test_ids and len(related_tests) < _DEEPEN_MAX_TESTS:
+                        seen_test_ids.add(edge.source)
+                        related_tests.append({
+                            "symbol": caller_node.name,
+                            "file": caller_node.file_path,
+                            "relation": "test_caller",
+                            "confidence": round(edge.confidence, 4),
+                            "reason": "Test calls selected entry point.",
+                        })
+                    continue
+                if len(callers) < _DEEPEN_MAX_CALLERS:
+                    seen_caller_ids.add(edge.source)
+                    caller_name = caller_node.name if caller_node else edge.source.split("::")[-1] if "::" in edge.source else edge.source
+                    caller_file = caller_node.file_path if caller_node else ""
+                    callers.append({
+                        "symbol": caller_name,
+                        "file": caller_file,
+                        "relation": "caller",
+                        "confidence": round(edge.confidence, 4),
+                        "reason": f"Calls the selected entry point.",
+                    })
+
+        # Callees (outgoing call edges)
+        for edge in store.get_outgoing_edges(sym_id):
+            if edge.type == EdgeType.calls and edge.target not in seen_callee_ids:
+                if len(callees) < _DEEPEN_MAX_CALLEES:
+                    seen_callee_ids.add(edge.target)
+                    callee_node = store.get_node(edge.target)
+                    callee_name = callee_node.name if callee_node else edge.target.split("::")[-1] if "::" in edge.target else edge.target
+                    callee_file = callee_node.file_path if callee_node else ""
+                    callees.append({
+                        "symbol": callee_name,
+                        "file": callee_file,
+                        "relation": "callee",
+                        "confidence": round(edge.confidence, 4),
+                        "reason": f"Called by the selected entry point.",
+                    })
+
+    # Neighbors: deduplicated union of callers + callees (non-test), capped
+    neighbor_seen: set[str] = set()
+    for c in callers:
+        if len(neighbors) >= _DEEPEN_MAX_NEIGHBORS:
+            break
+        key = f"{c['file']}::{c['symbol']}"
+        if key not in neighbor_seen:
+            neighbor_seen.add(key)
+            neighbors.append(dict(c))
+    for c in callees:
+        if len(neighbors) >= _DEEPEN_MAX_NEIGHBORS:
+            break
+        key = f"{c['file']}::{c['symbol']}"
+        if key not in neighbor_seen:
+            neighbor_seen.add(key)
+            neighbors.append(dict(c))
+
+    # ── Source snippets ─────────────────────────────────────────────────
+    source_snippets = _build_deepen_snippets(
+        store, selected_entry_points, callers, callees,
+        max_snippets=_DEEPEN_MAX_SNIPPETS,
+        max_lines=_DEEPEN_MAX_SNIPPET_LINES,
+    )
+
+    # ── Related files ───────────────────────────────────────────────────
+    seen_files: set[str] = set()
+    related_files: list[dict[str, Any]] = []
+
+    # Entry point files first
+    for ep in selected_entry_points:
+        fp = ep.get("file", "")
+        if fp and fp not in seen_files:
+            seen_files.add(fp)
+            related_files.append({
+                "file": fp,
+                "reason": "Contains selected entry point.",
+            })
+
+    # Caller/callee files
+    for c in callers + callees:
+        fp = c.get("file", "")
+        if fp and fp not in seen_files and len(related_files) < _SCAN_MAX_RELATED_FILES:
+            seen_files.add(fp)
+            related_files.append({
+                "file": fp,
+                "reason": f"Related via {c.get('relation', 'neighbor')} relationship.",
+            })
+
+    # ── Collect relationship symbol IDs for next_token ──────────────────
+    rel_symbol_ids: list[str] = []
+    for c in callers + callees:
+        sym_file = c.get("file", "")
+        sym_name = c.get("symbol", "")
+        if sym_file and sym_name:
+            sym = f"{sym_file}::{sym_name}"
+            if sym not in rel_symbol_ids:
+                rel_symbol_ids.append(sym)
+
+    # ── Build entry points in the format expected by token generator ───
+    ep_for_token: list[dict[str, Any]] = [
+        {"symbol_id": sid} for sid in selected_symbols
+    ]
+
+    # ── Summary ─────────────────────────────────────────────────────────
+    ep_count = len(selected_entry_points)
+    caller_count = len(callers)
+    callee_count = len(callees)
+    test_count = len(related_tests)
+    snippet_count = len(source_snippets)
+
+    if ep_count == 0:
+        summary = "No entry points resolved. Run mode=scan again."
+    elif caller_count == 0 and callee_count == 0 and test_count == 0:
+        summary = (
+            f"Deepened context around {ep_count} entry point(s). "
+            f"No direct callers, callees, or tests found. "
+            f"Use get_neighbors for broader relationship exploration."
+        )
+    else:
+        parts: list[str] = []
+        if caller_count > 0:
+            parts.append(f"{caller_count} caller(s)")
+        if callee_count > 0:
+            parts.append(f"{callee_count} callee(s)")
+        if test_count > 0:
+            parts.append(f"{test_count} test(s)")
+        summary = (
+            f"Deepened context around {ep_count} entry point(s) with "
+            f"{', '.join(parts)} and {snippet_count} source snippet(s). "
+            f"Review relationships and snippets before editing."
+        )
+
+    # ── Next token ──────────────────────────────────────────────────────
+    next_token = _generate_context_pack_token(
+        task_description,
+        ep_for_token,
+        related_files,
+        stage="deepen",
+        relationship_symbols=rel_symbol_ids if rel_symbol_ids else None,
+    )
+
+    # ── Next recommended tools (only existing tools) ────────────────────
+    next_tools: list[dict[str, Any]] = []
+    if selected_entry_points:
+        next_tools.append({
+            "tool": "codegraph_get_impact",
+            "reason": (
+                "Check impact before editing the deepened entry point "
+                "instead of manually tracing callers."
+            ),
+        })
+        if caller_count > 0 or callee_count > 0:
+            next_tools.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": (
+                    "Inspect broader relationships if the deepened "
+                    "context is still insufficient."
+                ),
+            })
+
+    return {
+        "ok": True,
+        "mode": "deepen",
+        "task": task_description,
+        "selected_entry_points": selected_entry_points,
+        "local_relationships": {
+            "callers": callers,
+            "callees": callees,
+            "neighbors": neighbors,
+            "related_tests": related_tests,
+        },
+        "source_snippets": source_snippets,
+        "related_files": related_files,
+        "summary": summary,
+        "next_token": next_token,
+        "next_recommended_tools": next_tools,
+    }
+
+
+def _build_deepen_snippets(
+    store: "GraphStore",
+    entry_points: list[dict[str, Any]],
+    callers: list[dict[str, Any]],
+    callees: list[dict[str, Any]],
+    max_snippets: int = _DEEPEN_MAX_SNIPPETS,
+    max_lines: int = _DEEPEN_MAX_SNIPPET_LINES,
+) -> list[dict[str, Any]]:
+    """Build source snippets for deepen mode.
+
+    Priority: selected entry points first, then highest-confidence
+    callers/callees. Each snippet bounded to *max_lines*.
+    """
+    snippets: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, int, int]] = set()
+
+    # Candidates: (symbol_name, file_path, line_start, line_end, reason, priority, confidence)
+    # priority: 0 = entry point (highest), 1 = caller/callee
+    candidates: list[tuple[str, str, int, int, str, int, float]] = []
+
+    # Entry points
+    for ep in entry_points:
+        fp = ep.get("file", "")
+        ls = ep.get("line_start")
+        le = ep.get("line_end")
+        if fp and ls and le:
+            name = ep.get("symbol", "")
+            candidates.append((
+                name, fp, ls, le,
+                "Primary entry point selected during scan.",
+                0,
+                1.0,  # entry points always have top priority
+            ))
+
+    # Callers (highest confidence first)
+    sorted_callers = sorted(callers, key=lambda c: c.get("confidence", 0), reverse=True)
+    for c in sorted_callers:
+        fp = c.get("file", "")
+        name = c.get("symbol", "")
+        conf = c.get("confidence", 0)
+        if not fp or not name:
+            continue
+        # Resolve location from store
+        node = _resolve_node(store, f"{fp}::{name}")
+        if node is not None and node.location:
+            candidates.append((
+                name, fp, node.location.line_start, node.location.line_end,
+                f"Caller of entry point (confidence: {conf}).",
+                1,
+                conf,
+            ))
+
+    # Callees (highest confidence first)
+    sorted_callees = sorted(callees, key=lambda c: c.get("confidence", 0), reverse=True)
+    for c in sorted_callees:
+        fp = c.get("file", "")
+        name = c.get("symbol", "")
+        conf = c.get("confidence", 0)
+        if not fp or not name:
+            continue
+        node = _resolve_node(store, f"{fp}::{name}")
+        if node is not None and node.location:
+            candidates.append((
+                name, fp, node.location.line_start, node.location.line_end,
+                f"Callee of entry point (confidence: {conf}).",
+                1,
+                conf,
+            ))
+
+    # Sort by priority (ascending), then confidence (descending)
+    candidates.sort(key=lambda x: (x[5], -x[6]))
+
+    for symbol_name, file_path, ls, le, reason, _priority, _conf in candidates:
+        if len(snippets) >= max_snippets:
+            break
+        key = (file_path, ls, le)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        # Calculate end line: min(ls + max_lines - 1, le)
+        effective_end = min(ls + max_lines - 1, le) if le >= ls else ls + max_lines - 1
+
+        source = _read_source_snippet(
+            file_path, ls, effective_end,
+            source_mode="body",
+            max_source_lines=max_lines,
+        )
+        if source.get("included") and source.get("content"):
+            snippet_data: dict[str, Any] = {
+                "symbol": symbol_name,
+                "file": file_path,
+                "line_start": ls,
+                "line_end": effective_end,
+                "reason": reason[:200],
+                "snippet": source["content"],
+            }
+            if source.get("truncated"):
+                snippet_data["truncated"] = True
+                original = (le - ls + 1) if le >= ls else source.get("lines", 0)
+                snippet_data["omitted_lines"] = max(0, original - source.get("lines", 0))
+                snippet_data["omitted_note"] = (
+                    f"Snippet truncated. Use Read for full source "
+                    f"(lines {ls}–{le} in {file_path})."
+                )
+            snippets.append(snippet_data)
+
+    return snippets
+
+
 # ── Tool: build_context_pack ──────────────────────────────────────────────
 
 
@@ -4226,6 +4638,7 @@ def build_context_pack(
     include_code: bool = True,
     mode: str = "summary",
     response_mode: str = "compact",
+    next_token: str | None = None,
 ) -> dict[str, Any]:
     """PRIMARY TOOL. Task: "fix MemoryService bug" → call this with task="fix MemoryService bug".
     Task: "implement repo profile service" → returns relevant files, symbols,
@@ -4235,6 +4648,10 @@ def build_context_pack(
     Lower token cost than reading many files up front; use Read only for
     exact source text after the pack identifies relevant files and symbols.
 
+    Progressive context pack pipeline: scan → deepen → impact.
+    Start with mode="scan" for lightweight entry point discovery, then
+    call mode="deepen" with the returned next_token, then get_impact.
+
     Args:
         task: Natural language description of what you need to do
               (e.g. "add rate limiting to the login endpoint")
@@ -4242,10 +4659,13 @@ def build_context_pack(
         depth: Call-chain traversal depth (default 2)
         include_tests: Whether to include related tests (default true)
         include_code: Whether to include source code snippets (default true)
-        mode: Output mode — "full" (complete JSON), "summary" (key insights only),
-              "markdown" (returns markdown file path), or "scan" (lightweight
-              entry point discovery) (default "summary")
-        response_mode: "compact" or "standard" (default)"
+        mode: "full" (complete JSON), "summary" (key insights only),
+              "markdown" (returns markdown file path), "scan" (lightweight
+              entry point discovery), or "deepen" (local relationships
+              and snippets around scan entry points) (default "summary")
+        response_mode: "compact" or "standard" (default)
+        next_token: Opaque token from a previous scan or deepen call
+                    (required for mode="deepen")
     """
     from codegraph.context.pack_builder import build_context_pack as _build
 
@@ -4276,6 +4696,59 @@ def build_context_pack(
             warnings=pack_warnings_for_scan,
             response_mode=response_mode,
             item_count=len(scan_result.get("entry_points", [])),
+            truncated=False,
+        )
+
+    # ── Deepen mode: local relationships around scan entry points ────────
+    if mode == "deepen":
+        if not next_token:
+            return _respond_error(
+                code=ERROR_CODES["INVALID_ARGUMENT"],
+                message=(
+                    "mode=deepen requires a next_token from a previous "
+                    "mode=scan call. Run mode=scan first to get entry points, "
+                    "then call mode=deepen with the returned next_token."
+                ),
+                tool="codegraph_build_context_pack",
+            )
+
+        token_payload = _decode_context_pack_token(next_token)
+        if token_payload is None:
+            return _respond_error(
+                code="INVALID_CONTEXT_PACK_TOKEN",
+                message=(
+                    "The provided next_token is invalid or expired. "
+                    "Run mode=scan again to get a fresh token."
+                ),
+                tool="codegraph_build_context_pack",
+            )
+
+        try:
+            store, cg_dir = _load_store()
+        except RuntimeError as e:
+            return _respond_error(
+                code=ERROR_CODES["INDEX_MISSING"],
+                message=str(e),
+                tool="codegraph_build_context_pack",
+            )
+
+        deepen_result = _build_deepen_result(store, task, token_payload)
+        deepen_warnings = _collect_warnings()
+        if deepen_result.get("next_token") is None and deepen_result.get("selected_entry_points"):
+            deepen_warnings.append({
+                "type": "next_token_failed",
+                "severity": "info",
+                "message": "Could not generate next_token for deepen mode. "
+                           "The deepen result is still usable.",
+                "reason_code": "next_token_generation_failed",
+            })
+
+        return _respond_ok(
+            data=deepen_result,
+            tool="codegraph_build_context_pack",
+            warnings=deepen_warnings,
+            response_mode=response_mode,
+            item_count=len(deepen_result.get("selected_entry_points", [])),
             truncated=False,
         )
 
