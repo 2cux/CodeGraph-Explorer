@@ -228,8 +228,19 @@ class TestUnifiedEnvelope:
         assert result["data"] == {"key": "value"}
         assert "warnings" in result
         assert "index_status" in result
+        assert "index_health" in result
         assert "meta" in result
         assert result["meta"]["schema_version"] == "1.0.0"
+        # index_status is now a structured dict
+        assert isinstance(result["index_status"], dict)
+        assert "freshness" in result["index_status"]
+        assert result["index_status"]["freshness"] in ("fresh", "stale", "unknown")
+        assert "warning_level" in result["index_status"]
+        assert "message" in result["index_status"]
+        # index_health is now a structured dict
+        assert isinstance(result["index_health"], dict)
+        assert "status" in result["index_health"]
+        assert result["index_health"]["status"] in ("ok", "degraded", "critical")
 
     def test_respond_error_format(self):
         from codegraph.mcp_server import _respond_error, ERROR_CODES
@@ -246,7 +257,14 @@ class TestUnifiedEnvelope:
         assert result["error"]["details"] == {"query": "x"}
         assert "warnings" in result
         assert "index_status" in result
+        assert "index_health" in result
         assert "meta" in result
+        # index_status is now a structured dict even in error responses
+        assert isinstance(result["index_status"], dict)
+        assert "freshness" in result["index_status"]
+        # index_health is now a structured dict
+        assert isinstance(result["index_health"], dict)
+        assert "status" in result["index_health"]
 
     def test_search_symbols_has_envelope(self, mcp_setup):
         from codegraph.mcp_server import search_symbols
@@ -1056,6 +1074,96 @@ class TestRepoStatus:
         finally:
             mcp_mod._store = original_store
 
+    def test_has_recommended_action(self, mcp_setup):
+        """repo_status returns recommended_action and reason."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        data = result["data"]
+        assert "recommended_action" in data, "Missing recommended_action"
+        assert "recommended_action_reason" in data, "Missing recommended_action_reason"
+        valid_actions = {"use_codegraph", "refresh_index", "run_init", "check_project_root"}
+        assert data["recommended_action"] in valid_actions, (
+            f"Unexpected recommended_action: {data['recommended_action']}"
+        )
+        assert isinstance(data["recommended_action_reason"], str)
+        assert len(data["recommended_action_reason"]) > 0
+
+    def test_recommended_action_missing_index(self, tmp_path, monkeypatch):
+        """Missing index → recommended_action == 'run_init'."""
+        import codegraph.mcp_server as mcp_mod
+
+        old_store = mcp_mod._store
+        old_cg = mcp_mod._cg_dir
+        old_root = mcp_mod._project_root
+        old_method = mcp_mod._resolution_method
+        try:
+            empty_dir = tmp_path / "empty_project"
+            empty_dir.mkdir()
+            mcp_mod._store = None
+            mcp_mod._cg_dir = None
+            mcp_mod._project_root = str(empty_dir)
+            mcp_mod._resolution_method = "walk_up"
+
+            from codegraph.mcp_server import repo_status
+            result = repo_status(root=str(empty_dir))
+            assert result["data"]["recommended_action"] == "run_init"
+        finally:
+            mcp_mod._store = old_store
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._project_root = old_root
+            mcp_mod._resolution_method = old_method
+
+    def test_recommended_action_stale_index(self, tmp_path):
+        """Stale index → recommended_action == 'refresh_index'."""
+        import codegraph.mcp_server as mcp_mod
+        from codegraph.mcp_server import repo_status
+        import json
+
+        # Create isolated test project with .codegraph directory
+        proj = tmp_path / "stale_proj"
+        proj.mkdir()
+        cg_dir = proj / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(proj), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 10, "edge_count": 5, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "stale", "last_indexed_at": "2025-01-01T00:00:00Z",
+            "last_change_summary": {
+                "none": 0, "cosmetic": 0, "structural": 3,
+                "added": 1, "deleted": 0,
+            },
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(proj)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            result = repo_status(root=str(proj))
+            assert result["data"]["recommended_action"] == "refresh_index"
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_recommended_action_fresh(self, mcp_setup):
+        """Fresh index with symbols → recommended_action == 'use_codegraph'."""
+        from codegraph.mcp_server import repo_status
+        result = repo_status()
+        data = result["data"]
+        if data["index_status"] == "fresh" and data["symbol_count"] > 0:
+            assert data["recommended_action"] == "use_codegraph"
+        # If not fresh, skip — test environment may vary
+
 
 # ── Test: repo_summary ────────────────────────────────────────────────────
 
@@ -1447,11 +1555,23 @@ class TestIndexStatusIntegration:
             lambda: repo_status(),
             lambda: repo_summary(),
         ]
-        valid_statuses = {"fresh", "stale", "missing", "indexing", "error"}
+        valid_freshness = {"fresh", "stale", "unknown"}
+        valid_warning_levels = {"ok", "info", "warning", "critical"}
         for tool_fn in tools:
             result = tool_fn()
             assert "index_status" in result, f"Missing index_status in tool response"
-            assert result["index_status"] in valid_statuses, f"Unexpected index_status: {result['index_status']}"
+            idx_status = result["index_status"]
+            assert isinstance(idx_status, dict), (
+                f"index_status should be a dict, got {type(idx_status)}"
+            )
+            assert idx_status["freshness"] in valid_freshness, (
+                f"Unexpected freshness: {idx_status.get('freshness')}"
+            )
+            assert "warning_level" in idx_status
+            assert idx_status["warning_level"] in valid_warning_levels
+            assert "message" in idx_status
+            assert "project_root" in idx_status
+            assert "changed_files_since_index" in idx_status
 
     def test_all_tools_have_index_health_field(self, mcp_setup):
         from codegraph.mcp_server import (
@@ -1468,11 +1588,386 @@ class TestIndexStatusIntegration:
             lambda: repo_status(),
             lambda: repo_summary(),
         ]
-        valid_health = {"ok", "warning", "error"}
+        valid_health = {"ok", "degraded", "critical"}
         for tool_fn in tools:
             result = tool_fn()
             assert "index_health" in result, f"Missing index_health in tool response"
-            assert result["index_health"] in valid_health, f"Unexpected index_health: {result['index_health']}"
+            idx_health = result["index_health"]
+            assert isinstance(idx_health, dict), (
+                f"index_health should be a dict, got {type(idx_health)}"
+            )
+            assert idx_health["status"] in valid_health, (
+                f"Unexpected index_health status: {idx_health.get('status')}"
+            )
+            assert "auto_corrected" in idx_health
+            assert "dropped" in idx_health
+            assert "total_symbols" in idx_health
+            assert "dropped_ratio" in idx_health
+            assert "impact" in idx_health
+            assert "suggested_fix" in idx_health
+
+
+# ── Test: Index Freshness & Health Signals ─────────────────────────────────
+
+
+class TestIndexFreshnessHealth:
+    """Structured index_status and index_health help agents decide whether
+    to trust CodeGraph results or fall back to grep/read."""
+
+    def test_index_status_fresh_index(self, mcp_setup):
+        """Fresh index → freshness == 'fresh', warning_level == 'ok'."""
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        idx_status = result["index_status"]
+        if idx_status["freshness"] == "fresh":
+            assert idx_status["warning_level"] == "ok"
+            assert "fresh" in idx_status["message"].lower()
+
+    def test_index_status_stale_includes_suggested_fix(self, tmp_path):
+        """Stale index → suggested_fix is populated."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(root), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 10, "edge_count": 5, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "stale", "last_indexed_at": "2025-01-01T00:00:00Z",
+            "last_change_summary": {
+                "none": 0, "cosmetic": 0, "structural": 3,
+                "added": 0, "deleted": 0,
+            },
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(root)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            idx = mcp_mod._build_index_status()
+            from codegraph.mcp_server import _build_index_status_envelope
+            envelope = _build_index_status_envelope(idx)
+            assert envelope["freshness"] == "stale"
+            assert envelope["suggested_fix"] is not None
+            assert "sync" in envelope["suggested_fix"] or "refresh" in envelope["suggested_fix"].lower()
+            assert envelope["changed_files_since_index"] == 3
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_index_status_includes_changed_files_count(self, tmp_path):
+        """changed_files_since_index reflects actual change count."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(root), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 10, "edge_count": 5, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "stale", "last_indexed_at": "2025-01-01T00:00:00Z",
+            "last_change_summary": {
+                "none": 0, "cosmetic": 2, "structural": 5,
+                "added": 1, "deleted": 0,
+            },
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(root)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            idx = mcp_mod._build_index_status()
+            from codegraph.mcp_server import _build_index_status_envelope
+            envelope = _build_index_status_envelope(idx)
+            # 2 cosmetic + 5 structural + 1 added + 0 deleted = 8
+            assert envelope["changed_files_since_index"] == 8
+            assert envelope["freshness"] == "stale"
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_index_health_structured_fields(self, mcp_setup):
+        """index_health always has all required structured fields."""
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        idx_health = result["index_health"]
+        assert isinstance(idx_health, dict)
+        for field in ("status", "auto_corrected", "dropped", "total_symbols",
+                       "dropped_ratio", "impact", "suggested_fix"):
+            assert field in idx_health, f"Missing index_health field: {field}"
+
+    def test_index_health_status_valid(self, mcp_setup):
+        """index_health.status is always ok, degraded, or critical."""
+        from codegraph.mcp_server import search_symbols
+        result = search_symbols("login")
+        idx_health = result["index_health"]
+        assert idx_health["status"] in ("ok", "degraded", "critical")
+
+    def test_index_health_has_impact_message(self, mcp_setup):
+        """index_health.impact contains a human-readable description."""
+        from codegraph.mcp_server import get_symbol
+        result = get_symbol("app/api/auth.py::login")
+        idx_health = result["index_health"]
+        assert isinstance(idx_health["impact"], str)
+        assert len(idx_health["impact"]) > 0
+
+    def test_index_health_low_dropped_ratio_not_critical(self, tmp_path):
+        """When dropped_ratio < 5%, status should not be critical."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(root), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 5000, "edge_count": 8000, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "fresh", "last_indexed_at": "2025-01-01T00:00:00Z",
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+        # Low dropped count relative to total — not critical
+        report = {
+            "status": "warning",
+            "generated_at": "2025-01-01T00:00:00Z",
+            "issue_counts": {
+                "auto_corrected": 5, "dropped": 10,
+                "warnings": 3, "fatal": 0,
+            },
+            "stats": {"node_count": 5000, "edge_count": 8000},
+            "suggested_fix": "codegraph doctor --repair",
+        }
+        (cg_dir / "validation_report.json").write_text(json.dumps(report))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(root)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            idx = mcp_mod._build_index_status()
+            from codegraph.mcp_server import _build_index_health_envelope
+            envelope = _build_index_health_envelope(idx)
+            # dropped_ratio = 10/5000 = 0.002 → not critical
+            assert envelope["status"] != "critical", (
+                f"Expected non-critical, got {envelope['status']} "
+                f"(dropped_ratio={envelope['dropped_ratio']})"
+            )
+            assert envelope["dropped"] == 10
+            assert envelope["auto_corrected"] == 5
+            assert envelope["total_symbols"] == 5000
+            assert envelope["suggested_fix"] is not None
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_index_health_high_dropped_is_degraded_or_critical(self, tmp_path):
+        """When dropped count is high, status should reflect degradation."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(root), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 2000, "edge_count": 3000, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "fresh", "last_indexed_at": "2025-01-01T00:00:00Z",
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+        # High dropped — 6% of total
+        report = {
+            "status": "warning",
+            "generated_at": "2025-01-01T00:00:00Z",
+            "issue_counts": {
+                "auto_corrected": 16, "dropped": 120,
+                "warnings": 5, "fatal": 0,
+            },
+            "stats": {"node_count": 2000, "edge_count": 3000},
+            "suggested_fix": "codegraph doctor --repair",
+        }
+        (cg_dir / "validation_report.json").write_text(json.dumps(report))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(root)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            idx = mcp_mod._build_index_status()
+            from codegraph.mcp_server import _build_index_health_envelope
+            envelope = _build_index_health_envelope(idx)
+            # dropped_ratio = 120/2000 = 0.06 → should be degraded or critical
+            assert envelope["status"] in ("degraded", "critical"), (
+                f"Expected degraded or critical, got {envelope['status']}"
+            )
+            # Impact message should mention impact analysis
+            assert len(envelope["impact"]) > 0
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_index_health_with_fatal_is_critical(self, tmp_path):
+        """Fatal validation issues → status == 'critical'."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(root), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 100, "edge_count": 50, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "fresh", "last_indexed_at": "2025-01-01T00:00:00Z",
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+        report = {
+            "status": "error",
+            "generated_at": "2025-01-01T00:00:00Z",
+            "issue_counts": {
+                "auto_corrected": 0, "dropped": 30,
+                "warnings": 2, "fatal": 1,
+            },
+            "stats": {"node_count": 100, "edge_count": 50},
+            "suggested_fix": "codegraph init --force",
+        }
+        (cg_dir / "validation_report.json").write_text(json.dumps(report))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(root)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            idx = mcp_mod._build_index_status()
+            from codegraph.mcp_server import _build_index_health_envelope
+            envelope = _build_index_health_envelope(idx)
+            assert envelope["status"] == "critical"
+            assert "rebuild" in envelope["impact"].lower() or "critical" in envelope["impact"].lower()
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_index_health_no_report_is_ok(self, tmp_path):
+        """No validation report → index_health is ok with zero counts."""
+        import codegraph.mcp_server as mcp_mod
+        import json
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        cg_dir = root / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "graph.json").write_text("{}")
+        metadata = {
+            "schema_version": "1.0.0", "indexer_version": "1.0.0",
+            "root_path": str(root), "indexed_at": "2025-01-01T00:00:00Z",
+            "file_count": 1, "symbol_count": 100, "edge_count": 50, "files": [],
+        }
+        (cg_dir / "metadata.json").write_text(json.dumps(metadata))
+        state = {
+            "status": "fresh", "last_indexed_at": "2025-01-01T00:00:00Z",
+        }
+        (cg_dir / "state.json").write_text(json.dumps(state))
+
+        old_root = mcp_mod._project_root
+        old_cg = mcp_mod._cg_dir
+        old_store = mcp_mod._store
+        try:
+            mcp_mod._project_root = str(root)
+            mcp_mod._cg_dir = cg_dir
+            mcp_mod._store = None
+
+            idx = mcp_mod._build_index_status()
+            from codegraph.mcp_server import _build_index_health_envelope
+            envelope = _build_index_health_envelope(idx)
+            assert envelope["status"] == "ok"
+            assert envelope["auto_corrected"] == 0
+            assert envelope["dropped"] == 0
+            assert envelope["dropped_ratio"] == 0.0
+            assert "healthy" in envelope["impact"].lower() or "no validation" in envelope["impact"].lower()
+        finally:
+            mcp_mod._project_root = old_root
+            mcp_mod._cg_dir = old_cg
+            mcp_mod._store = old_store
+
+    def test_all_tools_structured_index_status(self, mcp_setup):
+        """All 8 core tools return structured index_status (dict, not string)."""
+        from codegraph.mcp_server import (
+            search_symbols, get_symbol, get_callers, get_callees,
+            get_neighbors, get_impact, repo_status, repo_summary,
+            build_context_pack,
+        )
+        tools = [
+            ("codegraph_search_symbols", lambda: search_symbols("login")),
+            ("codegraph_get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("codegraph_get_callers", lambda: get_callers("app/api/auth.py::login")),
+            ("codegraph_get_callees", lambda: get_callees("app/api/auth.py::login")),
+            ("codegraph_get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
+            ("codegraph_get_impact", lambda: get_impact("app/api/auth.py::login")),
+            ("codegraph_repo_status", lambda: repo_status()),
+            ("codegraph_repo_summary", lambda: repo_summary()),
+            ("codegraph_build_context_pack", lambda: build_context_pack(task="test query")),
+        ]
+        for tool_name, tool_fn in tools:
+            result = tool_fn()
+            assert isinstance(result["index_status"], dict), (
+                f"{tool_name}: index_status should be dict, got {type(result['index_status'])}"
+            )
+            assert isinstance(result["index_health"], dict), (
+                f"{tool_name}: index_health should be dict, got {type(result['index_health'])}"
+            )
 
 
 # ── Test: response_mode behavior ────────────────────────────────────────────

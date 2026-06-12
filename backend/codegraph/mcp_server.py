@@ -685,6 +685,186 @@ def _build_index_status(project_root: str | None = None) -> dict[str, Any]:
     return status_block
 
 
+def _build_index_status_envelope(idx: dict[str, Any]) -> dict[str, Any]:
+    """Build a lightweight, structured index_status for the response envelope.
+
+    Translates raw index status into agent-friendly fields: freshness,
+    warning_level, message, suggested_fix. Never returns bare strings.
+    """
+    status = idx.get("status", "missing")
+
+    # Compute changed_files_since_index from last_change_summary
+    change_summary = idx.get("last_change_summary", {})
+    changed_files = sum(change_summary.values()) if change_summary else 0
+
+    # Freshness mapping
+    if status == "fresh":
+        freshness = "fresh"
+        warning_level = "ok"
+        message = "Index is fresh."
+        suggested_fix = None
+    elif status == "stale":
+        freshness = "stale"
+        warning_level = "warning"
+        if changed_files > 0:
+            message = (
+                f"Index may be stale. {changed_files} file(s) changed "
+                f"since the last index build."
+            )
+        else:
+            message = "Index may be stale. Results may not reflect recent file changes."
+        suggested_fix = (
+            "Run `codegraph sync --incremental` or `codegraph init` "
+            "to refresh the index."
+        )
+    elif status == "indexing":
+        freshness = "stale"
+        warning_level = "info"
+        message = "Index update is in progress. Results may reflect the previous index."
+        suggested_fix = None
+    elif status == "error":
+        freshness = "unknown"
+        warning_level = "critical"
+        message = "Index has errors. Results may be outdated or incomplete."
+        suggested_fix = (
+            "Run `codegraph doctor` then `codegraph init --force` "
+            "to rebuild the index."
+        )
+    else:  # missing or unknown
+        freshness = "unknown"
+        warning_level = "critical"
+        message = "No CodeGraph index found. Results may be empty or unavailable."
+        suggested_fix = "Run `codegraph init` to create the index."
+
+    return {
+        "freshness": freshness,
+        "project_root": idx.get("project_root"),
+        "index_path": idx.get("index_path"),
+        "index_built_at": idx.get("indexed_at"),
+        "changed_files_since_index": changed_files,
+        "warning_level": warning_level,
+        "message": message,
+        "suggested_fix": suggested_fix,
+    }
+
+
+def _build_index_health_envelope(idx: dict[str, Any]) -> dict[str, Any]:
+    """Build a structured index_health for the response envelope.
+
+    Translates raw validation report data into agent-friendly fields:
+    status, counts, ratios, impact description, and suggested fix.
+    Never returns bare warning strings like "auto_corrected: 16".
+    """
+    index_health = idx.get("index_health")
+    # Use live-store symbol count as fallback; validation report's
+    # own node_count is preferred for consistency with dropped counts.
+    stats = idx.get("stats", {})
+    total_symbols = stats.get("symbols", 0)
+
+    if index_health is None:
+        # No validation report — index was never validated
+        return {
+            "status": "ok",
+            "auto_corrected": 0,
+            "dropped": 0,
+            "total_symbols": total_symbols,
+            "dropped_ratio": 0.0,
+            "impact": "No validation issues detected. Index is healthy.",
+            "suggested_fix": None,
+        }
+
+    issue_counts = index_health.get("issue_counts", {})
+    auto_corrected = issue_counts.get("auto_corrected", 0)
+    dropped = issue_counts.get("dropped", 0)
+    warnings_count = issue_counts.get("warnings", 0)
+    fatal_count = issue_counts.get("fatal", 0)
+    validation_status = index_health.get("status", "ok")
+
+    # Prefer validation report's own node_count for ratio consistency
+    validation_stats = index_health.get("stats", {})
+    validation_node_count = validation_stats.get("node_count", 0)
+    if validation_node_count > 0:
+        total_symbols = validation_node_count
+
+    # Compute dropped ratio safely
+    if total_symbols > 0:
+        dropped_ratio = dropped / total_symbols
+    else:
+        dropped_ratio = 0.0
+
+    # Determine health status
+    if fatal_count > 0 or validation_status == "error":
+        health_status = "critical"
+    elif dropped_ratio >= 0.05 or dropped > 100:
+        health_status = "degraded"
+    elif auto_corrected > 0 or warnings_count > 0 or validation_status == "warning":
+        health_status = "degraded"
+    else:
+        health_status = "ok"
+
+    # Build impact message — agent-friendly, actionable
+    if health_status == "ok":
+        impact = "Index is healthy. All queries should return accurate results."
+    elif health_status == "degraded":
+        parts: list[str] = []
+        if dropped > 0:
+            parts.append(
+                f"{dropped} edge(s) were dropped during validation"
+            )
+        if auto_corrected > 0:
+            parts.append(
+                f"{auto_corrected} issue(s) were auto-corrected"
+            )
+        if dropped > 0 and dropped_ratio < 0.05:
+            impact = (
+                f"{'; '.join(parts)}. "
+                f"Symbol search remains usable. "
+                f"Impact analysis may miss some low-confidence edges."
+            )
+        elif dropped > 0:
+            impact = (
+                f"{'; '.join(parts)}. "
+                f"Symbol search remains usable. "
+                f"Impact analysis and call graph may be less reliable."
+            )
+        else:
+            impact = (
+                f"{'; '.join(parts)}. "
+                f"Symbol search remains usable, but some queries may be affected."
+            )
+    else:  # critical
+        if fatal_count > 0:
+            impact = (
+                f"Index has {fatal_count} critical validation error(s). "
+                f"Rebuild with: codegraph init --force"
+            )
+        else:
+            impact = (
+                f"Index has critical validation issues. "
+                f"Rebuild with: codegraph init --force"
+            )
+
+    # Suggested fix
+    suggested_fix = index_health.get("suggested_fix")
+    if not suggested_fix and health_status == "critical":
+        suggested_fix = "Run `codegraph init --force` to rebuild the index."
+    elif not suggested_fix and health_status == "degraded":
+        suggested_fix = (
+            "Run `codegraph doctor --repair` to repair the index, "
+            "or `codegraph init --force` to rebuild."
+        )
+
+    return {
+        "status": health_status,
+        "auto_corrected": auto_corrected,
+        "dropped": dropped,
+        "total_symbols": total_symbols,
+        "dropped_ratio": round(dropped_ratio, 4),
+        "impact": impact,
+        "suggested_fix": suggested_fix,
+    }
+
+
 def _collect_warnings(
     fuzzy_warning: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -739,20 +919,53 @@ def _collect_warnings(
         ))
 
     # Add index_health warning if validation found issues
+    # Messages are designed to help agents decide whether to continue
+    # using CodeGraph or fall back to grep/read — not to scare them off.
     index_health = index_status.get("index_health")
     if index_health and index_health.get("status") != "ok":
         health_status = index_health["status"]
-        severity = "warning" if health_status == "warning" else "error"
         issue_counts = index_health.get("issue_counts", {})
+        dropped = issue_counts.get("dropped", 0)
+        auto_corrected = issue_counts.get("auto_corrected", 0)
+        fatal_count = issue_counts.get("fatal", 0)
+        stats = index_health.get("stats", {})
+        total_symbols = stats.get("node_count", 0)
+
+        # Build an agent-friendly message that explains impact scope
+        if fatal_count > 0 or health_status == "error":
+            message = (
+                f"Index has {fatal_count} critical validation error(s). "
+                f"CodeGraph results may be unreliable. "
+                f"Run: codegraph init --force"
+            )
+        elif dropped > 0:
+            if total_symbols > 0 and (dropped / total_symbols) < 0.05:
+                message = (
+                    f"Index is usable for symbol search, but impact "
+                    f"analysis may miss some low-confidence edges "
+                    f"({dropped} dropped, {auto_corrected} auto-corrected). "
+                    f"Run: codegraph doctor"
+                )
+            else:
+                message = (
+                    f"Index has significant validation issues "
+                    f"({dropped} dropped, {auto_corrected} auto-corrected). "
+                    f"Symbol search is still usable, but impact analysis "
+                    f"and call graph may be unreliable. "
+                    f"Run: codegraph doctor --repair or codegraph init --force"
+                )
+        else:
+            message = (
+                f"Index has validation warnings "
+                f"({issue_counts.get('warnings', 0)} warnings, "
+                f"{auto_corrected} auto-corrected). "
+                f"Symbol search remains usable. "
+                f"Run: codegraph doctor"
+            )
+
         warnings.append(build_warning(
             "index_health",
-            message=(
-                f"Index health warning detected. "
-                f"Graph validation status is '{health_status}' "
-                f"({issue_counts.get('warnings', 0)} warnings, "
-                f"{issue_counts.get('fatal', 0)} fatal). "
-                f"Run: codegraph doctor"
-            ),
+            message=message,
             evidence=issue_counts,
             reason_code=f"index_health_{health_status}",
         ))
@@ -773,14 +986,13 @@ def _respond_ok(
     """Wrap a successful tool result in the standard envelope with payload meta."""
     estimated_tokens = _estimate_payload_tokens(data)
     idx = _build_index_status()
-    idx_health = idx.get("index_health")
     return {
         "ok": True,
         "tool": tool,
         "data": data,
         "warnings": warnings or [],
-        "index_status": idx["status"],
-        "index_health": idx_health["status"] if idx_health else "ok",
+        "index_status": _build_index_status_envelope(idx),
+        "index_health": _build_index_health_envelope(idx),
         "meta": {
             "schema_version": SCHEMA_VERSION,
             "response_mode": response_mode,
@@ -802,7 +1014,6 @@ def _respond_error(
 ) -> dict[str, Any]:
     """Wrap a failed tool result in the standard envelope."""
     idx = _build_index_status()
-    idx_health = idx.get("index_health")
     return {
         "ok": False,
         "tool": tool,
@@ -812,8 +1023,8 @@ def _respond_error(
             "details": details or {},
         },
         "warnings": warnings or [],
-        "index_status": idx["status"],
-        "index_health": idx_health["status"] if idx_health else "ok",
+        "index_status": _build_index_status_envelope(idx),
+        "index_health": _build_index_health_envelope(idx),
         "meta": {"schema_version": SCHEMA_VERSION},
     }
 
@@ -3569,6 +3780,58 @@ def repo_status(
     idx_health = index_status.get("index_health")
     hook_state = hook.get("state")
 
+    # Compute recommended_action for agent decision-making
+    total_changes = changed_count + added_count + deleted_count
+    symbol_count = stats.get("symbols", 0)
+    cwd_outside = False
+    if index_exists and resolved_project_root:
+        try:
+            Path(current_cwd).resolve().relative_to(Path(resolved_project_root).resolve())
+        except ValueError:
+            cwd_outside = True
+        except OSError:
+            pass
+
+    if index_status["status"] == "missing":
+        recommended_action = "run_init"
+        recommended_action_reason = "No CodeGraph index found for this project."
+    elif index_status["status"] == "stale":
+        recommended_action = "refresh_index"
+        if total_changes > 0:
+            recommended_action_reason = (
+                f"Index is stale. {total_changes} file(s) changed "
+                f"since the last index build."
+            )
+        else:
+            recommended_action_reason = (
+                "Index is stale. Results may not reflect recent file changes."
+            )
+    elif cwd_outside:
+        recommended_action = "check_project_root"
+        recommended_action_reason = (
+            "Current working directory is outside the resolved project root. "
+            "MCP may be querying the wrong project."
+        )
+    elif index_status["status"] == "fresh" and symbol_count > 0:
+        recommended_action = "use_codegraph"
+        recommended_action_reason = (
+            f"Index is fresh and contains {symbol_count} symbols."
+        )
+    elif index_status["status"] == "fresh" and symbol_count == 0:
+        recommended_action = "run_init"
+        recommended_action_reason = "Index exists but contains 0 symbols."
+    elif index_status["status"] in ("indexing", "error"):
+        recommended_action = "refresh_index"
+        recommended_action_reason = (
+            f"Index status is '{index_status['status']}'. "
+            f"Refresh or rebuild may be needed."
+        )
+    else:
+        recommended_action = "check_project_root"
+        recommended_action_reason = (
+            "Unable to determine index state. Verify project root and index."
+        )
+
     if response_mode == "compact":
         data: dict[str, Any] = {
             "project_root": resolved_project_root,
@@ -3579,7 +3842,7 @@ def repo_status(
             "index_status": index_status["status"],
             "index_health": idx_health["status"] if idx_health else "ok",
             "indexed_at": index_status.get("indexed_at"),
-            "symbol_count": stats.get("symbols", 0),
+            "symbol_count": symbol_count,
             "edge_count": stats.get("edges", 0),
             "changed_files_count": changed_count,
             "added_files_count": added_count,
@@ -3587,6 +3850,8 @@ def repo_status(
             "last_incremental_stats": index_status.get("last_incremental_stats"),
             "validation_status": idx_health["status"] if idx_health else None,
             "suggested_fix": index_status.get("suggested_fix"),
+            "recommended_action": recommended_action,
+            "recommended_action_reason": recommended_action_reason,
             "hook_installed": hook_installed,
             "hook_auto_update": hook_auto_update,
             "hook_state": hook_state,
@@ -3601,7 +3866,7 @@ def repo_status(
             "index_status": index_status["status"],
             "index_health": idx_health["status"] if idx_health else "ok",
             "indexed_at": index_status.get("indexed_at"),
-            "symbol_count": stats.get("symbols", 0),
+            "symbol_count": symbol_count,
             "edge_count": stats.get("edges", 0),
             "changed_files_count": changed_count,
             "added_files_count": added_count,
@@ -3609,6 +3874,8 @@ def repo_status(
             "last_incremental_stats": index_status.get("last_incremental_stats"),
             "validation_status": idx_health["status"] if idx_health else None,
             "suggested_fix": index_status.get("suggested_fix"),
+            "recommended_action": recommended_action,
+            "recommended_action_reason": recommended_action_reason,
             "index_files": index_status.get("index_files", {}),
             "stats": stats,
             "fingerprint_health": index_status.get("fingerprint_health"),
