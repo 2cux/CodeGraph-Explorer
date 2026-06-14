@@ -298,6 +298,129 @@ Recommended checks are advisory only — the tool does not execute tests or modi
 
 `codegraph_pre_edit_check` is the task-level entry point — use it when you know the files you plan to edit but not all affected symbols. `codegraph_get_impact` is the symbol-level entry point — use it when you already know the exact symbol to analyze. Neither is deprecated; they serve different workflows.
 
+### codegraph_explain
+
+Use `codegraph_explain` when you need a short, evidence-backed explanation of a symbol or file before opening full source.
+
+`codegraph_explain` is deterministic and backend-only. It uses indexed metadata, relationships, docstrings, and limited snippets. It does not use LLMs, does not open a dashboard, does not edit files, and does not replace reading exact source when needed.
+
+Examples:
+
+```text
+codegraph_explain(symbol="ReceiptService.rowToRecord")
+codegraph_explain(file="src/receiptService.ts")
+codegraph_explain(symbol="getTokenStats", include_tests=true)
+codegraph_explain(symbol="login", file="app/api/auth.py")
+```
+
+Parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `symbol` | string | `null` | Symbol name to explain |
+| `file` | string | `null` | File path to explain (acts as path_hint when combined with symbol) |
+| `include_snippet` | bool | `true` | Include bounded source code snippet |
+| `include_tests` | bool | `true` | Include test coverage signal |
+| `include_relationships` | bool | `true` | Include top callers and callees |
+| `max_snippet_lines` | int | `40` | Maximum snippet lines (capped at 80) |
+| `response_mode` | string | `"compact"` | `"compact"` or `"standard"` |
+
+At least one of `symbol` or `file` must be provided.
+
+Response (symbol-level):
+
+```json
+{
+  "ok": true,
+  "tool": "codegraph_explain",
+  "data": {
+    "target": {
+      "kind": "symbol",
+      "symbol": "rowToRecord",
+      "symbol_id": "...::rowToRecord",
+      "type": "method",
+      "file": "app/services/receipt_service.py",
+      "line_start": 20,
+      "line_end": 35
+    },
+    "explanation": {
+      "summary": "Converts a database row into a receipt record object.",
+      "confidence": "medium",
+      "basis": ["docstring", "signature", "callees"]
+    },
+    "implementation_signals": {
+      "uses_json": false,
+      "uses_database": true,
+      "uses_io": false,
+      "uses_network": false,
+      "has_error_handling": false,
+      "is_framework_entry": false,
+      "is_test_code": false,
+      "uses_async": false
+    },
+    "relationships": {
+      "callers_count": 0,
+      "callees_count": 1,
+      "top_callers": [],
+      "top_callees": [...]
+    },
+    "test_signal": {
+      "status": "high_confidence",
+      "tested_by_count": 1,
+      "related_tests": [...]
+    },
+    "source_snippet": {
+      "file": "app/services/receipt_service.py",
+      "line_start": 20,
+      "line_end": 35,
+      "snippet": "...",
+      "truncated": false
+    },
+    "evidence": [
+      {"type": "symbol_metadata", "reason": "Symbol type is method. ..."},
+      {"type": "docstring", "reason": "Converts a database row into a receipt record object."},
+      {"type": "callees", "reason": "Top callees: executeQuery."}
+    ],
+    "warnings": []
+  },
+  "codegraph_session": {...},
+  "index_status": {...},
+  "index_health": {...}
+}
+```
+
+**Key fields:**
+
+- **`explanation.summary`**: 1-2 sentences, backed by the listed `basis` sources. Confidence is always `high`, `medium`, `low`, or `unknown`. Never claims "high" based only on name heuristics.
+- **`explanation.basis`**: Lists the evidence sources used (e.g., `docstring`, `symbol_name`, `callees`). Guarantees the summary is traceable.
+- **`implementation_signals`**: 8 boolean flags (uses_json, uses_database, uses_io, uses_network, has_error_handling, is_framework_entry, is_test_code, uses_async). Detected heuristically from callee names, imports, and snippet content. Not absolute facts — use to decide whether deeper inspection is needed.
+- **`evidence`**: Structured entries showing exactly what data each conclusion was based on. No conclusion without evidence.
+- **`test_signal`**: `status` is one of `high_confidence`, `low_confidence`, `none`, or `unknown`. `related_tests` capped at 5 entries. Does not claim specific edge cases are covered.
+
+Response (file-level, when only `file` is provided):
+
+```json
+{
+  "target": {"kind": "file", "file": "app/api/auth.py"},
+  "primary_symbols": [
+    {"symbol_id": "...", "name": "login", "type": "function", "line_start": 6, "line_end": 15, "tags": ["route"]}
+  ],
+  "symbol_count": 8,
+  "likely_role": "API endpoint / route handler",
+  "likely_role_confidence": "medium",
+  "implementation_signals": {...},
+  "test_signal": {...}
+}
+```
+
+**Agent guidance:**
+
+- Use `codegraph_explain` before `Read` when you need a quick "what does this do?" answer.
+- The `implementation_signals` help triage — if `uses_database` is true, inspect DB-related callees. If `has_error_handling` is false, check error paths.
+- If `test_signal.status` is `none` or `low_confidence`, consider `codegraph_coverage_gaps` before writing tests.
+- If `confidence` is `unknown`, treat the summary as placeholder — read the source directly.
+- Always follow `next_recommended_tools` (typically `codegraph_get_neighbors`) for deeper context before editing.
+
 ### repo_status
 
 Check if the index is fresh, stale, missing, or has errors. Each MCP response also includes an `index_status` and `index_health` field so agents can detect stale data.
@@ -590,9 +713,10 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 5. **`codegraph_search_symbols`** — Lightweight symbol search when you only need a result list without details.
 6. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol (callers, callees, tests, models, config).
 7. **`codegraph_get_callers` / `codegraph_get_callees`** — Trace call chains instead of grep for call/reference lookup.
-8. **`codegraph_pre_edit_check`** — Before editing files or symbols, check impact on callers, files, and tests in one call.
-9. **`codegraph_get_impact`** — Before modifying a specific symbol, understand confirmed and possible impact, and what tests cover it.
-10. **`Read`** — Only when exact source text is needed.
+8. **`codegraph_explain`** — Before reading full source, get a short structured explanation of what a symbol or file does.
+9. **`codegraph_pre_edit_check`** — Before editing files or symbols, check impact on callers, files, and tests in one call.
+10. **`codegraph_get_impact`** — Before modifying a specific symbol, understand confirmed and possible impact, and what tests cover it.
+11. **`Read`** — Only when exact source text is needed.
 
 ### When to use each tool
 
@@ -608,6 +732,7 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 | `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep. Use `mode=quick` for fast lookup. |
 | `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep. Use `mode=deep` for broader exploration. |
 | `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files. Use `mode=review` before code changes. |
+| `codegraph_explain` | Before reading full source — get a quick evidence-backed explanation of what a symbol or file does |
 | `codegraph_pre_edit_check` | Before editing — when you know which files to modify but not all affected symbols. Task-level impact check. |
 | `codegraph_get_impact` | Before modifying a specific shared symbol — understand confirmed and possible impact. Use `mode=review` before committing. |
 | `Read` | Only when exact source text is needed beyond what CodeGraph returns |
@@ -682,6 +807,12 @@ Find a function (lightweight):
 
 Understand a symbol:
 → codegraph_get_neighbors(symbol="MemoryService")
+
+Explain what a symbol does:
+→ codegraph_explain(symbol="MemoryService.rowToRecord")
+
+Explain what a file does:
+→ codegraph_explain(file="src/receiptService.ts")
 
 Who calls this?
 → codegraph_get_callers(symbol="MemoryService.findRelatedCCRs")

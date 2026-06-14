@@ -169,6 +169,67 @@ codegraph_get_callers("<symbol>")
   → 不再 grep
 ```
 
+## 测试任务 4：符号解释（Explain Symbol）
+
+### 任务描述
+
+让 Agent 执行以下 prompt：
+
+```text
+Use codegraph_explain to understand what <symbol> does before
+reading the file. Follow the recommended next tools.
+```
+
+### 观察记录
+
+| 项目 | 记录 |
+|---|---|
+| 是否调用了 `codegraph_explain` | |
+| explanation 是否包含 summary / confidence / basis | |
+| implementation_signals 是否提供了有用信息 | |
+| 是否 follow `next_recommended_tools` 调用了 `codegraph_get_neighbors` | |
+| Read 是否发生在 CodeGraph 之后 | |
+
+### 预期行为
+
+```
+codegraph_explain(symbol="<symbol>")
+  → explanation.summary + implementation_signals + evidence
+  → next_recommended_tools: [get_neighbors]
+  → Agent 调用 get_neighbors
+  → 然后按需 Read
+```
+
+## 测试任务 5：文件解释（Explain File）
+
+### 任务描述
+
+让 Agent 执行以下 prompt：
+
+```text
+Use codegraph_explain to get an overview of <file> before
+reading it. Follow the recommended next tools.
+```
+
+### 观察记录
+
+| 项目 | 记录 |
+|---|---|
+| 是否调用了 `codegraph_explain(file=...)` | |
+| primary_symbols 是否列出了主要符号 | |
+| likely_role 是否有意义 | |
+| 是否 follow `next_recommended_tools` 调用了 `codegraph_search_symbols` | |
+
+### 预期行为
+
+```
+codegraph_explain(file="<file>")
+  → primary_symbols + likely_role + implementation_signals
+  → next_recommended_tools: [search_symbols]
+  → Agent 搜索关键符号
+  → 然后按需 Read
+```
+
 ## P0 字段验证
 
 对所有成功 MCP 响应进行结构化检查：

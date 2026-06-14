@@ -596,10 +596,10 @@ def _build_global_next_tools(
         pass
 
     elif tool_name == "codegraph_pre_edit_check":
-        # After pre-edit check, guide the agent to deeper inspection
-        risk_level = data.get("impact_summary", {}).get("risk_level", "unknown")
-        has_callers = len(data.get("affected_callers", [])) > 0
-        if risk_level in ("high", "medium") and has_callers:
+        # After pre-edit check, always guide the agent to deeper inspection
+        # if planned symbols were found — regardless of risk level.
+        has_planned = len(data.get("planned_symbols", [])) > 0
+        if has_planned:
             recommendations.append({
                 "tool": "codegraph_get_neighbors",
                 "reason": (
@@ -4305,12 +4305,33 @@ def pre_edit_check(
     # From explicit symbol names
     for sym_name in planned_symbol_names:
         resolved = _resolve_node_detailed(store, sym_name)
-        if resolved is None or resolved["node"] is None:
+        if resolved is None:
             warnings_list.append(build_warning(
                 "symbol_not_found",
                 message=f"Symbol '{sym_name}' not found in index.",
                 reason_code="symbol_not_found",
             ))
+            continue
+        if resolved["node"] is None:
+            # Ambiguous or unable to resolve to a single node
+            if resolved.get("match_reason") == "ambiguous":
+                candidates = resolved.get("candidates", [])
+                candidate_names = [c.get("symbol_id", c.get("name", "?")) for c in candidates[:3]]
+                warnings_list.append(build_warning(
+                    "ambiguous_symbol",
+                    message=(
+                        f"Symbol '{sym_name}' is ambiguous. "
+                        f"Candidates: {', '.join(candidate_names)}. "
+                        f"Use codegraph_find or codegraph_search_symbols to disambiguate."
+                    ),
+                    reason_code="ambiguous_symbol",
+                ))
+            else:
+                warnings_list.append(build_warning(
+                    "symbol_not_found",
+                    message=f"Symbol '{sym_name}' not found in index.",
+                    reason_code="symbol_not_found",
+                ))
             continue
         node = resolved["node"]
         if node.id in seen_symbol_ids:
@@ -4581,7 +4602,11 @@ def pre_edit_check(
         tool="codegraph_pre_edit_check",
         warnings=warnings_list,
         response_mode=response_mode,
-        item_count=len(planned_symbols_out) + len(all_callers) + len(all_affected_files),
+        item_count=(
+            min(len(planned_symbols_out), effective_limit)
+            + min(len(all_callers), effective_limit)
+            + min(len(all_affected_files), effective_limit)
+        ),
     )
 
     # Inject next_recommended_tools into data

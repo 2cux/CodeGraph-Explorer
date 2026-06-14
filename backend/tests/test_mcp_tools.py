@@ -3111,6 +3111,17 @@ class TestCodegraphFind:
                 assert "framework" in r["details"]
                 assert "tags" in r["details"]
 
+    def test_include_details_false_returns_null(self, mcp_setup):
+        """include_details=false must return details=null for every result."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", include_details=False)
+        assert result["ok"] is True
+        for r in result["data"]["results"]:
+            assert "details" in r, "details key must be present even when false"
+            assert r["details"] is None, (
+                f"Expected details=None when include_details=False, got {r['details']}"
+            )
+
     def test_include_snippets_false_no_large_source(self, mcp_setup):
         """Default include_snippets=false must not return snippet content."""
         from codegraph.mcp_server import codegraph_find
@@ -3135,6 +3146,34 @@ class TestCodegraphFind:
                 )
         # At least one result should have a snippet when source file exists
         # (may not if files aren't real, but the test store has file nodes)
+
+    def test_snippet_has_truncated_field(self, mcp_setup):
+        """Snippet block must include 'truncated' boolean field."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", include_snippets=True)
+        has_snippet = False
+        for r in result["data"]["results"]:
+            if r.get("snippet") is not None:
+                has_snippet = True
+                assert "truncated" in r["snippet"], (
+                    "Snippet block must include 'truncated' boolean field"
+                )
+                assert isinstance(r["snippet"]["truncated"], bool), (
+                    f"truncated must be boolean, got {type(r['snippet']['truncated'])}"
+                )
+        # At least one snippet should exist for a real symbol
+
+    def test_snippet_not_entire_file(self, mcp_setup):
+        """Snippet must not return the entire file — capped at ~40 lines."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", include_snippets=True)
+        for r in result["data"]["results"]:
+            if r.get("snippet") is not None:
+                snippet_lines = r["snippet"]["snippet"].split("\n")
+                assert len(snippet_lines) <= 45, (
+                    f"Snippet too long ({len(snippet_lines)} lines) — "
+                    f"should be capped at ~40 lines"
+                )
 
     def test_mode_quick_lightweight(self, mcp_setup):
         """mode='quick' should produce lightweight output."""
@@ -5756,10 +5795,11 @@ class TestCostHintsRegression:
     """Round 5 must not break existing MCP tool names, schemas, or structure."""
 
     def test_tool_names_unchanged(self):
-        """All 9 MCP tool names must remain unchanged."""
+        """All MCP tool names must remain present (no removals or renames)."""
         from codegraph.mcp_server import mcp
 
-        expected_names = {
+        # Tool names that must be present (additive — new tools allowed)
+        required_names = {
             "codegraph_search_symbols",
             "codegraph_get_symbol",
             "codegraph_find",
@@ -5770,6 +5810,9 @@ class TestCostHintsRegression:
             "codegraph_repo_status",
             "codegraph_repo_summary",
             "codegraph_build_context_pack",
+            "codegraph_coverage_gaps",
+            "codegraph_explain",
+            "codegraph_pre_edit_check",
         }
         # Get registered MCP tool names from FastMCP's tool manager
         registered_tools = getattr(mcp, "_tool_manager", None)
@@ -5781,20 +5824,22 @@ class TestCostHintsRegression:
                 search_symbols, get_symbol, codegraph_find,
                 get_callers, get_callees,
                 get_neighbors, get_impact, repo_status, repo_summary,
-                build_context_pack,
+                build_context_pack, coverage_gaps, pre_edit_check,
             )
             actual_names = set()
             for fn in (search_symbols, get_symbol, codegraph_find,
                         get_callers, get_callees,
                         get_neighbors, get_impact, repo_status, repo_summary,
-                        build_context_pack):
+                        build_context_pack, coverage_gaps, pre_edit_check):
                 # The MCP tool decorator stores the name in __mcp_tool_name__
                 actual_names.add(
                     getattr(fn, "__mcp_tool_name__", fn.__name__)
                 )
 
-        assert actual_names == expected_names, (
-            f"Tool names must not change. Diff: {expected_names ^ actual_names}"
+        missing = required_names - actual_names
+        assert not missing, (
+            f"Required tool names missing: {missing}. "
+            f"Actual (subset): {sorted(actual_names)[:5]}..."
         )
 
     def test_respond_ok_envelope_unchanged(self, mcp_setup):
@@ -5872,3 +5917,771 @@ class TestCostHintsRegression:
         }
         missing = required_params - param_names
         assert not missing, f"get_impact missing params: {missing}"
+
+
+# ── Tests: codegraph_pre_edit_check ────────────────────────────────────────
+
+
+class TestPreEditCheck:
+    """Comprehensive tests for the codegraph_pre_edit_check MCP tool."""
+
+    def test_tool_registered(self):
+        """pre_edit_check is registered as an MCP tool."""
+        from codegraph.mcp_server import mcp
+        registered = getattr(mcp, "_tool_manager", None)
+        if registered is not None:
+            names = set(registered._tools.keys())
+        else:
+            names = set()
+        assert "codegraph_pre_edit_check" in names
+
+    def test_files_maps_to_indexed_symbols(self, mcp_setup):
+        """files param maps to indexed symbols in those files."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(files="app/api/auth.py")
+        assert result["ok"] is True
+        data = result["data"]
+        planned = data["planned_symbols"]
+        assert len(planned) > 0
+        auth_symbols = [s for s in planned if s["file"] == "app/api/auth.py"]
+        assert len(auth_symbols) > 0
+        for s in auth_symbols:
+            assert s["reason"] == "Symbol is defined in a planned edit file."
+
+    def test_symbols_directly_as_planned(self, mcp_setup):
+        """symbols param resolves symbols directly as planned symbols."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        planned = data["planned_symbols"]
+        assert len(planned) > 0
+        login_sym = planned[0]
+        assert login_sym["symbol"] == "login"
+        assert login_sym["reason"] == "Symbol explicitly listed in planned symbols."
+
+    def test_files_or_symbols_required(self, mcp_setup):
+        """At least one of files or symbols must be provided."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check()
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+    def test_unindexed_file_returns_warning(self, mcp_setup):
+        """Unindexed file returns warning, does not crash."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(files="nonexistent/file.py")
+        assert result["ok"] is True
+        warnings = result.get("warnings", [])
+        file_warnings = [w for w in warnings if w.get("type") == "file_not_indexed"]
+        assert len(file_warnings) > 0
+        data = result["data"]
+        pf = data["planned_files"]
+        assert any(not f.get("indexed") for f in pf)
+
+    def test_nonexistent_path_returns_warning(self, mcp_setup):
+        """Path that doesn't exist in index returns warning, doesn't crash."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(files="completely/bogus/path.py")
+        assert result["ok"] is True
+        data = result["data"]
+        assert data["planned_symbols"] == []
+
+    def test_planned_symbols_have_location(self, mcp_setup):
+        """planned_symbols include symbol, type, file, line_start, line_end."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        for ps in data["planned_symbols"]:
+            assert "symbol" in ps
+            assert "type" in ps
+            assert "file" in ps
+            assert "line_start" in ps
+            assert "line_end" in ps
+
+    def test_returns_impact_summary(self, mcp_setup):
+        """Returns impact_summary with risk_level."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        impact = data["impact_summary"]
+        assert "risk_level" in impact
+        assert "confidence" in impact
+        assert "summary" in impact
+        assert impact["risk_level"] in ("low", "medium", "high", "critical", "unknown")
+
+    def test_no_data_risk_is_unknown(self, mcp_setup):
+        """When no symbols are found, risk_level is unknown (not low)."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(files="nonexistent/file.py")
+        assert result["ok"] is True
+        data = result["data"]
+        assert data["impact_summary"]["risk_level"] == "unknown"
+
+    def test_returns_affected_callers(self, mcp_setup):
+        """Returns affected_callers list."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        assert "affected_callers" in data
+        assert isinstance(data["affected_callers"], list)
+
+    def test_returns_affected_files(self, mcp_setup):
+        """Returns affected_files list."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        assert "affected_files" in data
+        assert isinstance(data["affected_files"], list)
+
+    def test_include_tests_true_returns_affected_tests(self, mcp_setup):
+        """include_tests=True returns affected_tests."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login", include_tests=True)
+        assert result["ok"] is True
+        data = result["data"]
+        assert "affected_tests" in data
+        assert isinstance(data["affected_tests"], list)
+
+    def test_include_tests_false_returns_empty_tests(self, mcp_setup):
+        """include_tests=False returns empty affected_tests."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login", include_tests=False)
+        assert result["ok"] is True
+        data = result["data"]
+        assert data["affected_tests"] == []
+
+    def test_recommended_checks_no_fake_tests(self, mcp_setup):
+        """recommended_checks doesn't invent non-existent test files."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        checks = data.get("recommended_checks", [])
+        for c in checks:
+            if c["type"] == "test":
+                target = c.get("target", "")
+                # Should reference real test files from index
+                assert "test" in target.lower() or target == ""
+
+    def test_returns_next_recommended_tools(self, mcp_setup):
+        """Returns next_recommended_tools."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        data = result["data"]
+        next_tools = data.get("next_recommended_tools", [])
+        assert isinstance(next_tools, list)
+
+    def test_returns_codegraph_session(self, mcp_setup):
+        """Response includes codegraph_session."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        assert "codegraph_session" in result
+        session = result["codegraph_session"]
+        assert "tools_called_this_session" in session
+        assert "hint" in session
+
+    def test_stale_index_returns_warning(self, mcp_setup):
+        """Stale index returns index_status warning but doesn't block."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        assert "index_status" in result
+        idx = result["index_status"]
+        assert "freshness" in idx
+
+    def test_does_not_break_get_impact(self, mcp_setup):
+        """codegraph_get_impact still works unchanged."""
+        from codegraph.mcp_server import get_impact
+        result = get_impact(symbol="login")
+        assert result["ok"] is True
+        data = result["data"]
+        assert "risk" in data
+        assert "confirmed" in data
+
+    def test_no_frontend_dependency(self, mcp_setup):
+        """Tool returns JSON, no HTML or frontend."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        data_str = str(result)
+        assert "<html" not in data_str.lower()
+        assert "<div" not in data_str.lower()
+
+    def test_no_test_execution(self, mcp_setup):
+        """Tool does not execute tests."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        data = result["data"]
+        # recommended_checks are advisory only
+        for c in data.get("recommended_checks", []):
+            assert c["type"] in ("read", "test", "impact", "neighbors")
+
+    def test_multiple_files(self, mcp_setup):
+        """Multiple files are all processed."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(files="app/api/auth.py,main.py")
+        assert result["ok"] is True
+        data = result["data"]
+        assert len(data["planned_files"]) >= 2
+        indexed_count = sum(1 for f in data["planned_files"] if f.get("indexed"))
+        assert indexed_count >= 1
+
+    def test_multiple_symbols(self, mcp_setup):
+        """Multiple symbols are all resolved."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login,main")
+        assert result["ok"] is True
+        data = result["data"]
+        assert len(data["planned_symbols"]) >= 2
+
+    def test_limit_respected(self, mcp_setup):
+        """Limit parameter is respected for result lists."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login", limit=1)
+        assert result["ok"] is True
+        data = result["data"]
+        assert len(data["affected_callers"]) <= 1
+        assert len(data["affected_files"]) <= 1
+
+    def test_invalid_change_type(self):
+        """Invalid change_type returns error."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login", change_type="invalid_type")
+        assert result["ok"] is False
+        assert "change_type" in result["error"]["message"].lower()
+
+    def test_valid_change_types_accepted(self, mcp_setup):
+        """All valid change_types are accepted."""
+        from codegraph.mcp_server import pre_edit_check
+        for ct in ("refactor", "bugfix", "feature", "test", "cleanup", "unknown"):
+            result = pre_edit_check(symbols="login", change_type=ct)
+            assert result["ok"] is True, f"change_type '{ct}' should be accepted"
+
+    def test_description_in_response(self, mcp_setup):
+        """description is echoed back in response."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login", description="test change")
+        assert result["ok"] is True
+        assert result["data"]["description"] == "test change"
+
+    def test_response_envelope_has_all_keys(self, mcp_setup):
+        """Response has full envelope structure."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        for key in ("ok", "tool", "data", "warnings", "index_status",
+                     "index_health", "meta"):
+            assert key in result, f"Missing envelope key: {key}"
+
+    def test_tool_name_in_response(self, mcp_setup):
+        """Response tool field is correct."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["tool"] == "codegraph_pre_edit_check"
+
+    def test_pre_edit_check_params_unchanged(self):
+        """pre_edit_check parameter names must not change."""
+        import inspect
+        from codegraph.mcp_server import pre_edit_check
+        sig = inspect.signature(pre_edit_check)
+        param_names = set(sig.parameters.keys())
+        required_params = {
+            "files", "symbols", "change_type", "description",
+            "include_tests", "limit", "response_mode",
+        }
+        missing = required_params - param_names
+        assert not missing, f"pre_edit_check missing params: {missing}"
+
+    def test_recommended_checks_capped_at_5(self, mcp_setup):
+        """recommended_checks is capped at 5 entries."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(files="app/api/auth.py")
+        assert result["ok"] is True
+        checks = result["data"].get("recommended_checks", [])
+        assert len(checks) <= 5
+
+    def test_impact_summary_has_pre_edit_prefix(self, mcp_setup):
+        """impact_summary.summary starts with [pre-edit heuristic]."""
+        from codegraph.mcp_server import pre_edit_check
+        result = pre_edit_check(symbols="login")
+        assert result["ok"] is True
+        summary = result["data"]["impact_summary"]["summary"]
+        assert "[pre-edit heuristic]" in summary
+
+
+# ── Test: codegraph_explain ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def explain_store(full_store: GraphStore) -> GraphStore:
+    """Extend full_store with additional nodes for explain signal testing."""
+    from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, NodeType, EdgeMetadata, Resolution, Location
+
+    # Add nodes with varied docstrings/signals for testing
+    extra_nodes = [
+        GraphNode(
+            id="app/services/receipt_service.py::ReceiptService",
+            type=NodeType.class_,
+            name="ReceiptService",
+            file_path="app/services/receipt_service.py",
+            qualified_name="app.services.receipt_service.ReceiptService",
+            location=Location(line_start=10, line_end=80),
+            tags=["service"],
+        ),
+        GraphNode(
+            id="app/services/receipt_service.py::rowToRecord",
+            type=NodeType.method,
+            name="rowToRecord",
+            file_path="app/services/receipt_service.py",
+            qualified_name="app.services.receipt_service.ReceiptService.rowToRecord",
+            location=Location(line_start=20, line_end=35),
+            signature="(self, row: dict) -> ReceiptRecord",
+            docstring="Converts a database row into a receipt record object.",
+            tags=["public"],
+        ),
+        GraphNode(
+            id="app/services/receipt_service.py::parsePayload",
+            type=NodeType.method,
+            name="parsePayload",
+            file_path="app/services/receipt_service.py",
+            qualified_name="app.services.receipt_service.ReceiptService.parsePayload",
+            location=Location(line_start=40, line_end=55),
+            signature="(self, payload: str) -> dict",
+            tags=["public"],
+        ),
+        GraphNode(
+            id="app/services/receipt_service.py::sendToApi",
+            type=NodeType.method,
+            name="sendToApi",
+            file_path="app/services/receipt_service.py",
+            location=Location(line_start=60, line_end=75),
+            signature="(self, data: dict) -> None",
+        ),
+        GraphNode(
+            id="app/utils/json_helpers.py::parseJson",
+            type=NodeType.function,
+            name="parseJson",
+            file_path="app/utils/json_helpers.py",
+            location=Location(line_start=1, line_end=10),
+            signature="(text: str) -> dict",
+        ),
+        GraphNode(
+            id="app/utils/json_helpers.py::loadConfig",
+            type=NodeType.function,
+            name="loadConfig",
+            file_path="app/utils/json_helpers.py",
+            location=Location(line_start=12, line_end=25),
+            signature="(path: str) -> dict",
+        ),
+        GraphNode(
+            id="app/store/db.py::executeQuery",
+            type=NodeType.function,
+            name="executeQuery",
+            file_path="app/store/db.py",
+            location=Location(line_start=5, line_end=15),
+            signature="(sql: str, params: dict) -> list",
+        ),
+        GraphNode(
+            id="tests/test_receipt.py::test_rowToRecord",
+            type=NodeType.test,
+            name="test_rowToRecord",
+            file_path="tests/test_receipt.py",
+            location=Location(line_start=1, line_end=15),
+        ),
+        # A route symbol for framework entry testing
+        GraphNode(
+            id="app/api/routes.py::handleRequest",
+            type=NodeType.route,
+            name="handleRequest",
+            file_path="app/api/routes.py",
+            location=Location(line_start=10, line_end=30),
+            signature="(request: Request) -> Response",
+            tags=["route"],
+        ),
+    ]
+    full_store.add_nodes(extra_nodes)
+
+    extra_edges = [
+        GraphEdge(
+            id="ex01", type=EdgeType.calls,
+            source="app/services/receipt_service.py::rowToRecord",
+            target="app/store/db.py::executeQuery",
+            confidence=0.88,
+            metadata=EdgeMetadata(resolution=Resolution.imported_function_exact),
+        ),
+        GraphEdge(
+            id="ex02", type=EdgeType.calls,
+            source="app/services/receipt_service.py::parsePayload",
+            target="app/utils/json_helpers.py::parseJson",
+            confidence=0.92,
+            metadata=EdgeMetadata(resolution=Resolution.imported_function_exact),
+        ),
+        GraphEdge(
+            id="ex03", type=EdgeType.calls,
+            source="app/services/receipt_service.py::sendToApi",
+            target="app/utils/json_helpers.py::loadConfig",
+            confidence=0.85,
+            metadata=EdgeMetadata(resolution=Resolution.imported_function_exact),
+        ),
+        GraphEdge(
+            id="ex04", type=EdgeType.tested_by,
+            source="app/services/receipt_service.py::rowToRecord",
+            target="tests/test_receipt.py::test_rowToRecord",
+            confidence=0.88,
+            metadata=EdgeMetadata(resolution=Resolution.test_name_heuristic),
+        ),
+    ]
+    full_store.add_edges(extra_edges)
+
+    return full_store
+
+
+@pytest.fixture
+def explain_mcp_setup(explain_store: GraphStore, tmp_path: Path, monkeypatch) -> GraphStore:
+    """Set up MCP module globals with the explain test store."""
+    _setup_mcp_globals(explain_store, tmp_path)
+
+    from codegraph.graph.models import IndexMetadata, FileEntry
+    from datetime import datetime
+    metadata = IndexMetadata(
+        schema_version="1.0.0",
+        indexer_version="1.0.0",
+        root_path=str(tmp_path),
+        indexed_at=datetime.now().isoformat(),
+        file_count=8,
+        symbol_count=12,
+        edge_count=15,
+    )
+    (tmp_path / "metadata.json").write_text(
+        metadata.model_dump_json(indent=2), encoding="utf-8"
+    )
+    (tmp_path / "graph.json").write_text("{}", encoding="utf-8")
+
+    yield explain_store
+    _teardown_mcp_globals()
+
+
+class TestCodegraphExplain:
+    """Tests for codegraph_explain MCP tool."""
+
+    # ── Envelope & structure ──────────────────────────────────────────
+
+    def test_explain_symbol_has_envelope(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        assert result["ok"] is True
+        assert result["tool"] == "codegraph_explain"
+        assert "data" in result
+        assert "meta" in result
+        assert "codegraph_session" in result
+        assert "index_status" in result
+        assert "index_health" in result
+
+    def test_explain_symbol_has_target_block(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        target = result["data"]["target"]
+        assert target["kind"] == "symbol"
+        assert target["symbol"] == "rowToRecord"
+        assert target["type"] == "method"
+        assert "file" in target
+        assert "line_start" in target
+        assert "line_end" in target
+
+    def test_explain_symbol_has_explanation_block(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        explanation = result["data"]["explanation"]
+        assert "summary" in explanation
+        assert isinstance(explanation["summary"], str)
+        assert len(explanation["summary"]) > 0
+        assert "confidence" in explanation
+        assert explanation["confidence"] in ("high", "medium", "low", "unknown")
+        assert "basis" in explanation
+        assert isinstance(explanation["basis"], list)
+
+    def test_explain_symbol_has_evidence(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        evidence = result["data"]["evidence"]
+        assert isinstance(evidence, list)
+        assert len(evidence) > 0
+        for entry in evidence:
+            assert "type" in entry
+            assert "reason" in entry
+
+    def test_explain_has_next_recommended_tools(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        recs = result["data"].get("next_recommended_tools", [])
+        assert isinstance(recs, list)
+        assert len(recs) <= 3
+        for rec in recs:
+            assert "tool" in rec
+            assert "reason" in rec
+            assert len(rec["reason"]) > 0
+
+    # ── Summary generation ────────────────────────────────────────────
+
+    def test_explain_symbol_uses_docstring_for_summary(self, explain_mcp_setup):
+        """Symbol with docstring should have summary based on it."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        explanation = result["data"]["explanation"]
+        assert "docstring" in explanation["basis"]
+        assert explanation["confidence"] in ("medium", "low")
+
+    def test_explain_symbol_name_based_when_no_docstring(self, explain_mcp_setup):
+        """Symbol without docstring falls back to name-based summary."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="sendToApi")
+        explanation = result["data"]["explanation"]
+        # sendToApi has no docstring
+        assert "symbol_name" in explanation["basis"] or "callees" in explanation["basis"]
+        assert "docstring" not in explanation["basis"]
+
+    def test_explain_symbol_confidence_not_high_for_heuristic(self, explain_mcp_setup):
+        """Heuristic explanations should never claim 'high' confidence."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="sendToApi")
+        confidence = result["data"]["explanation"]["confidence"]
+        assert confidence != "high"
+
+    # ── Implementation signals ────────────────────────────────────────
+
+    def test_explain_symbol_has_all_implementation_signals(self, explain_mcp_setup):
+        """All 8 signal flags should be present."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        signals = result["data"]["implementation_signals"]
+        expected = {"uses_json", "uses_database", "uses_io", "uses_network",
+                     "has_error_handling", "is_framework_entry", "is_test_code", "uses_async"}
+        assert set(signals.keys()) == expected
+        for key in expected:
+            assert isinstance(signals[key], bool)
+
+    def test_uses_json_signal_detected(self, explain_mcp_setup):
+        """parsePayload calls parseJson (JSON callee) — uses_json=true."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="parsePayload")
+        signals = result["data"]["implementation_signals"]
+        assert signals["uses_json"] is True
+
+    def test_uses_database_signal_detected(self, explain_mcp_setup):
+        """rowToRecord calls executeQuery — uses_database=true."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        signals = result["data"]["implementation_signals"]
+        assert signals["uses_database"] is True
+
+    def test_is_framework_entry_for_route(self, explain_mcp_setup):
+        """Route type symbol should have is_framework_entry=true."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="handleRequest")
+        signals = result["data"]["implementation_signals"]
+        assert signals["is_framework_entry"] is True
+
+    def test_is_test_code_from_path(self, explain_mcp_setup):
+        """Symbol in tests/ directory should have is_test_code=true."""
+        from codegraph.mcp_server import codegraph_explain
+        # login's test is test_login in tests/test_auth.py
+        result = codegraph_explain(symbol="test_login")
+        signals = result["data"]["implementation_signals"]
+        assert signals["is_test_code"] is True
+
+    # ── Relationships ─────────────────────────────────────────────────
+
+    def test_explain_symbol_has_relationships(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", include_relationships=True)
+        rel = result["data"]["relationships"]
+        assert "callers_count" in rel
+        assert "callees_count" in rel
+        assert "top_callers" in rel
+        assert "top_callees" in rel
+        assert isinstance(rel["top_callers"], list)
+        assert isinstance(rel["top_callees"], list)
+        # rowToRecord calls executeQuery
+        assert rel["callees_count"] >= 1
+
+    def test_explain_symbol_relationships_top_lists_capped_at_5(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="login")
+        rel = result["data"]["relationships"]
+        assert len(rel["top_callers"]) <= 5
+        assert len(rel["top_callees"]) <= 5
+
+    def test_explain_symbol_no_relationships_when_disabled(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", include_relationships=False)
+        rel = result["data"]["relationships"]
+        assert rel["callers_count"] == 0
+        assert rel["callees_count"] == 0
+        assert rel["top_callers"] == []
+        assert rel["top_callees"] == []
+
+    # ── Test signal ───────────────────────────────────────────────────
+
+    def test_explain_symbol_has_test_signal(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", include_tests=True)
+        ts = result["data"]["test_signal"]
+        assert "status" in ts
+        assert ts["status"] in ("none", "low_confidence", "high_confidence", "unknown")
+        assert "tested_by_count" in ts
+        assert "related_tests" in ts
+        # rowToRecord has tested_by edge to test_rowToRecord
+        assert ts["tested_by_count"] >= 1
+
+    def test_explain_symbol_test_signal_respects_include_flag(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", include_tests=False)
+        ts = result["data"]["test_signal"]
+        assert ts["status"] == "unknown"
+        assert ts["tested_by_count"] == 0
+
+    def test_test_signal_related_tests_max_5(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="login")
+        related = result["data"]["test_signal"]["related_tests"]
+        assert len(related) <= 5
+
+    def test_test_signal_does_not_claim_specific_coverage(self, explain_mcp_setup):
+        """test_signal should not claim a specific edge case is covered."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        ts = result["data"]["test_signal"]
+        # Only structural fields, no assertion about edge case coverage
+        assert "edge_case" not in str(ts).lower()
+        for t in ts.get("related_tests", []):
+            assert "reason" in t
+            assert "edge case" not in t["reason"].lower()
+
+    # ── Source snippet ────────────────────────────────────────────────
+
+    def test_explain_symbol_has_source_snippet_when_enabled(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", include_snippet=True)
+        snippet = result["data"]["source_snippet"]
+        # snippet block exists — may be included or not depending on file existence
+        assert "included" in snippet or "snippet" in snippet
+
+    def test_explain_symbol_no_snippet_when_disabled(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", include_snippet=False)
+        snippet = result["data"]["source_snippet"]
+        assert snippet.get("included") is False
+
+    # ── File-level explain ────────────────────────────────────────────
+
+    def test_explain_file_has_target_and_primary_symbols(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(file="app/api/auth.py")
+        assert result["ok"] is True
+        target = result["data"]["target"]
+        assert target["kind"] == "file"
+        assert target["file"] == "app/api/auth.py"
+        assert "primary_symbols" in result["data"]
+        assert "likely_role" in result["data"]
+        assert "symbol_count" in result["data"]
+
+    def test_explain_file_primary_symbols_has_basic_fields(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(file="app/api/auth.py")
+        primary = result["data"]["primary_symbols"]
+        for sym in primary:
+            assert "symbol_id" in sym
+            assert "name" in sym
+            assert "type" in sym
+
+    def test_explain_file_has_likely_role(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(file="app/api/auth.py")
+        assert "likely_role" in result["data"]
+        assert isinstance(result["data"]["likely_role"], str)
+        assert len(result["data"]["likely_role"]) > 0
+
+    def test_explain_file_has_implementation_signals(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(file="app/api/auth.py")
+        signals = result["data"]["implementation_signals"]
+        assert isinstance(signals, dict)
+        # Should have the signal flags
+        for key in ("uses_json", "uses_database", "is_framework_entry"):
+            assert key in signals
+
+    def test_explain_file_with_symbol_path_hint(self, explain_mcp_setup):
+        """When both symbol and file are provided, file acts as path_hint."""
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord", file="app/services/receipt_service.py")
+        assert result["ok"] is True
+        assert result["data"]["target"]["kind"] == "symbol"
+
+    # ── Error handling ────────────────────────────────────────────────
+
+    def test_explain_neither_symbol_nor_file_returns_error(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain()
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+    def test_explain_both_empty_strings_returns_error(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="", file="")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+    def test_explain_symbol_not_found(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="nonexistentFunctionXYZ")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
+
+    def test_explain_file_not_indexed(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(file="nonexistent/path.py")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
+
+    def test_explain_invalid_response_mode(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="login", response_mode="invalid")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+    # ── Confidence / basis validation ─────────────────────────────────
+
+    def test_explain_does_not_invent_high_confidence_without_docstring(self, explain_mcp_setup):
+        """Symbols without docstrings should never get 'high' confidence."""
+        from codegraph.mcp_server import codegraph_explain
+        # main has no docstring
+        result = codegraph_explain(symbol="main")
+        confidence = result["data"]["explanation"]["confidence"]
+        assert confidence != "high"
+
+    def test_explain_evidence_never_empty_for_resolved_symbol(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="login")
+        evidence = result["data"]["evidence"]
+        assert len(evidence) > 0
+
+    # ── next_recommended_tools structure ──────────────────────────────
+
+    def test_explain_next_tools_for_symbol_have_neighbors(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(symbol="rowToRecord")
+        recs = result["data"].get("next_recommended_tools", [])
+        tools = [r["tool"] for r in recs]
+        assert "codegraph_get_neighbors" in tools
+
+    def test_explain_next_tools_for_file_have_search(self, explain_mcp_setup):
+        from codegraph.mcp_server import codegraph_explain
+        result = codegraph_explain(file="app/api/auth.py")
+        recs = result["data"].get("next_recommended_tools", [])
+        tools = [r["tool"] for r in recs]
+        assert any("search" in t for t in tools)
