@@ -1197,8 +1197,26 @@ class TestRepoSummary:
         from codegraph.mcp_server import repo_summary
         result = repo_summary()
         tcs = result["data"]["test_coverage_signal"]
+        # Backward-compatible fields
         assert "test_files" in tcs
         assert "tested_symbols" in tcs
+        assert isinstance(tcs["test_files"], int)
+        assert isinstance(tcs["tested_symbols"], int)
+        # New structured fields
+        assert "status" in tcs
+        assert tcs["status"] in ("ok", "low_confidence", "incomplete", "unknown")
+        assert "confidence" in tcs
+        assert tcs["confidence"] in ("high", "medium", "low", "unknown")
+        assert "message" in tcs
+        assert isinstance(tcs["message"], str)
+        assert len(tcs["message"]) > 0
+        assert "warnings" in tcs
+        assert isinstance(tcs["warnings"], list)
+        assert "tested_by_edges" in tcs
+        assert "tested_symbols_high_confidence" in tcs
+        assert "tested_symbols_low_confidence" in tcs
+        assert "tested_symbols_unknown_confidence" in tcs
+        assert "untested_symbols_estimate" in tcs
 
     def test_has_index_info(self, mcp_setup):
         from codegraph.mcp_server import repo_summary

@@ -59,6 +59,7 @@ ZERO_TELEMETRY_STATEMENT = (
 from codegraph.graph import impact as graph_impact
 from codegraph.graph import query as graph_query
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
+from codegraph.graph.test_coverage import compute_test_coverage_signal
 from codegraph.graph.impact import classify_edge_resolution
 from codegraph.graph.models import CodeGraph, EdgeType, GraphEdge, GraphNode, NodeType, Resolution
 from codegraph.graph.store import GraphStore
@@ -5974,12 +5975,14 @@ def repo_summary(
                 "entry_type": entry_type,
             })
 
-    # Test coverage signal
-    test_files = {n.file_path for n in nodes if n.type == NodeType.test}
-    tested_symbols: set[str] = set()
-    for e in edges:
-        if e.type == EdgeType.tested_by:
-            tested_symbols.add(e.source)
+    # Test coverage signal — structured, filesystem-aware
+    project_root = str(cg_dir.parent) if cg_dir else None
+    test_coverage_signal = compute_test_coverage_signal(
+        nodes, edges, project_root,
+    )
+    # Backward-compatible aliases
+    test_files = test_coverage_signal["test_files"]
+    tested_symbols = test_coverage_signal["tested_symbols"]
 
     repo_info = {}
     metadata_path = cg_dir / "metadata.json"
@@ -6122,10 +6125,7 @@ def repo_summary(
             "edge_quality_by_language": edge_quality_by_language,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules[:5]],
             "entry_point_candidates": entry_candidates[:5],
-            "test_coverage_signal": {
-                "test_files": len(test_files),
-                "tested_symbols": len(tested_symbols),
-            },
+            "test_coverage_signal": test_coverage_signal,
             "capabilities": _get_capabilities(),
             "index_info": index_info,
         }
@@ -6141,10 +6141,7 @@ def repo_summary(
             "edge_quality_by_language": edge_quality_by_language,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules],
             "entry_point_candidates": entry_candidates,
-            "test_coverage_signal": {
-                "test_files": len(test_files),
-                "tested_symbols": len(tested_symbols),
-            },
+            "test_coverage_signal": test_coverage_signal,
             "capabilities": _get_capabilities(),
             "index_info": index_info,
         }
@@ -6160,10 +6157,7 @@ def repo_summary(
             "edge_quality_by_language": edge_quality_by_language,
             "top_modules": [{"module": m, "file_count": c} for m, c in top_modules],
             "entry_point_candidates": entry_candidates,
-            "test_coverage_signal": {
-                "test_files": len(test_files),
-                "tested_symbols": len(tested_symbols),
-            },
+            "test_coverage_signal": test_coverage_signal,
             "capabilities": _get_capabilities(),
             "index_info": index_info,
         }

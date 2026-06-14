@@ -1774,6 +1774,58 @@ def doctor(
         warn("Skipped because .codegraph is missing")
     typer.echo()
 
+    # 5l. Test coverage signal
+    typer.echo("5l. Test coverage signal")
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        try:
+            from codegraph.graph.test_coverage import compute_test_coverage_signal
+            from codegraph.graph.models import GraphNode, GraphEdge
+
+            # Load nodes and edges from graph.json (consistent with other doctor sections)
+            graph_json = json.loads((cg_dir / "graph.json").read_text("utf-8"))
+            raw_nodes = graph_json.get("nodes", [])
+            raw_edges = graph_json.get("edges", [])
+
+            nodes = [GraphNode.model_validate(n) for n in raw_nodes]
+            edges = [GraphEdge.model_validate(e) for e in raw_edges]
+
+            signal = compute_test_coverage_signal(nodes, edges, str(project_root))
+
+            status = signal.get("status", "unknown")
+            test_files_count = signal.get("test_files_detected", 0)
+            tested_by_count = signal.get("tested_by_edges", 0)
+            high_conf = signal.get("tested_symbols_high_confidence", 0)
+            low_conf = signal.get("tested_symbols_low_confidence", 0)
+            unknown_conf = signal.get("tested_symbols_unknown_confidence", 0)
+            message = signal.get("message", "")
+            warnings_list = signal.get("warnings", [])
+
+            typer.echo(f"     test files detected: {test_files_count}")
+            typer.echo(f"     tested_by edges:     {tested_by_count}")
+            typer.echo(f"       high confidence:   {high_conf}")
+            typer.echo(f"       low confidence:    {low_conf}")
+            typer.echo(f"       unknown confidence:{unknown_conf}")
+
+            if status == "ok":
+                ok(f"Status: {status}")
+            elif status in ("incomplete", "low_confidence"):
+                warn(f"Status: {status}")
+            elif status == "unknown":
+                typer.echo(f"  [INFO]  Status: {status}")
+            else:
+                typer.echo(f"     Status: {status}")
+
+            typer.echo(f"     Message: {message}")
+
+            for w in warnings_list:
+                warn(f"Warning: {w}")
+
+        except Exception as e:
+            warn(f"Could not compute test coverage signal: {e}")
+    else:
+        typer.echo("     Skipped — no graph.json found")
+    typer.echo()
+
     # 6. MCP config paths
     typer.echo("6. MCP configuration")
     from codegraph.configure import (

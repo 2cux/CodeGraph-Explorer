@@ -187,7 +187,80 @@ Check if the index is fresh, stale, missing, or has errors. Each MCP response al
 
 ### repo_summary
 
-Get high-level statistics: file count, symbol count, type breakdown, edge count, low-confidence edge ratio, top modules, entry point candidates, test coverage signal.
+Get high-level statistics: file count, symbol count, type breakdown, edge count,
+low-confidence edge ratio, top modules, entry point candidates, and a structured
+**test coverage signal**.
+
+#### Test Coverage Signal
+
+`test_coverage_signal` is a heuristic backend signal that helps agents
+distinguish between "no test files exist" and "test files exist but aren't
+linked by the index." It prevents a misleading `test_files: 0` from eroding
+agent trust in subsequent CodeGraph queries.
+
+**Why this matters:** A bare `test_files: 0` response when test files actually
+exist on disk causes agents to lose trust in CodeGraph and fall back to
+Glob/Read/Grep. The structured signal provides enough context for agents to
+calibrate their trust.
+
+**Signal status values:**
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | High-confidence `tested_by` edges link tests to production symbols |
+| `low_confidence` | `tested_by` edges exist but are mostly low-confidence heuristics |
+| `incomplete` | Test files detected but no `tested_by` edges link them to production symbols |
+| `unknown` | No test files detected by any method |
+
+**Response fields:**
+
+```json
+{
+  "test_coverage_signal": {
+    "status": "ok | low_confidence | incomplete | unknown",
+    "confidence": "high | medium | low | unknown",
+    "message": "Human-readable summary for agent trust calibration",
+    "warnings": ["Specific issues to be aware of"],
+    "test_files_detected": 22,
+    "tested_symbols_high_confidence": 8,
+    "tested_symbols_low_confidence": 14,
+    "tested_symbols_unknown_confidence": 0,
+    "untested_symbols_estimate": 43,
+    "tested_by_edges": 22,
+    "test_files": 22,
+    "tested_symbols": 22,
+    "test_file_detection": {
+      "method": "filesystem_heuristic",
+      "count": 22,
+      "sample_files": ["tests/test_auth.py", "..."],
+      "patterns_used": ["tests"],
+      "languages": {"python": 18, "typescript": 4}
+    }
+  }
+}
+```
+
+**Backward compatibility:** The old `test_files` and `tested_symbols` integer
+fields are preserved at the top level of `test_coverage_signal`.
+
+**Agent guidance:**
+
+- `status: ok` → Coverage signal is usable. Trust the `tested_by` links.
+- `status: low_confidence` → Links exist but may be wrong. Verify each link.
+- `status: incomplete` → Test files exist but aren't linked. Use CodeGraph for
+  navigation, but verify coverage by reading relevant tests directly.
+- `status: unknown` → No test files detected. This may mean the project truly
+  has no tests, or the test files use an unrecognized naming convention.
+
+**Detection method:** Test files are detected via filesystem path/name
+heuristics independent of the CodeGraph index. Supported patterns include:
+`tests/**`, `test/**`, `*_test.py`, `test_*.py`, `*.test.ts`, `*.spec.ts`,
+`*Test.java`, `*_test.go`, `*Tests.cs`, and more. This means test files are
+found even if they were never indexed or have no `tested_by` edges.
+
+A low-confidence or incomplete signal does **not** mean the repository has no
+tests. It means CodeGraph cannot confidently map tests to production symbols
+with the current index data.
 
 ### build_context_pack
 
