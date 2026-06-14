@@ -1764,6 +1764,451 @@ class TestBuildContextPackDeepenMode:
         assert decoded.get("stage") == "scan"
 
 
+# ── Test: build_context_pack mode=impact (Progressive Context Pack Stage 3) ──
+
+
+class TestBuildContextPackImpactMode:
+    """mode=impact returns focused blast-radius analysis around deepen symbols."""
+
+    def test_mode_impact_requires_next_token(self, mcp_setup):
+        """mode=impact without next_token returns error."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack("fix MemoryService bug", mode="impact")
+        assert result["ok"] is False, f"Expected ok=False, got: {result}"
+        assert result["error"]["code"] == "INVALID_ARGUMENT", (
+            f"Expected INVALID_ARGUMENT, got: {result['error'].get('code')}"
+        )
+
+    def test_mode_impact_invalid_token(self, mcp_setup):
+        """mode=impact with an invalid token returns error."""
+        from codegraph.mcp_server import build_context_pack
+        result = build_context_pack(
+            "fix MemoryService bug", mode="impact", next_token="not-a-valid-token!!!"
+        )
+        assert result["ok"] is False, f"Expected ok=False, got: {result}"
+        assert result["error"]["code"] == "INVALID_CONTEXT_PACK_TOKEN", (
+            f"Expected INVALID_CONTEXT_PACK_TOKEN, got: {result['error'].get('code')}"
+        )
+
+    def test_mode_impact_returns_selected_symbols(self, mcp_setup):
+        """mode=impact returns selected_symbols when given valid deepen token."""
+        from codegraph.mcp_server import build_context_pack
+        # First scan → deepen
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        # Then impact
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "selected_symbols" in data, (
+            f"impact result missing selected_symbols: {data.keys()}"
+        )
+        assert isinstance(data["selected_symbols"], list)
+        assert len(data["selected_symbols"]) >= 1, (
+            f"Expected at least 1 selected symbol"
+        )
+
+    def test_mode_impact_returns_impact_summary(self, mcp_setup):
+        """mode=impact returns impact_summary with risk_level, confidence, summary."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "impact_summary" in data, (
+            f"impact result missing impact_summary: {data.keys()}"
+        )
+        impact_summary = data["impact_summary"]
+        assert "risk_level" in impact_summary, "impact_summary missing risk_level"
+        assert impact_summary["risk_level"] in ("low", "medium", "high", "critical", "unknown"), (
+            f"Unexpected risk_level: {impact_summary.get('risk_level')}"
+        )
+        assert "confidence" in impact_summary, "impact_summary missing confidence"
+        assert isinstance(impact_summary["confidence"], (int, float))
+        assert "summary" in impact_summary, "impact_summary missing summary"
+        assert isinstance(impact_summary["summary"], str)
+        assert len(impact_summary["summary"]) > 0
+
+    def test_mode_impact_returns_affected_callers(self, mcp_setup):
+        """mode=impact returns affected_callers list."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "affected_callers" in data, (
+            f"impact result missing affected_callers: {data.keys()}"
+        )
+        assert isinstance(data["affected_callers"], list)
+
+    def test_mode_impact_returns_affected_files(self, mcp_setup):
+        """mode=impact returns affected_files list."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "affected_files" in data, (
+            f"impact result missing affected_files: {data.keys()}"
+        )
+        assert isinstance(data["affected_files"], list)
+
+    def test_mode_impact_returns_affected_tests(self, mcp_setup):
+        """mode=impact returns affected_tests list."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "affected_tests" in data, (
+            f"impact result missing affected_tests: {data.keys()}"
+        )
+        assert isinstance(data["affected_tests"], list)
+
+    def test_mode_impact_returns_recommended_verification(self, mcp_setup):
+        """mode=impact returns recommended_verification list."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"], f"Expected ok=True, got: {result}"
+        data = result["data"]
+        assert "recommended_verification" in data, (
+            f"impact result missing recommended_verification: {data.keys()}"
+        )
+        assert isinstance(data["recommended_verification"], list)
+        # Each entry should have type, target, reason
+        for rv in data["recommended_verification"]:
+            assert "type" in rv, f"verification entry missing type: {rv}"
+            assert rv["type"] in ("test", "read"), (
+                f"Unexpected verification type: {rv.get('type')}"
+            )
+            assert "target" in rv, f"verification entry missing target: {rv}"
+            assert "reason" in rv, f"verification entry missing reason: {rv}"
+
+    def test_mode_impact_recommended_verification_no_fake_tests(self, mcp_setup):
+        """recommended_verification does not invent non-existent test files."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"]
+        affected_test_files = {
+            t.get("file", "") for t in result["data"].get("affected_tests", [])
+        }
+        for rv in result["data"].get("recommended_verification", []):
+            if rv.get("type") == "test":
+                target = rv.get("target", "")
+                # The test target must exist in the affected_tests list —
+                # recommendations are built from actual impact analysis results,
+                # never invented.
+                assert target in affected_test_files, (
+                    f"Verification test target '{target}' should correspond to "
+                    f"an affected test file from impact analysis. "
+                    f"Known affected test files: {affected_test_files}"
+                )
+
+    def test_mode_impact_snippets_not_full_file(self, mcp_setup):
+        """mode=impact snippets are bounded, not full file contents."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"]
+        snippets = result["data"].get("source_snippets", [])
+        for s in snippets:
+            snippet_text = s.get("snippet", "")
+            assert len(snippet_text.splitlines()) <= 40, (
+                f"Snippet exceeds reasonable line limit: "
+                f"{len(snippet_text.splitlines())} lines"
+            )
+
+    def test_mode_impact_no_full_subgraph(self, mcp_setup):
+        """mode=impact does NOT return full repository subgraph."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"]
+        data = result["data"]
+        assert "call_graph" not in data, "impact mode should not include call_graph"
+        assert "subgraph" not in data, "impact mode should not include subgraph"
+        assert "selected_context" not in data, (
+            "impact mode should not include selected_context"
+        )
+
+    def test_mode_impact_no_break_scan(self, mcp_setup):
+        """mode=impact does NOT break mode=scan behavior."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"], f"scan mode still works: {scan_result}"
+        data = scan_result["data"]
+        assert "entry_points" in data
+        assert "next_token" in data
+        assert "call_graph" not in data
+
+    def test_mode_impact_no_break_deepen(self, mcp_setup):
+        """mode=impact does NOT break mode=deepen behavior."""
+        from codegraph.mcp_server import build_context_pack
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        token = scan_result["data"].get("next_token")
+        assert token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=token,
+        )
+        assert deepen_result["ok"], f"deepen mode still works: {deepen_result}"
+        data = deepen_result["data"]
+        assert "local_relationships" in data
+        assert "source_snippets" in data
+
+    def test_mode_impact_no_break_full(self, mcp_setup):
+        """mode=impact does NOT break default full behavior."""
+        from codegraph.mcp_server import build_context_pack
+        full_result = build_context_pack(
+            "add MFA to login", mode="full", response_mode="standard",
+        )
+        assert full_result["ok"], f"full mode still works: {full_result}"
+        data = full_result["data"]
+        assert "pack_id" in data, "full mode should have pack_id"
+
+    def test_mode_impact_next_recommended_tools_no_cycle(self, mcp_setup):
+        """mode=impact next_recommended_tools does not create scan/deepen/impact cycle."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"]
+        recs = result["data"].get("next_recommended_tools", [])
+        for rec in recs:
+            tool = rec.get("tool", "")
+            reason = rec.get("reason", "").lower()
+            # Must not recommend scan, deepen, or impact modes
+            assert "scan" not in reason, (
+                f"Should not recommend scan mode: {rec}"
+            )
+            assert "deepen" not in reason, (
+                f"Should not recommend deepen mode: {rec}"
+            )
+            assert "mode=impact" not in reason, (
+                f"Should not recommend impact mode: {rec}"
+            )
+            # Tool must be an existing MCP tool
+            assert tool.startswith("codegraph_"), (
+                f"Tool should start with codegraph_: {rec}"
+            )
+
+    def test_mode_impact_has_codegraph_session(self, mcp_setup):
+        """mode=impact response includes codegraph_session envelope fields."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        assert result["ok"]
+        assert "codegraph_session" in result, "impact response missing codegraph_session"
+        assert "index_status" in result, "impact response missing index_status"
+        assert "index_health" in result, "impact response missing index_health"
+
+    def test_mode_impact_compat_scan_token(self, mcp_setup):
+        """mode=impact gracefully degrades with scan-stage token (not deepen)."""
+        from codegraph.mcp_server import build_context_pack
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        # Use scan token directly in impact (skipping deepen)
+        result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=scan_token,
+        )
+        # Should still return ok=True — graceful degradation
+        assert result["ok"], (
+            f"impact should handle scan token gracefully, got: {result}"
+        )
+        data = result["data"]
+        assert "selected_symbols" in data
+
+    def test_mode_impact_shorter_than_full(self, mcp_setup):
+        """mode=impact output is significantly shorter than mode=full."""
+        from codegraph.mcp_server import build_context_pack
+        import json as _json
+
+        scan_result = build_context_pack("add MFA to login", mode="scan")
+        assert scan_result["ok"]
+        scan_token = scan_result["data"].get("next_token")
+        assert scan_token is not None
+
+        deepen_result = build_context_pack(
+            "add MFA to login", mode="deepen", next_token=scan_token,
+        )
+        assert deepen_result["ok"]
+        deepen_token = deepen_result["data"].get("next_token")
+        assert deepen_token is not None
+
+        impact_result = build_context_pack(
+            "add MFA to login", mode="impact", next_token=deepen_token,
+        )
+        full_result = build_context_pack(
+            "add MFA to login", mode="full", response_mode="standard",
+        )
+
+        impact_size = len(_json.dumps(impact_result))
+        full_size = len(_json.dumps(full_result))
+
+        assert impact_size < full_size, (
+            f"impact ({impact_size} bytes) should be shorter than "
+            f"full ({full_size} bytes)"
+        )
+
+
 # ── Test: source_snippets in build_context_pack ──────────────────────────────
 
 

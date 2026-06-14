@@ -641,6 +641,10 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     # Deepen mode (Progressive Context Pack Stage 2)
     "selected_entry_points", "local_relationships",
     "selected_symbols", "relationship_symbols",
+    # Impact mode (Progressive Context Pack Stage 3)
+    "affected_callers", "affected_tests",
+    "recommended_verification", "impact_summary",
+    "risk_level", "target",  # recommended_verification fields
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -3828,7 +3832,7 @@ _SOURCE_SNIPPET_TASK_KEYWORDS: set[str] = {
 }
 
 # Mode values that trigger source snippet inclusion
-_SOURCE_SNIPPET_MODES: set[str] = {"full", "review", "debug", "implementation"}
+_SOURCE_SNIPPET_MODES: set[str] = {"full", "review", "debug", "implementation", "impact"}
 
 # Max source snippets and lines per snippet
 _MAX_SOURCE_SNIPPETS = 5
@@ -4057,6 +4061,14 @@ _DEEPEN_MAX_NEIGHBORS = 5
 _DEEPEN_MAX_TESTS = 5
 _DEEPEN_MAX_SNIPPETS = 5
 _DEEPEN_MAX_SNIPPET_LINES = 50
+
+# Max counts for impact mode (Progressive Context Pack Stage 3)
+_IMPACT_MAX_AFFECTED_CALLERS = 10
+_IMPACT_MAX_AFFECTED_FILES = 10
+_IMPACT_MAX_AFFECTED_TESTS = 5
+_IMPACT_MAX_SNIPPETS = 3
+_IMPACT_MAX_SNIPPET_LINES = 30
+_IMPACT_MAX_VERIFICATION = 5
 
 
 def _generate_context_pack_token(
@@ -4626,6 +4638,415 @@ def _build_deepen_snippets(
     return snippets
 
 
+# ── Impact mode helpers (Progressive Context Pack Stage 3) ─────────────
+
+
+def _build_impact_snippets(
+    store: "GraphStore",
+    selected_symbols: list[dict[str, Any]],
+    affected_callers: list[dict[str, Any]],
+    affected_tests: list[dict[str, Any]],
+    max_snippets: int = _IMPACT_MAX_SNIPPETS,
+    max_lines: int = _IMPACT_MAX_SNIPPET_LINES,
+) -> list[dict[str, Any]]:
+    """Build limited source snippets for impact mode.
+
+    Priority: selected symbols first, then highest-confidence
+    affected callers, then related tests.
+    """
+    snippets: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, int, int]] = set()
+
+    # Candidates: (symbol_name, file_path, line_start, line_end, reason, priority, confidence)
+    # priority: 0 = selected symbol (highest), 1 = affected caller, 2 = test
+    candidates: list[tuple[str, str, int, int, str, int, float]] = []
+
+    # Selected symbols
+    for sym in selected_symbols:
+        fp = sym.get("file", "")
+        sym_name = sym.get("symbol", "")
+        if not fp or not sym_name:
+            continue
+        node = _resolve_node(store, f"{fp}::{sym_name}")
+        if node is not None and node.location:
+            candidates.append((
+                sym_name, fp,
+                node.location.line_start, node.location.line_end,
+                "Selected symbol — the target of impact analysis.",
+                0, 1.0,
+            ))
+
+    # Affected callers (highest confidence first)
+    sorted_callers = sorted(
+        affected_callers, key=lambda c: c.get("confidence", 0), reverse=True,
+    )
+    for c in sorted_callers[:3]:
+        fp = c.get("file", "")
+        name = c.get("symbol", "")
+        conf = c.get("confidence", 0)
+        if not fp or not name:
+            continue
+        node = _resolve_node(store, f"{fp}::{name}")
+        if node is not None and node.location:
+            candidates.append((
+                name, fp,
+                node.location.line_start, node.location.line_end,
+                f"Affected caller (confidence: {conf:.2f}).",
+                1, conf,
+            ))
+
+    # Affected tests (highest confidence first)
+    sorted_tests = sorted(
+        affected_tests, key=lambda t: t.get("confidence", 0), reverse=True,
+    )
+    for t in sorted_tests[:2]:
+        fp = t.get("file", "")
+        name = t.get("symbol", "")
+        conf = t.get("confidence", 0)
+        if not fp or not name:
+            continue
+        node = _resolve_node(store, f"{fp}::{name}")
+        if node is not None and node.location:
+            candidates.append((
+                name, fp,
+                node.location.line_start, node.location.line_end,
+                f"Related test (confidence: {conf:.2f}).",
+                2, conf,
+            ))
+
+    # Sort by priority (ascending), then confidence (descending)
+    candidates.sort(key=lambda x: (x[5], -x[6]))
+
+    for sym_name, fp, ls, le, reason, _pri, _conf in candidates:
+        if len(snippets) >= max_snippets:
+            break
+        key = (fp, ls, le)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        effective_end = min(ls + max_lines - 1, le) if le >= ls else ls + max_lines - 1
+
+        source = _read_source_snippet(
+            fp, ls, effective_end,
+            source_mode="body",
+            max_source_lines=max_lines,
+        )
+        if source.get("included") and source.get("content"):
+            snippet_data: dict[str, Any] = {
+                "symbol": sym_name,
+                "file": fp,
+                "line_start": ls,
+                "line_end": effective_end,
+                "reason": reason[:200],
+                "snippet": source["content"],
+            }
+            if source.get("truncated"):
+                snippet_data["truncated"] = True
+                original = (le - ls + 1) if le >= ls else source.get("lines", 0)
+                snippet_data["omitted_lines"] = max(0, original - source.get("lines", 0))
+            snippets.append(snippet_data)
+
+    return snippets
+
+
+def _build_impact_result(
+    store: "GraphStore",
+    task_description: str,
+    token: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an impact-mode result around symbols from the deepen stage token.
+
+    Reuses ``graph_impact.analyze_impact`` for each selected symbol.
+    Returns focused impact analysis: affected callers, files, tests,
+    risk level, confidence, and recommended verification steps.
+
+    Does NOT return full subgraph, full source files, or unlimited call chains.
+    """
+    from codegraph.graph import impact as graph_impact
+
+    selected_symbols: list[str] = token.get("selected_symbols", [])
+
+    if not selected_symbols:
+        return {
+            "ok": True,
+            "mode": "impact",
+            "task": task_description,
+            "selected_symbols": [],
+            "impact_summary": {
+                "risk_level": "unknown",
+                "confidence": 0.0,
+                "summary": (
+                    "No symbols selected in token. "
+                    "Run mode=scan and mode=deepen first "
+                    "to identify entry points."
+                ),
+            },
+            "affected_callers": [],
+            "affected_files": [],
+            "affected_tests": [],
+            "source_snippets": [],
+            "recommended_verification": [],
+            "summary": "No symbols to analyze. Run scan → deepen first.",
+            "next_recommended_tools": [],
+        }
+
+    # ── Resolve each symbol and run impact analysis ────────────────────
+    resolved_symbols: list[dict[str, Any]] = []
+    all_callers: list[dict[str, Any]] = []
+    all_affected_files: list[dict[str, Any]] = []
+    all_tests: list[dict[str, Any]] = []
+    seen_caller_ids: set[str] = set()
+    seen_file_paths: set[str] = set()
+    seen_test_ids: set[str] = set()
+
+    risk_levels: list[str] = []
+    confidences: list[float] = []
+
+    for sym_id in selected_symbols:
+        # Resolve symbol
+        node = store.get_node(sym_id)
+        if node is None:
+            resolved = _resolve_node(store, sym_id)
+            if resolved is not None:
+                node = resolved
+                sym_id = node.id
+
+        if node is None:
+            name = sym_id.split("::")[-1] if "::" in sym_id else sym_id
+            fp = sym_id.split("::")[0] if "::" in sym_id else ""
+            resolved_symbols.append({
+                "symbol": name,
+                "file": fp,
+                "reason": (
+                    "Selected from deepen stage "
+                    "(symbol not found in current index)."
+                ),
+            })
+            continue
+
+        resolved_symbols.append({
+            "symbol": node.name,
+            "file": node.file_path,
+            "reason": "Selected from deepen stage.",
+        })
+
+        # Run impact analysis via existing graph_impact.analyze_impact
+        impact_result = graph_impact.analyze_impact(store, node.id, depth=2)
+
+        risk = impact_result.get("risk", {})
+        risk_level = risk.get("level", "unknown")
+        risk_levels.append(risk_level)
+
+        # Collect affected callers from upstream_callers
+        for caller in impact_result.get("upstream_callers", []):
+            cid = caller.get("symbol_id", "")
+            if cid and cid not in seen_caller_ids:
+                if len(all_callers) >= _IMPACT_MAX_AFFECTED_CALLERS:
+                    break
+                seen_caller_ids.add(cid)
+                all_callers.append({
+                    "symbol": caller.get("name", cid),
+                    "file": caller.get("file_path", ""),
+                    "relation": "caller",
+                    "confidence": caller.get("confidence", 0),
+                    "reason": caller.get("reason", ""),
+                })
+
+        # Collect affected files from confirmed_impact
+        for f in impact_result.get("confirmed_impact", {}).get("files", []):
+            fp = f.get("file_path", "")
+            if fp and fp not in seen_file_paths:
+                if len(all_affected_files) >= _IMPACT_MAX_AFFECTED_FILES:
+                    break
+                seen_file_paths.add(fp)
+                all_affected_files.append({
+                    "file": fp,
+                    "reason": f.get("reason", ""),
+                    "priority": f.get("priority", "medium"),
+                })
+
+        # Also add possible_impact files if below cap
+        for f in impact_result.get("possible_impact", {}).get("files", []):
+            fp = f.get("file_path", "")
+            if fp and fp not in seen_file_paths:
+                if len(all_affected_files) >= _IMPACT_MAX_AFFECTED_FILES:
+                    break
+                seen_file_paths.add(fp)
+                all_affected_files.append({
+                    "file": fp,
+                    "reason": f.get("reason", "") + " (possible)",
+                    "priority": "low",
+                })
+
+        # Collect related tests
+        for test in impact_result.get("related_tests", []):
+            tid = test.get("symbol_id", test.get("name", ""))
+            if tid and tid not in seen_test_ids:
+                if len(all_tests) >= _IMPACT_MAX_AFFECTED_TESTS:
+                    break
+                seen_test_ids.add(tid)
+                all_tests.append({
+                    "symbol": test.get("name", tid),
+                    "file": test.get("file_path", ""),
+                    "confidence": test.get("confidence", 0),
+                    "reason": test.get("reason", ""),
+                    "type": test.get("type", "existing"),
+                })
+
+        # Compute per-symbol confidence from actual edge confidences
+        # rather than using a hardcoded constant.
+        edge_confs: list[float] = []
+        for caller in impact_result.get("upstream_callers", []):
+            conf = caller.get("confidence", 0)
+            if conf > 0:
+                edge_confs.append(conf)
+        for cc in impact_result.get("downstream_callees", []):
+            conf = cc.get("confidence", 0)
+            if conf > 0:
+                edge_confs.append(conf)
+        for test in impact_result.get("related_tests", []):
+            conf = test.get("confidence", 0)
+            if conf > 0:
+                edge_confs.append(conf)
+        if edge_confs:
+            symbol_confidence = round(
+                sum(edge_confs) / len(edge_confs), 4,
+            )
+        else:
+            # No edges found — lower default since analysis has less data
+            symbol_confidence = 0.7
+        confidences.append(symbol_confidence)
+
+    # ── Compute aggregate risk level ──────────────────────────────────
+    # Uses simple ranked rules: critical > high > medium > low > unknown
+    if not risk_levels:
+        overall_risk = "unknown"
+    elif "critical" in risk_levels:
+        overall_risk = "critical"
+    elif "high" in risk_levels:
+        overall_risk = "high"
+    elif "medium" in risk_levels:
+        overall_risk = "medium"
+    elif "low" in risk_levels:
+        overall_risk = "low"
+    else:
+        overall_risk = "unknown"
+
+    avg_confidence = round(sum(confidences) / len(confidences), 4) if confidences else 0.0
+
+    # ── Build impact summary text ─────────────────────────────────────
+    caller_count = len(all_callers)
+    file_count = len(all_affected_files)
+    test_count = len(all_tests)
+
+    summary_parts: list[str] = []
+    if caller_count > 0:
+        summary_parts.append(f"{caller_count} caller(s)")
+    if file_count > 0:
+        summary_parts.append(f"{file_count} affected file(s)")
+    if test_count > 0:
+        summary_parts.append(f"{test_count} related test(s)")
+
+    if summary_parts:
+        impact_summary_text = (
+            f"Changing the selected symbol(s) may affect "
+            f"{', '.join(summary_parts)}. "
+            f"Risk level: {overall_risk} (confidence: {avg_confidence})."
+        )
+    else:
+        impact_summary_text = (
+            f"No callers, files, or tests detected. "
+            f"Risk level: {overall_risk} — verify manually before editing."
+        )
+
+    # ── Recommended verification steps ────────────────────────────────
+    recommended_verification: list[dict[str, Any]] = []
+
+    # 1. If we have test files, recommend running/viewing them
+    for test in all_tests[:2]:
+        test_file = test.get("file", "")
+        test_name = test.get("symbol", "")
+        existing_targets = {rv.get("target") for rv in recommended_verification}
+        if test_file and test_file not in existing_targets:
+            if len(recommended_verification) < _IMPACT_MAX_VERIFICATION:
+                recommended_verification.append({
+                    "type": "test",
+                    "target": test_file,
+                    "reason": (
+                        f"Related test `{test_name}` "
+                        f"may cover the affected behavior."
+                    ),
+                })
+
+    # 2. If we have affected caller files, recommend reading them
+    for caller in all_callers[:3]:
+        caller_file = caller.get("file", "")
+        caller_name = caller.get("symbol", "")
+        existing_targets = {rv.get("target") for rv in recommended_verification}
+        if caller_file and caller_file not in existing_targets:
+            if len(recommended_verification) < _IMPACT_MAX_VERIFICATION:
+                recommended_verification.append({
+                    "type": "read",
+                    "target": caller_file,
+                    "reason": (
+                        f"Read affected caller `{caller_name}` "
+                        f"before editing shared code."
+                    ),
+                })
+
+    # ── Source snippets (0-3, very limited) ───────────────────────────
+    source_snippets = _build_impact_snippets(
+        store, resolved_symbols, all_callers, all_tests,
+        max_snippets=_IMPACT_MAX_SNIPPETS,
+        max_lines=_IMPACT_MAX_SNIPPET_LINES,
+    )
+
+    # ── Next recommended tools ────────────────────────────────────────
+    next_tools: list[dict[str, Any]] = []
+    if caller_count > 0 or file_count > 1:
+        next_tools.append({
+            "tool": "codegraph_get_neighbors",
+            "reason": (
+                "Inspect broader relationships only if the impact "
+                "result is insufficient before reading files."
+            ),
+        })
+
+    # ── Human-readable summary ────────────────────────────────────────
+    ep_count = len(resolved_symbols)
+    if ep_count == 0:
+        human_summary = (
+            "Impact analysis could not resolve any symbols from the token. "
+            "Run mode=scan and mode=deepen again."
+        )
+    else:
+        human_summary = (
+            f"Impact analysis completed for {ep_count} selected symbol(s). "
+            f"Risk: {overall_risk}. "
+            f"Use Read only for exact source text before editing."
+        )
+
+    return {
+        "ok": True,
+        "mode": "impact",
+        "task": task_description,
+        "selected_symbols": resolved_symbols,
+        "impact_summary": {
+            "risk_level": overall_risk,
+            "confidence": avg_confidence,
+            "summary": impact_summary_text,
+        },
+        "affected_callers": all_callers,
+        "affected_files": all_affected_files,
+        "affected_tests": all_tests,
+        "source_snippets": source_snippets,
+        "recommended_verification": recommended_verification,
+        "summary": human_summary,
+        "next_recommended_tools": next_tools,
+    }
+
+
 # ── Tool: build_context_pack ──────────────────────────────────────────────
 
 
@@ -4650,7 +5071,8 @@ def build_context_pack(
 
     Progressive context pack pipeline: scan → deepen → impact.
     Start with mode="scan" for lightweight entry point discovery, then
-    call mode="deepen" with the returned next_token, then get_impact.
+    call mode="deepen" with the returned next_token, then mode="impact"
+    for focused blast-radius analysis before editing.
 
     Args:
         task: Natural language description of what you need to do
@@ -4661,11 +5083,12 @@ def build_context_pack(
         include_code: Whether to include source code snippets (default true)
         mode: "full" (complete JSON), "summary" (key insights only),
               "markdown" (returns markdown file path), "scan" (lightweight
-              entry point discovery), or "deepen" (local relationships
-              and snippets around scan entry points) (default "summary")
+              entry point discovery), "deepen" (local relationships
+              and snippets around scan entry points), or "impact" (focused
+              blast-radius analysis around deepen symbols) (default "summary")
         response_mode: "compact" or "standard" (default)
-        next_token: Opaque token from a previous scan or deepen call
-                    (required for mode="deepen")
+        next_token: Opaque token from a previous scan, deepen, or impact call
+                    (required for mode="deepen" and mode="impact")
     """
     from codegraph.context.pack_builder import build_context_pack as _build
 
@@ -4749,6 +5172,81 @@ def build_context_pack(
             warnings=deepen_warnings,
             response_mode=response_mode,
             item_count=len(deepen_result.get("selected_entry_points", [])),
+            truncated=False,
+        )
+
+    # ── Impact mode: focused blast-radius analysis around deepen symbols ──
+    if mode == "impact":
+        if not next_token:
+            return _respond_error(
+                code=ERROR_CODES["INVALID_ARGUMENT"],
+                message=(
+                    "mode=impact requires a next_token from a previous "
+                    "mode=deepen (or mode=scan) call. "
+                    "Run mode=scan first to discover entry points, then "
+                    "mode=deepen to inspect local relationships, then "
+                    "mode=impact with the returned next_token."
+                ),
+                tool="codegraph_build_context_pack",
+            )
+
+        token_payload = _decode_context_pack_token(next_token)
+        if token_payload is None:
+            return _respond_error(
+                code="INVALID_CONTEXT_PACK_TOKEN",
+                message=(
+                    "The provided next_token is invalid or expired. "
+                    "Run mode=scan then mode=deepen again to get a fresh token."
+                ),
+                tool="codegraph_build_context_pack",
+            )
+
+        # Compat: if token came from scan (not deepen), degrade gracefully
+        token_stage = token_payload.get("stage", "")
+        if token_stage not in ("deepen", "scan"):
+            impact_warn = _collect_warnings()
+            impact_warn.append({
+                "type": "unexpected_token_stage",
+                "severity": "info",
+                "message": (
+                    f"Token stage is '{token_stage}' (expected 'deepen'). "
+                    "Impact analysis will proceed but may have less context "
+                    "than ideal. For best results, run scan → deepen → impact."
+                ),
+                "reason_code": "unexpected_token_stage",
+            })
+        elif token_stage == "scan":
+            impact_warn = _collect_warnings()
+            impact_warn.append({
+                "type": "scan_token_degraded",
+                "severity": "info",
+                "message": (
+                    "Token came from scan stage (not deepen). "
+                    "Impact analysis will proceed with the scan symbols. "
+                    "For richer context, run mode=deepen before mode=impact."
+                ),
+                "reason_code": "scan_token_degraded",
+            })
+        else:
+            impact_warn = _collect_warnings()
+
+        try:
+            store, cg_dir = _load_store()
+        except RuntimeError as e:
+            return _respond_error(
+                code=ERROR_CODES["INDEX_MISSING"],
+                message=str(e),
+                tool="codegraph_build_context_pack",
+            )
+
+        impact_result = _build_impact_result(store, task, token_payload)
+
+        return _respond_ok(
+            data=impact_result,
+            tool="codegraph_build_context_pack",
+            warnings=impact_warn,
+            response_mode=response_mode,
+            item_count=len(impact_result.get("selected_symbols", [])),
             truncated=False,
         )
 

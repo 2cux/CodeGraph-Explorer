@@ -154,7 +154,9 @@ Supports a progressive pipeline via the `mode` parameter:
 
 ## Progressive Context Pack
 
-`codegraph_build_context_pack` supports a lightweight scan mode for broad tasks where you want entry points first, before committing to a full context pack.
+`codegraph_build_context_pack` supports a progressive 3-stage pipeline: **scan → deepen → impact**. This lets agents start light with entry point discovery, progressively deepen local context, and finally check blast radius before editing — all without loading a full context pack up front.
+
+Use scan mode when the task is broad and you want entry points first:
 
 Use scan mode when the task is broad and you want entry points first:
 
@@ -196,6 +198,34 @@ Deepen mode returns:
 It does NOT return full impact analysis, full subgraph, or complete source files. The output is more focused than `mode=full` but richer than `mode=scan`.
 
 `mode=full` and `mode=summary` remain available for backward compatibility.
+
+### Impact mode
+
+After scan and deepen, use impact mode to check what may be affected before editing.
+
+```text
+codegraph_build_context_pack(
+  task="fix MemoryService bug",
+  mode="impact",
+  next_token="..."
+)
+```
+
+Impact mode returns:
+
+- **`selected_symbols`**: Symbols carried forward from the deepen stage, with file and reason
+- **`impact_summary`**: Aggregate risk assessment with `risk_level` (low/medium/high/critical/unknown), `confidence`, and a human-readable `summary`
+- **`affected_callers`**: Upstream callers that would be affected by modifying the selected symbols (capped at 10)
+- **`affected_files`**: Files that would be affected, with reason and priority (capped at 10)
+- **`affected_tests`**: Related tests that may cover the affected behavior (capped at 5)
+- **`source_snippets`** (0–3): Limited source snippets for selected symbols and highest-confidence affected callers/tests — each snippet includes symbol, file, line_start, line_end, reason, and snippet text
+- **`recommended_verification`** (0–5): Suggested verification steps — either `type=test` (run existing tests) or `type=read` (read affected caller files). Never invents non-existent test files
+- **`summary`**: Short human-readable summary
+- **`next_recommended_tools`**: Recommends `get_neighbors` only if the impact picture is still insufficient — does NOT create scan/deepen/impact cycles
+
+Impact mode reuses the existing `codegraph_get_impact` analysis under the hood, wrapping its results into the progressive context pack pipeline. It does NOT return full repository subgraph, unlimited call chains, or complete file source code.
+
+The `next_token` must come from a `mode=deepen` call. If a `mode=scan` token is passed, impact mode degrades gracefully with a warning — it will still run the analysis but with less context than ideal.
 
 ## Recommended Agent Workflow
 
