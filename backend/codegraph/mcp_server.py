@@ -59,6 +59,8 @@ ZERO_TELEMETRY_STATEMENT = (
 from codegraph.graph import impact as graph_impact
 from codegraph.graph import query as graph_query
 from codegraph.graph.confidence import get_confidence_level, is_low_confidence
+from codegraph.graph.coverage_gaps import compute_coverage_gaps
+from codegraph.graph import explain as graph_explain
 from codegraph.graph.test_coverage import compute_test_coverage_signal
 from codegraph.graph.impact import classify_edge_resolution
 from codegraph.graph.models import CodeGraph, EdgeType, GraphEdge, GraphNode, NodeType, Resolution
@@ -162,6 +164,16 @@ def _generate_session_hint(total_calls: int, tool_name: str) -> str:
         return (
             "Use Read next only for exact source text in the "
             "highest-impact files or symbols."
+        )
+    if tool_name == "codegraph_pre_edit_check":
+        return (
+            "Inspect the highest-risk planned symbol (get_neighbors) or "
+            "run focused impact (get_impact) before editing."
+        )
+    if tool_name == "codegraph_explain":
+        return (
+            "Inspect neighbors or check impact around the explained "
+            "symbol before reading source files."
         )
 
     # Count-based hints
@@ -583,6 +595,26 @@ def _build_global_next_tools(
         # for exact source text in the impacted files.
         pass
 
+    elif tool_name == "codegraph_pre_edit_check":
+        # After pre-edit check, guide the agent to deeper inspection
+        risk_level = data.get("impact_summary", {}).get("risk_level", "unknown")
+        has_callers = len(data.get("affected_callers", [])) > 0
+        if risk_level in ("high", "medium") and has_callers:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": (
+                    "Inspect local relationships around the highest-risk "
+                    "planned symbol before editing."
+                ),
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": (
+                    "Run focused impact analysis on a specific planned symbol "
+                    "if more detail is needed."
+                ),
+            })
+
     elif tool_name == "codegraph_repo_status":
         action = data.get("recommended_action", "")
         if action == "use_codegraph":
@@ -612,6 +644,53 @@ def _build_global_next_tools(
                 "dependencies, and tests for your task."
             ),
         })
+
+    elif tool_name == "codegraph_coverage_gaps":
+        none_count = data.get("summary", {}).get("symbols_without_test_signal", 0)
+        if none_count > 0:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": (
+                    f"{none_count} symbols lack test coverage — inspect "
+                    "tested_by relationships around a specific uncovered "
+                    "symbol before reading test files."
+                ),
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": (
+                    "Check impact before adding or changing tests around "
+                    "shared production code."
+                ),
+            })
+
+    elif tool_name == "codegraph_explain":
+        kind = data.get("target", {}).get("kind", "")
+        if kind == "symbol":
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": (
+                    "Inspect callers, callees, imports, and tests around "
+                    "the explained symbol before reading implementation files."
+                ),
+            })
+        elif kind == "file":
+            recommendations.append({
+                "tool": "codegraph_search_symbols",
+                "reason": (
+                    "Search for specific symbols in the explained file "
+                    "to inspect their relationships."
+                ),
+            })
+        test_status = data.get("test_signal", {}).get("status", "")
+        if test_status in ("none", "low_confidence", "unknown"):
+            recommendations.append({
+                "tool": "codegraph_coverage_gaps",
+                "reason": (
+                    "The explained target lacks clear test coverage — "
+                    "check for coverage gaps before modifying."
+                ),
+            })
 
     return recommendations[:3]
 
@@ -687,6 +766,30 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "affected_callers", "affected_tests",
     "recommended_verification", "impact_summary",
     "risk_level", "target",  # recommended_verification fields
+    # Coverage gaps
+    "production_symbols_checked", "symbols_with_high_confidence_tests",
+    "symbols_with_low_confidence_tests", "symbols_with_unknown_confidence_tests",
+    "symbols_without_test_signal", "production_files_checked",
+    "files_without_test_signal",
+    "symbols_without_tests", "files_without_tests", "low_confidence_links",
+    "production_symbols", "symbols_with_high_confidence_test",
+    "symbols_with_low_confidence_test", "symbols_with_unknown_confidence_test",
+    "suggested_next_tool",
+    "production_symbol", "production_symbol_id",
+    "test_symbol", "test_symbol_id",
+    # codegraph_pre_edit_check (Round 12)
+    "planned_files", "planned_symbols", "change_type", "description",
+    "recommended_checks", "impact_errors", "affected_files",
+    "indexed", "symbols_found",
+    # codegraph_explain (Round 11)
+    "explanation", "implementation_signals", "basis",
+    "top_callers", "top_callees", "primary_symbols",
+    "likely_role", "likely_role_confidence", "primary_count",
+    "uses_json", "uses_database",
+    "uses_io", "uses_network", "has_error_handling",
+    "is_framework_entry", "is_test_code", "uses_async",
+    "tested_by_count", "kind", "symbol_count",
+    "snippet", "truncated",
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -2689,10 +2792,11 @@ def codegraph_find(
         response_mode: "compact" (default) or "standard"
     """
     # ── Validate mode ─────────────────────────────────────────────────────
-    if mode is not None and mode not in VALID_MODES:
+    _find_valid_modes = {"quick", "review"}
+    if mode is not None and mode not in _find_valid_modes:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
-            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}",
+            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(_find_valid_modes))}",
             tool="codegraph_find",
         )
     if response_mode not in VALID_RESPONSE_MODES:
@@ -2786,15 +2890,17 @@ def codegraph_find(
                 }
             else:
                 entry["details"] = None
+        else:
+            entry["details"] = None
 
-        # Optionally include source snippets
+        # Optionally include source snippets (max 40 lines default)
         if include_snippets and item.get("file_path") and item.get("line_start"):
             snippet = _read_source_snippet(
                 item["file_path"],
                 item["line_start"],
                 item.get("line_end", item["line_start"]),
                 source_mode="body",
-                max_source_lines=20,
+                max_source_lines=40,
             )
             if snippet.get("included"):
                 entry["snippet"] = {
@@ -2802,9 +2908,8 @@ def codegraph_find(
                     "snippet": snippet["content"],
                     "line_start": item["line_start"],
                     "line_end": item.get("line_end", item["line_start"]),
+                    "truncated": snippet.get("truncated", False),
                 }
-                if snippet.get("truncated"):
-                    entry["snippet"]["omitted_note"] = "Snippet truncated."
             else:
                 entry["snippet"] = None
         else:
@@ -4066,6 +4171,430 @@ def get_impact(
     )
 
 
+
+# ── Tool: pre_edit_check ──────────────────────────────────────────────────
+# This file is inserted into mcp_server.py by a build/merge step.
+# DO NOT import this file directly — it lives inside mcp_server.py.
+
+
+VALID_CHANGE_TYPES = {"refactor", "bugfix", "feature", "test", "cleanup", "unknown"}
+
+
+@mcp.tool(name="codegraph_pre_edit_check")
+def pre_edit_check(
+    files: str | None = None,
+    symbols: str | None = None,
+    change_type: str = "unknown",
+    description: str | None = None,
+    include_tests: bool = True,
+    limit: int = 50,
+    response_mode: str = "compact",
+) -> dict[str, Any]:
+    """Check impact before editing planned files or symbols.
+
+    Use this when you know which files you plan to modify but do not yet
+    know all affected symbols. It is the task-level entry point for impact
+    analysis — you don't need to first map files to symbols manually.
+
+    Use codegraph_pre_edit_check when you know the files you plan to edit.
+    Use codegraph_get_impact when you already know the exact symbol to analyze.
+
+    Args:
+        files: Comma-separated file paths you plan to edit (e.g. "src/server.ts,src/toolSchemas.ts")
+        symbols: Comma-separated symbol names you plan to modify (e.g. "startServer,applyMiddleware")
+        change_type: Type of change — "refactor", "bugfix", "feature", "test", "cleanup", or "unknown"
+        description: Optional short description of the planned change (not parsed by LLM)
+        include_tests: Whether to include affected tests in the response (default true)
+        limit: Maximum results per category (default 50)
+        response_mode: "compact" (default) or "standard"
+    """
+    # ── Validate arguments ──────────────────────────────────────────────────
+    if response_mode not in VALID_RESPONSE_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid response_mode '{response_mode}'. Valid: {', '.join(sorted(VALID_RESPONSE_MODES))}",
+            tool="codegraph_pre_edit_check",
+        )
+
+    if change_type not in VALID_CHANGE_TYPES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid change_type '{change_type}'. Valid: {', '.join(sorted(VALID_CHANGE_TYPES))}",
+            tool="codegraph_pre_edit_check",
+        )
+
+    # Parse comma-separated inputs
+    planned_file_list: list[str] = []
+    if files:
+        planned_file_list = [f.strip() for f in files.split(",") if f.strip()]
+
+    planned_symbol_names: list[str] = []
+    if symbols:
+        planned_symbol_names = [s.strip() for s in symbols.split(",") if s.strip()]
+
+    if not planned_file_list and not planned_symbol_names:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message="At least one of 'files' or 'symbols' must be provided.",
+            tool="codegraph_pre_edit_check",
+        )
+
+    effective_limit = max(1, min(limit, 200))
+
+    # ── Load store ──────────────────────────────────────────────────────────
+    try:
+        store, cg_dir = _load_store()
+    except RuntimeError as e:
+        return _respond_error(
+            code=ERROR_CODES["INDEX_MISSING"],
+            message=str(e),
+            tool="codegraph_pre_edit_check",
+        )
+
+    # ── Pre-build warning and index structures ──────────────────────────────
+    warnings_list: list[dict[str, Any]] = []
+    idx = _build_index_status()
+
+    # ── Build planned_files ─────────────────────────────────────────────────
+    planned_files_out: list[dict[str, Any]] = []
+    all_indexed_nodes = list(store.all_nodes())
+    node_by_file: dict[str, list[GraphNode]] = {}
+    for n in all_indexed_nodes:
+        fp = n.file_path
+        if fp:
+            node_by_file.setdefault(fp, []).append(n)
+
+    for f in planned_file_list:
+        normalized = f.replace("\\", "/")
+        matching_nodes: list[GraphNode] = []
+
+        if normalized in node_by_file:
+            matching_nodes = node_by_file[normalized]
+        else:
+            # Try suffix match (relative path match)
+            for indexed_fp in node_by_file:
+                if indexed_fp.endswith(normalized) or indexed_fp.endswith("/" + normalized):
+                    matching_nodes.extend(node_by_file[indexed_fp])
+
+        if not matching_nodes:
+            planned_files_out.append({
+                "file": f,
+                "indexed": False,
+                "symbols_found": 0,
+            })
+            warnings_list.append(build_warning(
+                "file_not_indexed",
+                message=f"File '{f}' is not indexed. Impact analysis may miss this file.",
+                reason_code="file_not_indexed",
+            ))
+        else:
+            # Deduplicate by file_path
+            unique_files = list({n.file_path for n in matching_nodes if n.file_path})
+            for uf in unique_files:
+                file_nodes = [n for n in matching_nodes if n.file_path == uf]
+                planned_files_out.append({
+                    "file": uf,
+                    "indexed": True,
+                    "symbols_found": len(file_nodes),
+                })
+
+    # ── Resolve planned_symbols ─────────────────────────────────────────────
+    planned_symbols_out: list[dict[str, Any]] = []
+    seen_symbol_ids: set[str] = set()
+
+    # From explicit symbol names
+    for sym_name in planned_symbol_names:
+        resolved = _resolve_node_detailed(store, sym_name)
+        if resolved is None or resolved["node"] is None:
+            warnings_list.append(build_warning(
+                "symbol_not_found",
+                message=f"Symbol '{sym_name}' not found in index.",
+                reason_code="symbol_not_found",
+            ))
+            continue
+        node = resolved["node"]
+        if node.id in seen_symbol_ids:
+            continue
+        seen_symbol_ids.add(node.id)
+        # Skip test symbols as primary impact starting points unless user
+        # only passed test files
+        if node.type == NodeType.test and planned_file_list:
+            continue
+        planned_symbols_out.append({
+            "symbol": node.name,
+            "symbol_id": node.id,
+            "type": node.type.value if isinstance(node.type, NodeType) else str(node.type),
+            "file": node.file_path,
+            "line_start": node.location.line_start if node.location else None,
+            "line_end": node.location.line_end if node.location else None,
+            "reason": "Symbol explicitly listed in planned symbols.",
+        })
+
+    # From planned files: collect all non-test symbols from indexed files
+    for pf in planned_files_out:
+        if not pf.get("indexed"):
+            continue
+        file_path = pf["file"]
+        for n in all_indexed_nodes:
+            if n.file_path != file_path:
+                continue
+            if n.id in seen_symbol_ids:
+                continue
+            if n.type == NodeType.test:
+                continue
+            seen_symbol_ids.add(n.id)
+            planned_symbols_out.append({
+                "symbol": n.name,
+                "symbol_id": n.id,
+                "type": n.type.value if isinstance(n.type, NodeType) else str(n.type),
+                "file": n.file_path,
+                "line_start": n.location.line_start if n.location else None,
+                "line_end": n.location.line_end if n.location else None,
+                "reason": "Symbol is defined in a planned edit file.",
+            })
+
+    # ── Run impact analysis for each planned symbol ─────────────────────────
+    all_callers: list[dict[str, Any]] = []
+    all_affected_files: dict[str, dict[str, Any]] = {}
+    all_affected_tests: list[dict[str, Any]] = []
+    caller_ids: set[str] = set()
+    test_ids: set[str] = set()
+    risk_levels: list[str] = []
+    impact_errors: list[dict[str, Any]] = []
+
+    for ps in planned_symbols_out:
+        sym_id = ps["symbol_id"]
+        try:
+            impact_result = graph_impact.analyze_impact(
+                store, sym_id, depth=2, min_confidence=0.6,
+            )
+        except Exception as exc:
+            impact_errors.append({
+                "symbol_id": sym_id,
+                "error": str(exc),
+            })
+            warnings_list.append(build_warning(
+                "impact_error",
+                message=f"Impact analysis failed for '{sym_id}': {exc}",
+                reason_code="impact_error",
+            ))
+            continue
+
+        # Collect risk level
+        risk_data = impact_result.get("risk", {})
+        rl = risk_data.get("level", "unknown")
+        risk_levels.append(rl)
+
+        # Collect callers from confirmed impact
+        confirmed = impact_result.get("confirmed_impact", {})
+        for s in confirmed.get("symbols", []):
+            if s.get("impact_type") == "upstream_caller":
+                sid = s.get("symbol_id", "")
+                if sid and sid not in caller_ids:
+                    caller_ids.add(sid)
+                    all_callers.append({
+                        "symbol_id": sid,
+                        "name": s.get("name", ""),
+                        "type": s.get("type", "unknown"),
+                        "file_path": s.get("file_path", ""),
+                        "distance": s.get("distance", 0),
+                        "confidence": s.get("confidence", 1.0),
+                        "confidence_level": s.get("confidence_level", "unknown"),
+                    })
+
+        # Collect affected files
+        for f in confirmed.get("files", []):
+            fp = f.get("file_path", "")
+            if fp and fp not in all_affected_files:
+                all_affected_files[fp] = {
+                    "file_path": fp,
+                    "layer": _assign_layer(fp),
+                    "priority": f.get("priority", "medium"),
+                }
+
+        # Collect tests
+        if include_tests:
+            for t in impact_result.get("related_tests", []):
+                tid = t.get("symbol_id", "")
+                if tid and tid not in test_ids:
+                    test_ids.add(tid)
+                    all_affected_tests.append({
+                        "symbol_id": tid,
+                        "name": t.get("name", ""),
+                        "file_path": t.get("file_path", ""),
+                        "confidence": t.get("confidence", 1.0),
+                        "confidence_level": t.get("confidence_level", "unknown"),
+                    })
+
+    # ── Compute aggregate risk_level ────────────────────────────────────────
+    idx_envelope = _build_index_status_envelope(idx)
+
+    if not risk_levels:
+        # No symbols were analyzed — unknown risk
+        agg_risk = "unknown"
+        risk_summary = "No symbols were found in the index for the planned files or symbols."
+        risk_confidence = "unknown"
+    else:
+        # Heuristic: pick the highest risk among all planned symbols
+        risk_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+        agg_risk = max(risk_levels, key=lambda r: risk_order.get(r, 0))
+
+        # Build summary
+        num_callers = len(all_callers)
+        num_files = len(all_affected_files)
+        num_tests = len(all_affected_tests)
+        num_planned = len(planned_symbols_out)
+
+        parts: list[str] = []
+        if num_planned > 0:
+            parts.append(f"Editing {num_planned} symbol(s)")
+        if num_callers > 0:
+            parts.append(f"may affect {num_callers} caller(s)")
+        if num_files > 0:
+            parts.append(f"{num_files} file(s)")
+        if num_tests > 0:
+            parts.append(f"and {num_tests} test(s)")
+        if parts:
+            risk_summary = ", ".join(parts) + "."
+        else:
+            risk_summary = "No callers, files, or tests detected for the planned symbols."
+
+        # Confidence heuristic
+        if num_callers > 0 or num_files > 0:
+            risk_confidence = "medium"
+        else:
+            risk_confidence = "low"
+
+        # Downgrade confidence if there were impact errors or index is stale
+        if impact_errors:
+            risk_confidence = "low"
+        if idx_envelope.get("freshness") == "stale":
+            risk_confidence = "low"
+
+    # Override: if no planned symbols at all, risk is unknown
+    if not planned_symbols_out:
+        agg_risk = "unknown"
+        risk_summary = "No symbols could be resolved from the planned files or symbols. Impact cannot be assessed."
+        risk_confidence = "unknown"
+
+    # ── Build recommended_checks ─────────────────────────────────────────────
+    recommended_checks: list[dict[str, Any]] = []
+
+    # 1. Read the planned files
+    for pf in planned_files_out[:2]:
+        if pf.get("indexed"):
+            recommended_checks.append({
+                "type": "read",
+                "target": pf["file"],
+                "reason": "Read exact source before editing the planned file.",
+            })
+
+    # 2. Suggest running tests for affected test files
+    affected_test_files: set[str] = set()
+    for t in all_affected_tests[:5]:
+        tf = t.get("file_path", "")
+        if tf and tf not in affected_test_files:
+            affected_test_files.add(tf)
+            recommended_checks.append({
+                "type": "test",
+                "target": tf,
+                "reason": "Likely covers affected behavior of planned changes.",
+            })
+
+    # Cap at 5
+    recommended_checks = recommended_checks[:5]
+
+    # ── Build next_recommended_tools ─────────────────────────────────────────
+    next_tools: list[dict[str, Any]] = []
+    if planned_symbols_out:
+        next_tools.append({
+            "tool": "codegraph_get_neighbors",
+            "reason": (
+                "Inspect local relationships around the highest-risk "
+                "planned symbol before editing."
+            ),
+        })
+        next_tools.append({
+            "tool": "codegraph_get_impact",
+            "reason": (
+                "Run focused impact analysis on a specific planned symbol "
+                "if more detail is needed."
+            ),
+        })
+
+    # ── Build response data ─────────────────────────────────────────────────
+    if response_mode == "compact":
+        data: dict[str, Any] = {
+            "change_type": change_type,
+            "description": description or "",
+            "planned_files": planned_files_out,
+            "planned_symbols": planned_symbols_out[:effective_limit],
+            "impact_summary": {
+                "risk_level": agg_risk,
+                "confidence": risk_confidence,
+                "summary": (
+                    f"[pre-edit heuristic] {risk_summary}"
+                ),
+            },
+            "affected_callers": all_callers[:effective_limit],
+            "affected_files": sorted(
+                all_affected_files.values(),
+                key=lambda x: (0 if x.get("priority") == "high" else 1, x["file_path"]),
+            )[:effective_limit],
+            "affected_tests": all_affected_tests[:effective_limit] if include_tests else [],
+            "recommended_checks": recommended_checks,
+        }
+    else:  # standard
+        data = {
+            "change_type": change_type,
+            "description": description or "",
+            "planned_files": planned_files_out,
+            "planned_symbols": planned_symbols_out[:effective_limit],
+            "impact_summary": {
+                "risk_level": agg_risk,
+                "confidence": risk_confidence,
+                "summary": (
+                    f"[pre-edit heuristic] {risk_summary}"
+                ),
+            },
+            "affected_callers": all_callers[:effective_limit],
+            "affected_files": sorted(
+                all_affected_files.values(),
+                key=lambda x: (0 if x.get("priority") == "high" else 1, x["file_path"]),
+            )[:effective_limit],
+            "affected_tests": all_affected_tests[:effective_limit] if include_tests else [],
+            "recommended_checks": recommended_checks,
+            "impact_errors": impact_errors if impact_errors else [],
+        }
+
+    # Merge with global warnings (stale index, health, etc.)
+    global_warnings = _collect_warnings()
+    for w in global_warnings:
+        if not any(
+            existing.get("type") == w.get("type") and existing.get("message") == w.get("message")
+            for existing in warnings_list
+        ):
+            warnings_list.append(w)
+
+    result = _respond_ok(
+        data=data,
+        tool="codegraph_pre_edit_check",
+        warnings=warnings_list,
+        response_mode=response_mode,
+        item_count=len(planned_symbols_out) + len(all_callers) + len(all_affected_files),
+    )
+
+    # Inject next_recommended_tools into data
+    if isinstance(result.get("data"), dict):
+        existing = result["data"].get("next_recommended_tools", [])
+        if isinstance(existing, list):
+            merged = _merge_next_tools(existing, next_tools)
+            result["data"]["next_recommended_tools"] = merged
+        else:
+            result["data"]["next_recommended_tools"] = next_tools
+
+    return result
+
 # ── Context Pack helpers: source_snippets + next_recommended_tools ─────────
 
 
@@ -5291,6 +5820,159 @@ def _build_impact_result(
     }
 
 
+# ── Tool: codegraph_explain ──────────────────────────────────────────────
+
+
+@mcp.tool(name="codegraph_explain")
+def codegraph_explain(
+    symbol: str | None = None,
+    file: str | None = None,
+    include_snippet: bool = True,
+    include_tests: bool = True,
+    include_relationships: bool = True,
+    max_snippet_lines: int = 40,
+    response_mode: str = "compact",
+) -> dict[str, Any]:
+    """Return a structured, evidence-backed explanation of a symbol or file.
+
+    Uses deterministic heuristics over indexed metadata, relationships,
+    docstrings, and limited source snippets. No LLM, no embeddings.
+
+    Use codegraph_explain when you want to understand what a symbol does
+    before reading its source code, or when you need an overview of a file's
+    role, dependencies, and implementation signals.
+
+    Args:
+        symbol: Symbol name or ID to explain (e.g. "ReceiptService.rowToRecord")
+        file: File path relative to project root (e.g. "src/receiptService.ts")
+        include_snippet: Include source code snippet (default true)
+        include_tests: Include test coverage signal (default true)
+        include_relationships: Include top callers/callees (default true)
+        max_snippet_lines: Maximum snippet lines (default 40, max 80)
+        response_mode: "compact" (default) or "standard"
+    """
+    symbol_str = (symbol or "").strip()
+    file_str = (file or "").strip()
+    if not symbol_str and not file_str:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message="At least one of 'symbol' or 'file' must be provided.",
+            tool="codegraph_explain",
+        )
+
+    effective_max_lines = max(1, min(max_snippet_lines, 80))
+
+    if response_mode not in VALID_RESPONSE_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid response_mode '{response_mode}'. Valid: {', '.join(sorted(VALID_RESPONSE_MODES))}",
+            tool="codegraph_explain",
+        )
+
+    try:
+        store, cg_dir = _load_store()
+    except RuntimeError as e:
+        return _respond_error(
+            code=ERROR_CODES["INDEX_MISSING"],
+            message=str(e),
+            tool="codegraph_explain",
+        )
+
+    fuzzy_warning: str | None = None
+    project_root = str(cg_dir.parent) if cg_dir else None
+
+    if symbol_str:
+        path_hint: str | None = file_str if file_str else None
+        resolved = _resolve_input_symbol(
+            store,
+            symbol_id=None,
+            symbol=symbol_str,
+            resolve=True,
+            expected_type=None,
+            path_hint=path_hint,
+        )
+        if resolved is None:
+            return _respond_error(
+                code=ERROR_CODES["SYMBOL_NOT_FOUND"],
+                message=f"No symbol found matching '{symbol_str}'",
+                tool="codegraph_explain",
+                details=_get_project_info(),
+            )
+
+        if resolved.get("match_reason") == "ambiguous":
+            candidates_out = resolved["candidates"]
+            if response_mode == "compact":
+                candidates_out = [
+                    {
+                        "symbol_id": c["symbol_id"],
+                        "name": c["name"],
+                        "type": c["type"],
+                        "file_path": c["file_path"],
+                        "reason_code": "partial_id_match",
+                    }
+                    for c in candidates_out
+                ]
+            return _respond_error(
+                code=ERROR_CODES["AMBIGUOUS_SYMBOL"],
+                message=f"Multiple symbols match '{symbol_str}'. Provide a more specific symbol name or path_hint.",
+                tool="codegraph_explain",
+                details={"candidates": candidates_out},
+            )
+
+        node = resolved["node"]
+
+        if not resolved.get("exact_match"):
+            fuzzy_warning = (
+                f"No exact match for '{symbol_str}'. "
+                f"Using closest match: {node.name} ({node.id})."
+            )
+
+        source: dict[str, Any] = {"included": False, "content": None, "truncated": False}
+        if include_snippet and node.location and node.file_path:
+            source = _read_source_snippet(
+                node.file_path,
+                node.location.line_start,
+                node.location.line_end,
+                source_mode="body",
+                max_source_lines=effective_max_lines,
+            )
+
+        data = graph_explain.explain_symbol(
+            store,
+            node,
+            include_snippet=include_snippet,
+            include_tests=include_tests,
+            include_relationships=include_relationships,
+            max_snippet_lines=effective_max_lines,
+            project_root=project_root,
+            source_snippet=source,
+        )
+
+    else:
+        normalized = file_str.replace("\\", "/")
+        data = graph_explain.explain_file(
+            store,
+            normalized,
+            include_tests=include_tests,
+            project_root=project_root,
+        )
+
+        if data.get("symbol_count", 0) == 0:
+            return _respond_error(
+                code=ERROR_CODES["SYMBOL_NOT_FOUND"],
+                message=f"No indexed symbols found for file '{file_str}'.",
+                tool="codegraph_explain",
+                details=_get_project_info(),
+            )
+
+    return _respond_ok(
+        data=data,
+        tool="codegraph_explain",
+        warnings=_collect_warnings(fuzzy_warning),
+        response_mode=response_mode,
+    )
+
+
 # ── Tool: build_context_pack ──────────────────────────────────────────────
 
 
@@ -5980,6 +6662,9 @@ def repo_summary(
     test_coverage_signal = compute_test_coverage_signal(
         nodes, edges, project_root,
     )
+    # Add recommended_tool pointing to the gaps tool
+    if "recommended_tool" not in test_coverage_signal:
+        test_coverage_signal["recommended_tool"] = "codegraph_coverage_gaps"
     # Backward-compatible aliases
     test_files = test_coverage_signal["test_files"]
     tested_symbols = test_coverage_signal["tested_symbols"]
@@ -6168,6 +6853,83 @@ def repo_summary(
         data=data,
         tool="codegraph_repo_summary",
         warnings=_collect_warnings(),
+    )
+
+
+# ── Tool: coverage_gaps ────────────────────────────────────────────────────
+
+
+@mcp.tool(name="codegraph_coverage_gaps")
+def coverage_gaps(
+    scope: str = "production",
+    paths: str | None = None,
+    types: str | None = None,
+    include_low_confidence: bool = True,
+    limit: int = 50,
+    response_mode: str = "compact",
+) -> dict[str, Any]:
+    """Ask: "Which production symbols lack test coverage?" → returns structured gaps.
+    Lists production symbols and files without confident tested_by coverage signals.
+    Use for test audit: which modules appear untested, which symbols have only
+    low-confidence test links, and which files to inspect before writing tests.
+    This is a heuristic graph signal, not runtime line coverage.
+
+    Args:
+        scope: Always "production" — only production symbols are checked.
+        paths: Optional comma-separated path glob patterns to restrict scope,
+               e.g. "src/**,backend/**"
+        types: Optional comma-separated node types, e.g. "function,method,class"
+               (default: function, method, class, route, controller, service, component, module)
+        include_low_confidence: If true, include low_confidence_links (default true)
+        limit: Maximum symbols_without_tests entries (default 50, max 100)
+        response_mode: "compact" (default) or "standard"
+    """
+    if response_mode not in VALID_RESPONSE_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid response_mode '{response_mode}'. Valid: {', '.join(sorted(VALID_RESPONSE_MODES))}",
+            tool="codegraph_coverage_gaps",
+        )
+
+    effective_limit = max(1, min(limit, 100))
+
+    # Parse optional filters
+    path_list: list[str] | None = None
+    if paths:
+        path_list = [p.strip() for p in paths.split(",") if p.strip()]
+
+    type_list: list[str] | None = None
+    if types:
+        type_list = [t.strip() for t in types.split(",") if t.strip()]
+
+    try:
+        store, cg_dir = _load_store()
+    except RuntimeError as e:
+        return _respond_error(
+            code=ERROR_CODES["INDEX_MISSING"],
+            message=str(e),
+            tool="codegraph_coverage_gaps",
+        )
+
+    project_root = str(cg_dir.parent) if cg_dir else None
+
+    result = compute_coverage_gaps(
+        store,
+        project_root=project_root,
+        paths=path_list,
+        types=type_list,
+        include_low_confidence=include_low_confidence,
+        limit=effective_limit,
+    )
+
+    return _respond_ok(
+        data=result,
+        tool="codegraph_coverage_gaps",
+        warnings=_collect_warnings(),
+        response_mode=response_mode,
+        item_count=len(result.get("symbols_without_tests", [])),
+        truncated=len(result.get("symbols_without_tests", [])) >= effective_limit,
+        max_items=effective_limit,
     )
 
 

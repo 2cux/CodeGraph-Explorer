@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-CodeGraph Explorer exposes 10 MCP tools for AI coding agents to query the code graph.
+CodeGraph Explorer exposes 13 MCP tools for AI coding agents to query the code graph.
 
 ## Tool Overview
 
@@ -12,9 +12,12 @@ CodeGraph Explorer exposes 10 MCP tools for AI coding agents to query the code g
 | `codegraph_get_callers` | Query upstream callers of a symbol | `symbol_id`, `depth`, `include_tests`, `mode` |
 | `codegraph_get_callees` | Query downstream callees of a symbol | `symbol_id`, `depth`, `mode` |
 | `codegraph_get_neighbors` | Get local subgraph around a symbol | `symbol_id`, `depth`, `direction`, `edge_types`, `mode` |
-| `codegraph_get_impact` | Analyze modification impact | `symbol_id`, `depth`, `impact_mode`, `mode` |
+| `codegraph_get_impact` | Analyze modification impact for a specific symbol | `symbol_id`, `depth`, `impact_mode`, `mode` |
+| `codegraph_pre_edit_check` | Check impact before editing planned files/symbols (task-level entry point) | `files`, `symbols`, `change_type`, `include_tests`, `limit` |
+| `codegraph_explain` | Structured, evidence-backed explanation of a symbol or file | `symbol`, `file`, `include_snippet`, `include_tests`, `max_snippet_lines` |
 | `codegraph_repo_status` | Check index freshness | — |
 | `codegraph_repo_summary` | Repository graph statistics | — |
+| `codegraph_coverage_gaps` | List production symbols/files without test coverage | `paths`, `types`, `include_low_confidence`, `limit` |
 | `codegraph_build_context_pack` | Generate Evidence Pack snapshot | `task`, `max_tokens`, `depth`, `mode` |
 
 ## Response Modes
@@ -55,11 +58,16 @@ Examples:
 codegraph_find(query="login", types=["function"])
 codegraph_find(query="MemoryService", include_details=true)
 codegraph_find(query="api", types=["route"], paths=["src/**"])
+codegraph_find(query="ReceiptService", mode="review")
 ```
 
 `codegraph_find` fuses `codegraph_search_symbols` + `codegraph_get_symbol` into a single call.
 It returns top matches with optional details (signature, docstring, tags, framework) and
-optional source snippets.
+optional source snippets (capped at 40 lines per snippet, with a `truncated` boolean flag).
+
+`codegraph_find` is the preferred entry point for common find-and-inspect workflows.
+It is backend-only — it does not use LLMs, does not open a dashboard, and does not
+replace reading exact source when needed.
 
 Parameters:
 
@@ -83,7 +91,10 @@ Mode presets:
 
 Each result includes `symbol`, `type`, `file`, `line_start`, `line_end`, `score`, and `reason`.
 When `include_details=true`, each result also includes `details` (signature, doc, framework, tags).
-When `include_snippets=true` or `mode=review`, each result also includes a `snippet` block.
+When `include_details=false`, `details` is `null` in every result.
+When `include_snippets=true` or `mode=review`, each result also includes a `snippet` block
+with `file`, `snippet`, `line_start`, `line_end`, and `truncated` (boolean). Snippets are
+capped at 40 lines per result; the `truncated` flag indicates whether content was cut off.
 
 The response also includes:
 - `summary`: A human-readable summary of findings
@@ -181,6 +192,112 @@ Impact modes:
 - `"conservative"`: Direct relationships only
 - `"balanced"`: Depth=2, includes config/model dependencies via imports
 
+### pre_edit_check
+
+Use `codegraph_pre_edit_check` before editing files or symbols. It is the **task-level entry point** for impact analysis — you don't need to first map files to symbols manually.
+
+**When to use:**
+- Use `codegraph_pre_edit_check` when you know the files you plan to edit.
+- Use `codegraph_get_impact` when you already know the exact symbol to analyze.
+
+This is a backend MCP impact check. It does not edit files, run tests, install git hooks, or provide a dashboard.
+
+Examples:
+
+```text
+codegraph_pre_edit_check(files="src/server.ts", change_type="refactor")
+codegraph_pre_edit_check(symbols="startServer", change_type="cleanup")
+codegraph_pre_edit_check(files="src/server.ts,src/toolSchemas.ts", description="extract tool schemas from server")
+codegraph_pre_edit_check(symbols="login", include_tests=true, limit=50)
+```
+
+Parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `files` | string | `null` | Comma-separated file paths you plan to edit |
+| `symbols` | string | `null` | Comma-separated symbol names you plan to modify |
+| `change_type` | string | `"unknown"` | `"refactor"`, `"bugfix"`, `"feature"`, `"test"`, `"cleanup"`, or `"unknown"` |
+| `description` | string | `null` | Optional short description (not parsed by LLM) |
+| `include_tests` | bool | `true` | Whether to include affected tests |
+| `limit` | int | `50` | Maximum results per category (max 200) |
+| `response_mode` | string | `"compact"` | `"compact"` or `"standard"` |
+
+At least one of `files` or `symbols` must be provided.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "tool": "codegraph_pre_edit_check",
+  "data": {
+    "change_type": "refactor",
+    "description": "extract tool schemas from server",
+    "planned_files": [
+      {"file": "src/server.ts", "indexed": true, "symbols_found": 12},
+      {"file": "src/toolSchemas.ts", "indexed": true, "symbols_found": 5}
+    ],
+    "planned_symbols": [
+      {
+        "symbol": "startServer",
+        "symbol_id": "src/server.ts::startServer",
+        "type": "function",
+        "file": "src/server.ts",
+        "line_start": 20,
+        "line_end": 180,
+        "reason": "Symbol is defined in a planned edit file."
+      }
+    ],
+    "impact_summary": {
+      "risk_level": "medium",
+      "confidence": "medium",
+      "summary": "[pre-edit heuristic] Editing 3 symbol(s), may affect 2 caller(s), 4 file(s) and 1 test(s)."
+    },
+    "affected_callers": [...],
+    "affected_files": [...],
+    "affected_tests": [...],
+    "recommended_checks": [
+      {"type": "read", "target": "src/server.ts", "reason": "Read exact source before editing the planned file."},
+      {"type": "test", "target": "tests/server.test.ts", "reason": "Likely covers affected behavior of planned changes."}
+    ],
+    "next_recommended_tools": [
+      {"tool": "codegraph_get_neighbors", "reason": "Inspect local relationships around the highest-risk planned symbol before editing."},
+      {"tool": "codegraph_get_impact", "reason": "Run focused impact analysis on a specific planned symbol if more detail is needed."}
+    ]
+  },
+  "codegraph_session": {...},
+  "index_status": {...},
+  "index_health": {...}
+}
+```
+
+**Risk levels:**
+
+| Level | Meaning |
+|-------|---------|
+| `high` | Planned symbols have multiple callers, affected files/tests are numerous, or involve routes/public APIs/shared services |
+| `medium` | Some callers or affected tests exist, but scope is limited |
+| `low` | Only local symbols affected, no significant callers or tests |
+| `unknown` | Index is missing, files are unindexed, symbols cannot be resolved, or confidence is insufficient |
+
+**Note:** When no data is available, `risk_level` is `unknown` — never `low`.
+
+**recommended_checks types:**
+
+| Type | Meaning |
+|------|---------|
+| `read` | Read exact source before editing the file |
+| `test` | Run the referenced test file to verify behavior |
+| `impact` | Run deeper impact analysis |
+| `neighbors` | Inspect local relationships |
+
+Recommended checks are advisory only — the tool does not execute tests or modify files. Checks are capped at 5 entries and never reference non-existent test files.
+
+**Relationship to `codegraph_get_impact`:**
+
+`codegraph_pre_edit_check` is the task-level entry point — use it when you know the files you plan to edit but not all affected symbols. `codegraph_get_impact` is the symbol-level entry point — use it when you already know the exact symbol to analyze. Neither is deprecated; they serve different workflows.
+
 ### repo_status
 
 Check if the index is fresh, stale, missing, or has errors. Each MCP response also includes an `index_status` and `index_health` field so agents can detect stale data.
@@ -261,6 +378,117 @@ found even if they were never indexed or have no `tested_by` edges.
 A low-confidence or incomplete signal does **not** mean the repository has no
 tests. It means CodeGraph cannot confidently map tests to production symbols
 with the current index data.
+
+### codegraph_coverage_gaps
+
+`codegraph_coverage_gaps` lists production symbols and files without confident `tested_by` coverage signals.
+
+It is useful for test audit tasks such as:
+- Which production modules appear untested?
+- Which symbols only have low-confidence test links?
+- Which files should I inspect before writing missing tests?
+
+This is a heuristic graph signal, not runtime line coverage.
+Use it to decide what to inspect next.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `scope` | string | `"production"` | Always `"production"` — only production symbols are checked |
+| `paths` | string | `null` | Comma-separated path glob patterns, e.g. `"src/**,backend/**"` |
+| `types` | string | `null` | Comma-separated node types, e.g. `"function,method"` (default: function, method, class, route, controller, service, component, module) |
+| `include_low_confidence` | bool | `true` | Include `low_confidence_links` in the response |
+| `limit` | int | `50` | Maximum `symbols_without_tests` entries (max 100) |
+| `response_mode` | string | `"compact"` | `"compact"` or `"standard"` |
+
+**Examples:**
+
+```text
+codegraph_coverage_gaps()
+codegraph_coverage_gaps(paths="src/**", types="function,method")
+codegraph_coverage_gaps(include_low_confidence=true, limit=30)
+```
+
+**Response fields:**
+
+```json
+{
+  "summary": {
+    "production_symbols_checked": 128,
+    "symbols_with_high_confidence_tests": 42,
+    "symbols_with_low_confidence_tests": 18,
+    "symbols_with_unknown_confidence_tests": 3,
+    "symbols_without_test_signal": 65,
+    "production_files_checked": 31,
+    "files_without_test_signal": 12,
+    "confidence": "medium",
+    "message": "65 production symbols have no confident tested_by coverage signal. This is a CodeGraph heuristic signal, not line coverage."
+  },
+  "symbols_without_tests": [
+    {
+      "symbol": "ReceiptService.rowToRecord",
+      "type": "method",
+      "file": "src/receiptService.ts",
+      "line_start": 120,
+      "line_end": 168,
+      "reason": "No tested_by edge found for this production symbol.",
+      "suggested_next_tool": "codegraph_get_neighbors"
+    }
+  ],
+  "files_without_tests": [
+    {
+      "file": "src/receiptService.ts",
+      "production_symbols": 8,
+      "symbols_with_high_confidence_test": 0,
+      "symbols_with_low_confidence_test": 3,
+      "symbols_with_unknown_confidence_test": 0,
+      "symbols_without_test_signal": 5,
+      "reason": "5/8 production symbols have no tested_by signal."
+    }
+  ],
+  "low_confidence_links": [
+    {
+      "production_symbol": "TokenStats.getTokenStats",
+      "production_symbol_id": "src/TokenStats.ts::getTokenStats",
+      "test_symbol": "tokenStats.test",
+      "test_symbol_id": "tests/tokenStats.test.ts::tokenStats.test",
+      "confidence": 0.42,
+      "confidence_level": "low",
+      "reason": "Confidence below high-confidence threshold."
+    }
+  ],
+  "warnings": [
+    "Coverage gaps are based on CodeGraph tested_by edges, not runtime line coverage."
+  ],
+  "next_recommended_tools": [
+    {
+      "tool": "codegraph_get_neighbors",
+      "reason": "Inspect tested_by relationships around a specific uncovered symbol before reading test files."
+    },
+    {
+      "tool": "codegraph_get_impact",
+      "reason": "Check impact before adding or changing tests around shared production code."
+    }
+  ]
+}
+```
+
+**Confidence tiers for `summary.confidence`:**
+
+| Confidence | Meaning |
+|------------|---------|
+| `high` | Majority of production symbols have high-confidence tested_by coverage |
+| `medium` | Some high-confidence coverage exists, but many symbols have low-confidence or no links |
+| `low` | Tested_by edges are rare or mostly low-confidence |
+| `unknown` | Not enough index data to determine coverage status |
+
+**Coverage gap classification:**
+
+- **`symbols_without_tests`**: Production symbols with NO tested_by edge at all
+- **`symbols_with_low_confidence_tests`** (in summary): Production symbols with tested_by edges below 0.75 confidence
+- **`symbols_with_unknown_confidence_tests`** (in summary): Production symbols with tested_by edges where confidence is 0 or unset
+- **`low_confidence_links`**: Detailed list of tested_by edges with confidence < 0.75 (when `include_low_confidence=true`)
 
 ### build_context_pack
 
@@ -362,8 +590,9 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 5. **`codegraph_search_symbols`** — Lightweight symbol search when you only need a result list without details.
 6. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol (callers, callees, tests, models, config).
 7. **`codegraph_get_callers` / `codegraph_get_callees`** — Trace call chains instead of grep for call/reference lookup.
-8. **`codegraph_get_impact`** — Before modifying shared code, understand confirmed and possible impact, and what tests cover it.
-9. **`Read`** — Only when exact source text is needed.
+8. **`codegraph_pre_edit_check`** — Before editing files or symbols, check impact on callers, files, and tests in one call.
+9. **`codegraph_get_impact`** — Before modifying a specific symbol, understand confirmed and possible impact, and what tests cover it.
+10. **`Read`** — Only when exact source text is needed.
 
 ### When to use each tool
 
@@ -372,13 +601,15 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 | `codegraph_repo_status` | First, check index is available, fresh, and healthy before relying on results |
 | `codegraph_build_context_pack` | Default first tool for larger code modification or investigation tasks — returns task-aware context instead of broad grep/glob |
 | `codegraph_repo_summary` | Entering a repository, before glob/grep for structure overview |
+| `codegraph_coverage_gaps` | Auditing test coverage — which production symbols/files lack tests? |
 | `codegraph_find` | Finding symbols with basic details in one call — preferred over search_symbols + get_symbol chain |
 | `codegraph_search_symbols` | Lightweight symbol search when you only need a result list without details |
 | `codegraph_get_symbol` | You need exact metadata and location for a known symbol |
 | `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep. Use `mode=quick` for fast lookup. |
 | `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep. Use `mode=deep` for broader exploration. |
 | `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files. Use `mode=review` before code changes. |
-| `codegraph_get_impact` | Before modifying shared code — understand confirmed and possible impact. Use `mode=review` before committing. |
+| `codegraph_pre_edit_check` | Before editing — when you know which files to modify but not all affected symbols. Task-level impact check. |
+| `codegraph_get_impact` | Before modifying a specific shared symbol — understand confirmed and possible impact. Use `mode=review` before committing. |
 | `Read` | Only when exact source text is needed beyond what CodeGraph returns |
 
 ## Common Modes
@@ -458,7 +689,10 @@ Who calls this?
 What does this call?
 → codegraph_get_callees(symbol="MemoryService")
 
-What might break if I edit this?
+What might break if I edit these files?
+→ codegraph_pre_edit_check(files="src/server.ts", change_type="refactor")
+
+What might break if I edit this specific symbol?
 → codegraph_get_impact(symbol="MemoryService")
 
 Which project is this?

@@ -193,6 +193,31 @@ def detect_test_files(project_root: str | Path) -> dict[str, Any]:
     }
 
 
+def is_test_file_path(file_path: str) -> bool:
+    """Check whether *file_path* looks like a test file.
+
+    Uses the same directory and filename patterns as ``detect_test_files()``
+    but operates on a single path string — no filesystem scanning.
+
+    Returns True if the path is in a test directory or matches a
+    test-file naming convention.
+    """
+    normalized = file_path.replace("\\", "/")
+    parts = normalized.split("/")
+    filename = parts[-1] if parts else ""
+
+    # Check directory patterns (any parent is a test directory)
+    for part in parts[:-1]:
+        if _is_test_directory(part):
+            return True
+
+    # Check filename patterns
+    if _match_test_filename(filename) is not None:
+        return True
+
+    return False
+
+
 def compute_test_coverage_signal(
     nodes: list[GraphNode],
     edges: list[GraphEdge],

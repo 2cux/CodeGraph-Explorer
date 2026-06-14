@@ -1826,6 +1826,48 @@ def doctor(
         typer.echo("     Skipped — no graph.json found")
     typer.echo()
 
+    # 5m. Coverage gaps
+    typer.echo("5m. Coverage gaps")
+    if cg_dir.exists() and (cg_dir / "graph.json").exists():
+        try:
+            from codegraph.graph.coverage_gaps import compute_coverage_gaps
+            from codegraph.graph.store import GraphStore
+
+            # Build an in-memory store from graph.json
+            gap_store = GraphStore()
+            gap_store.load_from_lists(nodes, edges)
+
+            gaps = compute_coverage_gaps(
+                gap_store,
+                project_root=str(project_root),
+                include_low_confidence=True,
+                limit=50,
+            )
+            summary = gaps.get("summary", {})
+            prod_checked = summary.get("production_symbols_checked", 0)
+            without_test = summary.get("symbols_without_test_signal", 0)
+            low_conf_links = len(gaps.get("low_confidence_links", []))
+            confidence = summary.get("confidence", "unknown")
+
+            typer.echo(f"     production symbols checked: {prod_checked}")
+            typer.echo(f"     symbols without confident test signal: {without_test}")
+            typer.echo(f"     low-confidence links: {low_conf_links}")
+            typer.echo(f"     status: {confidence}")
+
+            # Never fail on coverage gaps — INFO only
+            if confidence in ("low", "unknown") and without_test > 0:
+                typer.echo(f"  [INFO]  Coverage signal is {confidence}. Run codegraph_coverage_gaps via MCP for details.")
+            elif without_test > 0:
+                typer.echo(f"  [INFO]  {without_test} symbols lack test coverage signal. Run codegraph_coverage_gaps via MCP for details.")
+            else:
+                ok("All production symbols have confident test coverage signal")
+
+        except Exception as e:
+            warn(f"Could not compute coverage gaps: {e}")
+    else:
+        typer.echo("     Skipped — no graph.json found")
+    typer.echo()
+
     # 6. MCP config paths
     typer.echo("6. MCP configuration")
     from codegraph.configure import (
