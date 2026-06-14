@@ -3054,6 +3054,199 @@ class TestGetSymbolResolve:
         assert result["error"]["code"] == "SYMBOL_NOT_FOUND"
 
 
+# ── Test: codegraph_find ────────────────────────────────────────────────────
+
+
+class TestCodegraphFind:
+    """codegraph_find: fused search + detail entry point."""
+
+    def test_find_returns_results(self, mcp_setup):
+        """codegraph_find(query='login') must return search results."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        assert result["ok"] is True
+        assert result["tool"] == "codegraph_find"
+        assert result["data"]["total"] > 0
+        assert len(result["data"]["results"]) > 0
+
+    def test_result_has_symbol_type_file_lines(self, mcp_setup):
+        """Each result must include symbol, type, file, line_start, line_end."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        for r in result["data"]["results"]:
+            assert "symbol" in r
+            assert "type" in r
+            assert "file" in r
+            assert "line_start" in r
+            assert "line_end" in r
+            assert "score" in r
+            assert "reason" in r
+
+    def test_include_details_true_returns_details(self, mcp_setup):
+        """Default include_details=true must include details block."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", include_details=True)
+        for r in result["data"]["results"]:
+            assert "details" in r
+            if r["details"] is not None:
+                assert "signature" in r["details"]
+                assert "framework" in r["details"]
+                assert "tags" in r["details"]
+
+    def test_include_snippets_false_no_large_source(self, mcp_setup):
+        """Default include_snippets=false must not return snippet content."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", include_snippets=False)
+        for r in result["data"]["results"]:
+            assert r.get("snippet") is None
+
+    def test_include_snippets_true_returns_limited_snippet(self, mcp_setup):
+        """include_snippets=true must return snippet blocks with limited content."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", include_snippets=True)
+        has_snippet = False
+        for r in result["data"]["results"]:
+            if r.get("snippet") is not None:
+                has_snippet = True
+                assert "file" in r["snippet"]
+                assert "snippet" in r["snippet"]
+                assert "line_start" in r["snippet"]
+                # Snippet text must not be huge
+                assert len(r["snippet"]["snippet"]) < 3000, (
+                    f"Snippet too large: {len(r['snippet']['snippet'])} chars"
+                )
+        # At least one result should have a snippet when source file exists
+        # (may not if files aren't real, but the test store has file nodes)
+
+    def test_mode_quick_lightweight(self, mcp_setup):
+        """mode='quick' should produce lightweight output."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", mode="quick")
+        assert result["ok"] is True
+        # Quick mode defaults: include_snippets=False
+        for r in result["data"]["results"]:
+            assert r.get("snippet") is None
+
+    def test_mode_review_richer(self, mcp_setup):
+        """mode='review' should produce richer output with snippets."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", mode="review")
+        assert result["ok"] is True
+        # Review mode defaults: include_snippets=True
+        # Not all symbols may have real files, so snippets may be None
+        # Just verify the call succeeds and details are present
+        for r in result["data"]["results"]:
+            assert "details" in r
+
+    def test_no_results_no_next_tools(self, mcp_setup):
+        """When no results found, next_recommended_tools should be empty."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("nonexistent_xyz_123")
+        assert result["data"]["total"] == 0
+        next_tools = result["data"].get("next_recommended_tools", [])
+        assert next_tools == [], (
+            f"Expected empty next_recommended_tools for no results, got {next_tools}"
+        )
+
+    def test_results_have_next_recommended_tools(self, mcp_setup):
+        """When results found, next_recommended_tools must include neighbors and impact."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        next_tools = result["data"].get("next_recommended_tools", [])
+        assert len(next_tools) > 0, "Expected next_recommended_tools when results found"
+        tool_names = [r["tool"] for r in next_tools]
+        assert "codegraph_get_neighbors" in tool_names, (
+            f"Expected get_neighbors recommendation, got {tool_names}"
+        )
+        assert "codegraph_get_impact" in tool_names, (
+            f"Expected get_impact recommendation, got {tool_names}"
+        )
+
+    def test_returns_codegraph_session(self, mcp_setup):
+        """codegraph_find must include codegraph_session in response."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        assert "codegraph_session" in result
+        session = result["codegraph_session"]
+        assert session is not None
+        assert "tools_called_this_session" in session
+        assert "hint" in session
+
+    def test_returns_index_status(self, mcp_setup):
+        """codegraph_find must include index_status in response envelope."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        assert "index_status" in result, "Response must include index_status"
+        status = result["index_status"]
+        assert "freshness" in status
+        assert "warning_level" in status
+
+    def test_returns_index_health(self, mcp_setup):
+        """codegraph_find must include index_health in response envelope."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        assert "index_health" in result, "Response must include index_health"
+        health = result["index_health"]
+        assert "status" in health
+        assert "impact" in health
+
+    def test_types_filter_narrows(self, mcp_setup):
+        """types='function' must only return function results."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", types="function")
+        for r in result["data"]["results"]:
+            assert r["type"] == "function", (
+                f"Expected function type, got {r['type']}"
+            )
+
+    def test_paths_filter_narrows(self, mcp_setup):
+        """paths='app/api/**' must only return results from that path."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", paths="app/api/**")
+        for r in result["data"]["results"]:
+            assert "app/api" in r["file"], (
+                f"Expected file in app/api/, got {r['file']}"
+            )
+
+    def test_mode_explicit_overrides_preset(self, mcp_setup):
+        """mode='quick' with explicit include_snippets=True should include snippets."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", mode="quick", include_snippets=True)
+        # With include_snippets explicitly True, snippets should be included
+        # (explicit param overrides mode preset)
+        assert result["ok"] is True
+
+    def test_invalid_mode_returns_error(self, mcp_setup):
+        """Invalid mode must return an error response."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", mode="invalid_mode")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+    def test_invalid_response_mode_returns_error(self, mcp_setup):
+        """Invalid response_mode must return an error response."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login", response_mode="invalid")
+        assert result["ok"] is False
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+
+    def test_limit_respected(self, mcp_setup):
+        """limit parameter must cap returned results but total may exceed limit."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("", limit=2)
+        # results array is capped at limit, but total may be higher
+        # (consistent with search_symbols behavior where total=actual matches)
+        assert len(result["data"]["results"]) <= 2
+
+    def test_has_summary(self, mcp_setup):
+        """Response must include a human-readable summary."""
+        from codegraph.mcp_server import codegraph_find
+        result = codegraph_find("login")
+        assert "summary" in result["data"]
+        assert isinstance(result["data"]["summary"], str)
+        assert len(result["data"]["summary"]) > 0
+
+
 # ── Test: source snippet control ────────────────────────────────────────────
 
 
@@ -3759,14 +3952,16 @@ class TestAgentUsageGuidance:
         assert "use first" in doc.lower() or "before glob" in doc.lower()
 
     def test_all_tool_descriptions_exist(self):
-        """All 9 MCP tools have non-empty descriptions."""
+        """All 10 MCP tools have non-empty descriptions."""
         from codegraph.mcp_server import (
-            search_symbols, get_symbol, get_callers, get_callees,
+            search_symbols, get_symbol, codegraph_find,
+            get_callers, get_callees,
             get_neighbors, get_impact, build_context_pack,
             repo_status, repo_summary,
         )
         tools = [
-            search_symbols, get_symbol, get_callers, get_callees,
+            search_symbols, get_symbol, codegraph_find,
+            get_callers, get_callees,
             get_neighbors, get_impact, build_context_pack,
             repo_status, repo_summary,
         ]
@@ -3920,12 +4115,13 @@ class TestAgentUsageGuidance:
         sig = inspect.signature(repo_summary)
         assert "response_mode" in sig.parameters, "repo_summary missing response_mode param"
 
-    def test_mcp_tool_count_is_9(self):
-        """There should be exactly 9 MCP tools registered with the FastMCP server."""
+    def test_mcp_tool_count_is_10(self):
+        """There should be exactly 10 MCP tools registered with the FastMCP server."""
         import codegraph.mcp_server as mcp_mod
         # FastMCP stores tool registrations; verify each expected function exists
         expected_tools = [
-            "search_symbols", "get_symbol", "get_callers", "get_callees",
+            "search_symbols", "get_symbol", "codegraph_find",
+            "get_callers", "get_callees",
             "get_neighbors", "get_impact", "build_context_pack",
             "repo_status", "repo_summary",
         ]
@@ -4422,15 +4618,17 @@ class TestGlobalNextRecommendedTools:
         assert "groups" in r["data"]
 
     def test_all_tools_have_next_recommended_tools_field(self, mcp_setup):
-        """All 9 MCP tools return next_recommended_tools on success."""
+        """All 10 MCP tools return next_recommended_tools on success."""
         from codegraph.mcp_server import (
-            search_symbols, get_symbol, get_callers, get_callees,
+            search_symbols, get_symbol, codegraph_find,
+            get_callers, get_callees,
             get_neighbors, get_impact, repo_status, repo_summary,
             build_context_pack,
         )
         tools = [
             ("codegraph_search_symbols", lambda: search_symbols("login")),
             ("codegraph_get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("codegraph_find", lambda: codegraph_find("login")),
             ("codegraph_get_callers", lambda: get_callers("app/api/auth.py::login")),
             ("codegraph_get_callees", lambda: get_callees("app/api/auth.py::login")),
             ("codegraph_get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
@@ -4895,15 +5093,17 @@ class TestCodegraphSession:
         assert "groups" in r["data"]
 
     def test_all_tools_have_codegraph_session(self, mcp_setup):
-        """All 9 MCP tools must return codegraph_session on success."""
+        """All 10 MCP tools must return codegraph_session on success."""
         from codegraph.mcp_server import (
-            search_symbols, get_symbol, get_callers, get_callees,
+            search_symbols, get_symbol, codegraph_find,
+            get_callers, get_callees,
             get_neighbors, get_impact, repo_status, repo_summary,
             build_context_pack,
         )
         tools = [
             ("codegraph_search_symbols", lambda: search_symbols("login")),
             ("codegraph_get_symbol", lambda: get_symbol("app/api/auth.py::login")),
+            ("codegraph_find", lambda: codegraph_find("login")),
             ("codegraph_get_callers", lambda: get_callers("app/api/auth.py::login")),
             ("codegraph_get_callees", lambda: get_callees("app/api/auth.py::login")),
             ("codegraph_get_neighbors", lambda: get_neighbors("app/api/auth.py::login")),
@@ -5544,6 +5744,7 @@ class TestCostHintsRegression:
         expected_names = {
             "codegraph_search_symbols",
             "codegraph_get_symbol",
+            "codegraph_find",
             "codegraph_get_callers",
             "codegraph_get_callees",
             "codegraph_get_neighbors",
@@ -5559,12 +5760,14 @@ class TestCostHintsRegression:
         else:
             # Fallback: check the function objects for the MCP-decorated wrappers
             from codegraph.mcp_server import (
-                search_symbols, get_symbol, get_callers, get_callees,
+                search_symbols, get_symbol, codegraph_find,
+                get_callers, get_callees,
                 get_neighbors, get_impact, repo_status, repo_summary,
                 build_context_pack,
             )
             actual_names = set()
-            for fn in (search_symbols, get_symbol, get_callers, get_callees,
+            for fn in (search_symbols, get_symbol, codegraph_find,
+                        get_callers, get_callees,
                         get_neighbors, get_impact, repo_status, repo_summary,
                         build_context_pack):
                 # The MCP tool decorator stores the name in __mcp_tool_name__

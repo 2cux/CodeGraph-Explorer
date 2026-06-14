@@ -1,11 +1,12 @@
 # MCP Tools Reference
 
-CodeGraph Explorer exposes 9 MCP tools for AI coding agents to query the code graph.
+CodeGraph Explorer exposes 10 MCP tools for AI coding agents to query the code graph.
 
 ## Tool Overview
 
 | Tool | Purpose | Key Parameters |
 |------|---------|---------------|
+| `codegraph_find` | Find symbols + details in one call (preferred entry point) | `query`, `types`, `paths`, `include_details`, `limit`, `mode` |
 | `codegraph_search_symbols` | Search symbols by name, type, tag, or path | `query`, `types`, `paths`, `exact`, `fuzzy`, `limit` |
 | `codegraph_get_symbol` | Get symbol details (location, signature, metadata) | `symbol_id`, `include_source`, `source_mode` |
 | `codegraph_get_callers` | Query upstream callers of a symbol | `symbol_id`, `depth`, `include_tests`, `mode` |
@@ -42,6 +43,56 @@ Example fuzzy lookup:
 ```
 
 ## Tool Details
+
+### codegraph_find
+
+Use `codegraph_find` when you want symbol search plus enough detail to decide the next step.
+This is the preferred entry point for common find-and-inspect workflows.
+
+Examples:
+
+```text
+codegraph_find(query="login", types=["function"])
+codegraph_find(query="MemoryService", include_details=true)
+codegraph_find(query="api", types=["route"], paths=["src/**"])
+```
+
+`codegraph_find` fuses `codegraph_search_symbols` + `codegraph_get_symbol` into a single call.
+It returns top matches with optional details (signature, docstring, tags, framework) and
+optional source snippets.
+
+Parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | (required) | Symbol name to search for |
+| `types` | string | `null` | Comma-separated node types, e.g. `"function,method,class"` |
+| `paths` | string | `null` | Comma-separated path glob patterns, e.g. `"src/**,app/api/**"` |
+| `limit` | int | 5 | Maximum results (max 20) |
+| `include_details` | bool | true | Include signature, docstring, tags, framework per result |
+| `include_snippets` | bool | false | Include limited source code snippets per result |
+| `mode` | string | `"quick"` | `"quick"` (lightweight) or `"review"` (richer details with snippets) |
+| `response_mode` | string | `"compact"` | `"compact"` or `"standard"` |
+
+Mode presets:
+
+| Mode | Purpose | Characteristics |
+|------|---------|----------------|
+| `quick` | Fast lookup, grep replacement | details=true, snippets=false, compact, limit=5 |
+| `review` | Richer context before code changes | details=true, snippets=true, compact, limit=5 |
+
+Each result includes `symbol`, `type`, `file`, `line_start`, `line_end`, `score`, and `reason`.
+When `include_details=true`, each result also includes `details` (signature, doc, framework, tags).
+When `include_snippets=true` or `mode=review`, each result also includes a `snippet` block.
+
+The response also includes:
+- `summary`: A human-readable summary of findings
+- `next_recommended_tools`: Suggests `get_neighbors` and `get_impact` when results found
+- `codegraph_session`: Session tracking and hint
+- `index_status` / `index_health`: Index freshness and health signals
+
+Use `codegraph_search_symbols` when you only need a lightweight search result list.
+Use `codegraph_get_symbol` when you already have an exact symbol and need detailed metadata.
 
 ### search_symbols
 
@@ -234,11 +285,12 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 1. **`codegraph_repo_status`** — First, confirm the index is available, fresh, and healthy before relying on results.
 2. **`codegraph_build_context_pack`** — Default first tool for larger code investigation, bug fixing, feature implementation, refactoring, or impact analysis. Takes a natural language task description and returns relevant entry points, symbols, relationships, impact signals, and suggested tests.
 3. **`codegraph_repo_summary`** — Understand repository structure, languages, frameworks, entry points, and symbol/edge breakdown.
-4. **`codegraph_search_symbols`** — Find functions, classes, methods, routes, and framework entry points by name, type, tag, or path.
-5. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol (callers, callees, tests, models, config).
-6. **`codegraph_get_callers` / `codegraph_get_callees`** — Trace call chains instead of grep for call/reference lookup.
-7. **`codegraph_get_impact`** — Before modifying shared code, understand confirmed and possible impact, and what tests cover it.
-8. **`Read`** — Only when exact source text is needed.
+4. **`codegraph_find`** — Find symbols with details in one call. Preferred over search_symbols for common find-and-inspect workflows.
+5. **`codegraph_search_symbols`** — Lightweight symbol search when you only need a result list without details.
+6. **`codegraph_get_neighbors`** — Inspect local relationships around a symbol (callers, callees, tests, models, config).
+7. **`codegraph_get_callers` / `codegraph_get_callees`** — Trace call chains instead of grep for call/reference lookup.
+8. **`codegraph_get_impact`** — Before modifying shared code, understand confirmed and possible impact, and what tests cover it.
+9. **`Read`** — Only when exact source text is needed.
 
 ### When to use each tool
 
@@ -247,8 +299,9 @@ When working in a codebase indexed by CodeGraph, follow this workflow instead of
 | `codegraph_repo_status` | First, check index is available, fresh, and healthy before relying on results |
 | `codegraph_build_context_pack` | Default first tool for larger code modification or investigation tasks — returns task-aware context instead of broad grep/glob |
 | `codegraph_repo_summary` | Entering a repository, before glob/grep for structure overview |
-| `codegraph_search_symbols` | Looking for functions, classes, methods, routes, before grep |
-| `codegraph_get_symbol` | You need exact metadata and location for a symbol, after search_symbols |
+| `codegraph_find` | Finding symbols with basic details in one call — preferred over search_symbols + get_symbol chain |
+| `codegraph_search_symbols` | Lightweight symbol search when you only need a result list without details |
+| `codegraph_get_symbol` | You need exact metadata and location for a known symbol |
 | `codegraph_get_callers` | Finding who calls or references a symbol, instead of grep. Use `mode=quick` for fast lookup. |
 | `codegraph_get_callees` | Understanding what a symbol depends on or calls, instead of manual Read/grep. Use `mode=deep` for broader exploration. |
 | `codegraph_get_neighbors` | Exploring local relationships around a symbol, before reading multiple files. Use `mode=review` before code changes. |
@@ -317,7 +370,10 @@ CodeGraph tool descriptions are example-first because coding agents often respon
 Quick reference for common questions:
 
 ```text
-Find a function:
+Find a function with details:
+→ codegraph_find(query="login", types="function")
+
+Find a function (lightweight):
 → codegraph_search_symbols(query="login", types="function")
 
 Understand a symbol:

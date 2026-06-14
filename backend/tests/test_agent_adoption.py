@@ -212,11 +212,12 @@ class TestMcpToolDescriptionsExampleDriven:
         )
 
     def test_all_tool_names_preserved(self):
-        """All 9 MCP tool functions exist and have docstrings."""
+        """All 10 MCP tool functions exist and have docstrings."""
         tool_funcs = [
             ("codegraph_build_context_pack", mcp_mod.build_context_pack),
             ("codegraph_search_symbols", mcp_mod.search_symbols),
             ("codegraph_get_symbol", mcp_mod.get_symbol),
+            ("codegraph_find", mcp_mod.codegraph_find),
             ("codegraph_get_callers", mcp_mod.get_callers),
             ("codegraph_get_callees", mcp_mod.get_callees),
             ("codegraph_get_neighbors", mcp_mod.get_neighbors),

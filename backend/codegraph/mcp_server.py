@@ -152,6 +152,11 @@ def _generate_session_hint(total_calls: int, tool_name: str) -> str:
             "Check impact (get_impact) before editing symbols that have "
             "callers or downstream dependencies."
         )
+    if tool_name == "codegraph_find":
+        return (
+            "Choose a symbol from the results and inspect its relationships "
+            "(get_neighbors) or check impact (get_impact) before editing."
+        )
     if tool_name == "codegraph_get_impact":
         return (
             "Use Read next only for exact source text in the "
@@ -262,6 +267,10 @@ _STD_DEFAULTS: dict[str, dict[str, Any]] = {
         "impact_mode": "conservative", "response_mode": "compact",
         "include_explanations": False,
     },
+    "codegraph_find": {
+        "limit": 5, "include_details": True, "include_snippets": False,
+        "mode": "quick", "response_mode": "compact",
+    },
 }
 
 # Mode presets: {tool_name: {mode: {param: preset_value}}}
@@ -335,6 +344,16 @@ MODE_PRESETS: dict[str, dict[str, dict[str, Any]]] = {
             "include_tests": True, "include_possible": True,
             "impact_mode": "balanced", "response_mode": "compact",
             "include_explanations": True,
+        },
+    },
+    "codegraph_find": {
+        "quick": {
+            "limit": 5, "include_details": True, "include_snippets": False,
+            "response_mode": "compact",
+        },
+        "review": {
+            "limit": 5, "include_details": True, "include_snippets": True,
+            "response_mode": "compact",
         },
     },
 }
@@ -473,6 +492,28 @@ def _build_global_next_tools(
                 "reason": (
                     "Inspect callers, callees, and tests around the found "
                     "symbol instead of reading multiple files in the vicinity."
+                ),
+            })
+
+    elif tool_name == "codegraph_find":
+        total = data.get("total", 0)
+        if total == 0:
+            # No results found — do not recommend further tool calls.
+            # Agent should try a different query or fall back to grep.
+            return []
+        elif total > 0:
+            recommendations.append({
+                "tool": "codegraph_get_neighbors",
+                "reason": (
+                    "Inspect relationships around the selected symbol "
+                    "before reading multiple files."
+                ),
+            })
+            recommendations.append({
+                "tool": "codegraph_get_impact",
+                "reason": (
+                    "Check impact before editing the selected symbol "
+                    "instead of manually tracing callers."
                 ),
             })
 
@@ -2252,6 +2293,7 @@ def search_symbols(
     exports, or framework entry points.
     Lower cost than repeated grep when looking for functions, classes,
     methods, routes, exports, or framework entry points.
+    For common find + detail workflows, prefer codegraph_find.
 
     Args:
         query: Search keyword — symbol name, file path fragment, or docstring keyword
@@ -2472,6 +2514,7 @@ def get_symbol(
     "MemoryService.findRelatedCCRs".
     Use after search_symbols when you need symbol-level detail before reading a file.
     Use this to confirm exact symbol location before opening a file.
+    For common find + detail workflows, prefer codegraph_find.
 
     Supports fuzzy lookup with resolve mode. Returns AMBIGUOUS_SYMBOL
     error when multiple candidates match.
@@ -2608,6 +2651,206 @@ def get_symbol(
         data=data,
         tool="codegraph_get_symbol",
         warnings=_collect_warnings(fuzzy_warning),
+    )
+
+
+# ── Tool: codegraph_find ──────────────────────────────────────────────────
+
+
+@mcp.tool(name="codegraph_find")
+def codegraph_find(
+    query: str,
+    types: str | None = None,
+    paths: str | None = None,
+    limit: int = 5,
+    include_details: bool = True,
+    include_snippets: bool = False,
+    mode: str = "quick",
+    response_mode: str = "compact",
+) -> dict[str, Any]:
+    """Find "login" function and show where it is → query="login", types="function".
+    Find "MemoryService" with details → query="MemoryService", include_details=true.
+    Use this before grep/read when you need symbol location plus enough detail
+    to choose the next CodeGraph tool.
+    Lower cost than search_symbols + get_symbol for common find-and-inspect workflows.
+
+    Fuses codegraph_search_symbols + codegraph_get_symbol common chain
+    into a single call. Returns top matches with optional details and snippets.
+
+    Args:
+        query: Symbol name to search for (e.g. "login", "MemoryService")
+        types: Comma-separated node types, e.g. "function,method,class" (default: all)
+        paths: Comma-separated path glob patterns, e.g. "src/**,app/api/**"
+        limit: Maximum results to return (default 5, max 20)
+        include_details: If true, include signature, doc, tags, framework (default true)
+        include_snippets: If true, include limited source snippets (default false)
+        mode: "quick" (lightweight, default) or "review" (richer details with snippets)
+        response_mode: "compact" (default) or "standard"
+    """
+    # ── Validate mode ─────────────────────────────────────────────────────
+    if mode is not None and mode not in VALID_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}",
+            tool="codegraph_find",
+        )
+    if response_mode not in VALID_RESPONSE_MODES:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=f"Invalid response_mode '{response_mode}'. Valid: {', '.join(sorted(VALID_RESPONSE_MODES))}",
+            tool="codegraph_find",
+        )
+
+    # ── Apply mode presets (explicit user params override mode defaults) ──
+    _mode_overrides = _apply_mode_presets("codegraph_find", mode, {
+        "limit": limit, "include_details": include_details,
+        "include_snippets": include_snippets,
+        "response_mode": response_mode,
+    })
+    limit = _mode_overrides.get("limit", limit)
+    include_details = _mode_overrides.get("include_details", include_details)
+    include_snippets = _mode_overrides.get("include_snippets", include_snippets)
+    response_mode = _mode_overrides.get("response_mode", response_mode)
+
+    effective_limit = max(1, min(limit, 20))
+
+    try:
+        store, cg_dir = _load_store()
+        sqlite_path = cg_dir / "index.sqlite"
+        query_store: Any = store
+        try:
+            if sqlite_path.exists():
+                query_store = SqliteStore(sqlite_path)
+                query_store.initialize()
+            result = graph_query.search_symbols(
+                query_store,
+                query=query,
+                types=[t.strip() for t in types.split(",") if t.strip()] if types else None,
+                include_tests=False,
+                exclude_external=True,
+                min_score=0.2,
+                limit=effective_limit + 5,  # fetch more for safety
+                use_fts=True,
+                fuzzy=True,
+            )
+        finally:
+            if isinstance(query_store, SqliteStore):
+                query_store.close()
+    except RuntimeError as e:
+        return _respond_error(
+            code=ERROR_CODES["INDEX_MISSING"],
+            message=str(e),
+            tool="codegraph_find",
+        )
+
+    items = result["results"]
+
+    # Apply path filtering
+    if paths:
+        path_list = [p.strip() for p in paths.split(",") if p.strip()]
+        items = [
+            item for item in items
+            if _matches_any_path_glob(item.get("file_path", ""), path_list)
+        ]
+
+    # Total before capping to effective_limit
+    total = len(items)
+
+    # Build enriched results (capped at effective_limit)
+    serialized_results: list[dict[str, Any]] = []
+    for item in items[:effective_limit]:
+        entry: dict[str, Any] = {
+            "symbol": item["name"],
+            "type": item["type"],
+            "file": item["file_path"],
+            "line_start": item.get("line_start"),
+            "line_end": item.get("line_end"),
+            "score": item.get("score"),
+            "reason": f"Best match for '{query}'." if item.get("score", 0) > 0.8 else f"Partial match for '{query}'.",
+        }
+
+        # Fetch the store node once — shared by details, snippets, and standard mode
+        node: GraphNode | None = None
+        if include_details or include_snippets or response_mode == "standard":
+            node = store.get_node(item["symbol_id"])
+
+        # Optionally enrich with details from the store node
+        if include_details:
+            if node:
+                entry["details"] = {
+                    "signature": node.signature,
+                    "doc": (node.docstring[:200] if node.docstring else None),
+                    "framework": node.framework_id,
+                    "tags": node.tags or [],
+                }
+            else:
+                entry["details"] = None
+
+        # Optionally include source snippets
+        if include_snippets and item.get("file_path") and item.get("line_start"):
+            snippet = _read_source_snippet(
+                item["file_path"],
+                item["line_start"],
+                item.get("line_end", item["line_start"]),
+                source_mode="body",
+                max_source_lines=20,
+            )
+            if snippet.get("included"):
+                entry["snippet"] = {
+                    "file": item["file_path"],
+                    "snippet": snippet["content"],
+                    "line_start": item["line_start"],
+                    "line_end": item.get("line_end", item["line_start"]),
+                }
+                if snippet.get("truncated"):
+                    entry["snippet"]["omitted_note"] = "Snippet truncated."
+            else:
+                entry["snippet"] = None
+        else:
+            entry["snippet"] = None
+
+        if response_mode == "standard":
+            if node:
+                entry["symbol_id"] = node.id
+                entry["qualified_name"] = node.qualified_name
+                entry["module"] = node.module
+                entry["visibility"] = node.visibility
+                entry["language_id"] = node.language_id
+                if node.docstring:
+                    entry["docstring"] = node.docstring[:500]
+
+        serialized_results.append(entry)
+
+    # Build summary
+    if total == 0:
+        summary = (
+            f"No symbols found for '{query}'. "
+            f"Try a different query, broaden types, or remove path filters."
+        )
+    elif total == 1:
+        summary = (
+            f"Found 1 symbol. "
+            f"Inspect neighbors or impact before editing shared code."
+        )
+    else:
+        summary = (
+            f"Found {total} symbols. "
+            f"Inspect neighbors or impact before editing shared code."
+        )
+
+    return _respond_ok(
+        data={
+            "query": query,
+            "results": serialized_results,
+            "total": total,
+            "summary": summary,
+        },
+        tool="codegraph_find",
+        warnings=_collect_warnings(),
+        response_mode=response_mode,
+        item_count=len(serialized_results),
+        truncated=total > effective_limit,
+        max_items=effective_limit,
     )
 
 
