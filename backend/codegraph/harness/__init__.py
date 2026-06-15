@@ -36,6 +36,10 @@ from codegraph.harness.events import (
 )
 from codegraph.harness.registry import HarnessModule, get_module, list_modules, register_module
 from codegraph.harness.runner import HarnessRunner
+from codegraph.harness.manifest import list_builtin_manifests, manifest_for
+from codegraph.harness.bootstrap import register_builtin_modules
+
+register_builtin_modules()
 
 __all__ = [
     # Models
@@ -60,6 +64,8 @@ __all__ = [
     "register_module",
     "get_module",
     "list_modules",
+    "manifest_for",
+    "list_builtin_manifests",
     # Event emitters
     "emit_run_created",
     "emit_module_started",
