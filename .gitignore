@@ -54,7 +54,7 @@ Thumbs.db
 pip-log.txt
 
 # --- Benchmark artifacts (generated) ---
-reports/
+/reports/
 tests/agent_benchmark/results/
 
 # --- Frontend (removed) ---

@@ -32,6 +32,8 @@ class StatusResult:
         recommendation: str = "",
         cosmetic_files: list[str] | None = None,
         structural_files: list[str] | None = None,
+        architecture_files: list[str] | None = None,
+        needs_full_reindex: bool = False,
         change_summary: dict[str, int] | None = None,
     ) -> None:
         self.status = status
@@ -43,17 +45,23 @@ class StatusResult:
         # Classification fields (populated when fingerprints.json is available)
         self.cosmetic_files = cosmetic_files or []
         self.structural_files = structural_files or []
+        self.architecture_files = architecture_files or []
+        self.needs_full_reindex = needs_full_reindex
         self.change_summary = change_summary or {
             "none": 0,
             "cosmetic": 0,
             "structural": 0,
+            "architecture": 0,
             "added": 0,
             "deleted": 0,
+            "full_reindex_required": 0,
         }
         # Backward compat: if classification was used, changed_files is derived
-        if not changed_files and (cosmetic_files or structural_files):
+        if not changed_files and (cosmetic_files or structural_files or architecture_files):
             self.changed_files = sorted(
-                set(cosmetic_files or []) | set(structural_files or [])
+                set(cosmetic_files or [])
+                | set(structural_files or [])
+                | set(architecture_files or [])
             )
 
     @property
@@ -168,6 +176,8 @@ def detect_status_with_classification(
     from codegraph.indexer.fingerprint import (
         ChangeClassifier,
         ChangeType,
+        ReindexThreshold,
+        check_reindex_threshold,
         compute_file_hashes,
         stat_prefilter,
         _normalize_path as fp_normalize,
@@ -187,10 +197,13 @@ def detect_status_with_classification(
     # Classify each changed file
     cosmetic_files: list[str] = []
     structural_files: list[str] = []
+    architecture_files: list[str] = []
     added_files: list[str] = []
+    config_changed = False
 
     metadata_rel = {f.path for f in metadata.files}
     current_rel_set: set[str] = set()
+    total_tracked = len(stored_fps) + len(metadata_rel)
 
     for f in needs_hash:
         rel = fp_normalize(f.relative_to(root))
@@ -200,10 +213,16 @@ def detect_status_with_classification(
         current_fp.file_path = rel
         stored_fp = stored_fps.get(rel)
 
+        # Detect config file changes
+        if current_fp.is_config:
+            config_changed = True
+
         change_type = ChangeClassifier.classify(current_fp, stored_fp)
 
         if change_type == ChangeType.ADDED:
             added_files.append(rel)
+        elif change_type == ChangeType.ARCHITECTURE:
+            architecture_files.append(rel)
         elif change_type == ChangeType.STRUCTURAL:
             structural_files.append(rel)
         elif change_type == ChangeType.COSMETIC:
@@ -216,9 +235,11 @@ def detect_status_with_classification(
     for f in current_files:
         rel = fp_normalize(f.relative_to(root))
         if rel not in metadata_rel and rel not in current_rel_set:
-            added_files.append(rel)
             current_fp = compute_file_hashes(f)
             current_fp.file_path = rel
+            added_files.append(rel)
+            if current_fp.is_config:
+                config_changed = True
             # Update fingerprint store with initial fingerprint
             fp_store.update(rel, current_fp)
 
@@ -233,6 +254,7 @@ def detect_status_with_classification(
     none_count = len(unchanged)
     cosmetic_count = len(cosmetic_files)
     structural_count = len(structural_files)
+    architecture_count = len(architecture_files)
     added_count = len(added_files)
     deleted_count = len(deleted_rels)
 
@@ -249,19 +271,38 @@ def detect_status_with_classification(
         "none": none_count,
         "cosmetic": cosmetic_count,
         "structural": structural_count,
+        "architecture": architecture_count,
         "added": added_count,
         "deleted": deleted_count,
+        "full_reindex_required": 0,
     }
 
-    if structural_files or added_files or deleted_rels or cosmetic_files:
+    # Check if full reindex is needed
+    needs_full_reindex = check_reindex_threshold(
+        change_summary=change_summary,
+        total_files=max(total_tracked, 1),
+        config_changed=config_changed,
+    )
+    if needs_full_reindex:
+        change_summary["full_reindex_required"] = 1
+
+    has_changes = bool(
+        structural_files or architecture_files or added_files
+        or deleted_rels or cosmetic_files
+    )
+    if has_changes:
         return StatusResult(
             status="stale",
             indexed_at=metadata.indexed_at,
-            changed_files=sorted(set(structural_files + cosmetic_files)),
+            changed_files=sorted(
+                set(structural_files + cosmetic_files + architecture_files)
+            ),
             added_files=sorted(added_files),
             deleted_files=sorted(deleted_rels),
             cosmetic_files=sorted(cosmetic_files),
             structural_files=sorted(structural_files),
+            architecture_files=sorted(architecture_files),
+            needs_full_reindex=needs_full_reindex,
             change_summary=change_summary,
         )
 
@@ -462,6 +503,18 @@ def get_index_status(project_root: str | Path) -> dict[str, Any]:
             "total_failures": hook_config.get("total_failures", 0),
         }
 
+    # ── Pending changes (per-file) ────────────────────────────────────────
+    pending_changes: dict[str, Any] | None = None
+    try:
+        pending = state_store.get_pending_changes()
+        if pending.total > 0:
+            pending_changes = {
+                "total": pending.total,
+                "breakdown": pending.breakdown(),
+            }
+    except Exception:
+        pass
+
     # ── Build result ────────────────────────────────────────────────────
     result: dict[str, Any] = {
         "status": result_status,
@@ -475,6 +528,9 @@ def get_index_status(project_root: str | Path) -> dict[str, Any]:
         "hook": hook_status,
         "suggested_fix": _suggested_fix(result_status),
     }
+
+    if pending_changes is not None:
+        result["pending_changes"] = pending_changes
 
     if result_status == "error":
         result["last_error"] = state.get("last_error")

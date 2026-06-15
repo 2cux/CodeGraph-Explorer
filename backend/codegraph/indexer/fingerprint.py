@@ -30,9 +30,25 @@ class ChangeType(str, Enum):
 
     NONE = "none"           # no change detected
     COSMETIC = "cosmetic"   # only comments / whitespace / docstring changes
-    STRUCTURAL = "structural"  # function / class / method / signature / import / call changes
+    STRUCTURAL = "structural"  # function / class / method / signature / call changes
+    ARCHITECTURE = "architecture"  # imports changed but symbols unchanged → dependency graph shift
     ADDED = "added"         # new file (not previously indexed)
     DELETED = "deleted"     # file removed since last index
+    FULL_REINDEX_REQUIRED = "full_reindex_required"  # config files changed, metadata missing, or mass changes
+
+
+class ReindexThreshold:
+    """Thresholds that trigger FULL_REINDEX_REQUIRED status.
+
+    When any threshold is crossed, the index should be fully rebuilt
+    rather than incrementally updated.
+    """
+
+    PERCENT_FILES_CHANGED: float = 30.0  # >30% of files have structural/architecture changes
+    CONFIG_EXTENSIONS: frozenset[str] = frozenset({
+        ".toml", ".yaml", ".yml", ".json", ".cfg", ".ini",
+        ".env", ".lock",
+    })
 
 
 # ── Models ────────────────────────────────────────────────────────────────
@@ -49,6 +65,7 @@ class FileFingerprint(BaseModel):
     symbols_hash: str
     imports_hash: str
     calls_hash: str
+    is_config: bool = False  # True when file extension matches ReindexThreshold.CONFIG_EXTENSIONS
 
 
 # ── Fingerprint Store ─────────────────────────────────────────────────────
@@ -166,8 +183,47 @@ class ChangeClassifier:
                 and current_fp.calls_hash == stored_fp.calls_hash):  # type: ignore[union-attr]
             return ChangeType.COSMETIC
 
+        # Symbols + structure match, but only imports differ → architecture change
+        # (dependency graph shifts without code logic changes)
+        # IMPORTANT: calls_hash must also match — if calls changed too, it's STRUCTURAL
+        if (current_fp.structural_hash == stored_fp.structural_hash  # type: ignore[union-attr]
+                and current_fp.symbols_hash == stored_fp.symbols_hash  # type: ignore[union-attr]
+                and current_fp.calls_hash == stored_fp.calls_hash  # type: ignore[union-attr]
+                and current_fp.imports_hash != stored_fp.imports_hash):  # type: ignore[union-attr]
+            return ChangeType.ARCHITECTURE
+
         # Any structural hash differs → structural change
         return ChangeType.STRUCTURAL
+
+
+# ── Reindex Threshold Check ─────────────────────────────────────────────
+
+
+def check_reindex_threshold(
+    change_summary: dict[str, int],
+    total_files: int,
+    config_changed: bool = False,
+    metadata_missing: bool = False,
+) -> bool:
+    """Return True if a full reindex is required rather than incremental update.
+
+    Triggers when:
+    - metadata.json is missing (never indexed)
+    - Any config/definition file changed (pyproject.toml, .yaml, etc.)
+    - More than ReindexThreshold.PERCENT_FILES_CHANGED of files have structural
+      or architecture changes
+    """
+    if metadata_missing:
+        return True
+    if config_changed:
+        return True
+    changed = (
+        change_summary.get("structural", 0)
+        + change_summary.get("architecture", 0)
+    )
+    if total_files > 0 and (changed / total_files * 100) > ReindexThreshold.PERCENT_FILES_CHANGED:
+        return True
+    return False
 
 
 # ── Hash Computation ──────────────────────────────────────────────────────
@@ -192,6 +248,7 @@ def compute_file_hashes(path: Path) -> FileFingerprint:
     stat = path.stat()
     mtime = stat.st_mtime
     size = stat.st_size
+    is_config = path.suffix in ReindexThreshold.CONFIG_EXTENSIONS
 
     try:
         text = raw_bytes.decode("utf-8")
@@ -207,6 +264,7 @@ def compute_file_hashes(path: Path) -> FileFingerprint:
             symbols_hash=sha256_hash,
             imports_hash=sha256_hash,
             calls_hash=sha256_hash,
+            is_config=is_config,
         )
 
     structural_hash = hashlib.sha256(
@@ -234,6 +292,7 @@ def compute_file_hashes(path: Path) -> FileFingerprint:
         symbols_hash=symbols_hash,
         imports_hash=imports_hash,
         calls_hash=calls_hash,
+        is_config=is_config,
     )
 
 

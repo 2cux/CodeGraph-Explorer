@@ -1115,6 +1115,20 @@ def _build_evidence_summary(edge: GraphEdge) -> str | None:
     """
     if not edge.metadata or not edge.metadata.resolution:
         return None
+    evidence = edge.metadata.evidence or {}
+    if edge.metadata.provenance == "heuristic" and evidence.get("synthesized_by"):
+        dynamic_kind = str(evidence.get("synthesized_by", "")).replace("_", "-")
+        via_value = (
+            evidence.get("event_name")
+            or evidence.get("callback")
+            or evidence.get("handler")
+            or evidence.get("route_path")
+            or evidence.get("target_name")
+        )
+        location = evidence.get("registered_at") or evidence.get("triggered_at")
+        via_part = f' via "{via_value}"' if via_value else ""
+        loc_part = f" @{location}" if location else ""
+        return f"dynamic: {dynamic_kind}{via_part}{loc_part}"
     res_val = edge.metadata.resolution
     res_str = res_val.value if hasattr(res_val, "value") else str(res_val)
     provenance = edge.metadata.provenance or "unknown"
@@ -7304,6 +7318,30 @@ def repo_status(
             "Unable to determine index state. Verify project root and index."
         )
 
+    # ── Pending changes (per-file) ──────────────────────────────────────
+    pending_changes = index_status.get("pending_changes")
+
+    # ── Report references ───────────────────────────────────────────────
+    report_refs: dict[str, str | None] = {}
+    try:
+        from codegraph.reports.writer import ReportWriter
+        if index_path:
+            cg_dir = Path(index_path)
+            writer = ReportWriter(cg_dir)
+            for prefix, key in [
+                ("impact-", "last_impact_report"),
+                ("coverage-gaps", "last_coverage_report"),
+                ("enrichment-status", "last_enrichment_report"),
+            ]:
+                latest = writer.latest_report_path(prefix)
+                report_refs[key] = str(latest) if latest else None
+    except Exception:
+        report_refs = {
+            "last_impact_report": None,
+            "last_coverage_report": None,
+            "last_enrichment_report": None,
+        }
+
     if response_mode == "compact":
         data: dict[str, Any] = {
             "project_root": resolved_project_root,
@@ -7327,7 +7365,12 @@ def repo_status(
             "hook_installed": hook_installed,
             "hook_auto_update": hook_auto_update,
             "hook_state": hook_state,
+            "pending_changes": pending_changes,
         }
+        # Only include report refs that point to actual files
+        for key, val in report_refs.items():
+            if val is not None:
+                data[key] = val
     else:
         data = {
             "project_root": resolved_project_root,
@@ -7354,7 +7397,12 @@ def repo_status(
             "last_change_summary": index_status.get("last_change_summary"),
             "index_health_details": idx_health,
             "hook_status": hook,
+            "pending_changes": pending_changes,
         }
+        # Report references in standard mode
+        for key, val in report_refs.items():
+            if val is not None:
+                data[key] = val
 
     return _respond_ok(
         data=data,

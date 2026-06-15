@@ -56,7 +56,12 @@ class IndexStateStore:
     def set_pending_changes(
         self, changed: list[str], added: list[str], deleted: list[str],
     ) -> None:
-        """Record pending file changes before sync."""
+        """Record pending file changes before sync (legacy flat format).
+
+        Deprecated: prefer ``set_pending_changes_v2()`` which stores
+        per-file ``PendingFileChange`` records with mtime, synced status,
+        affected symbols, and response visibility.
+        """
         current = self.load()
         current["pending_changes"] = {
             "changed": changed,
@@ -69,6 +74,81 @@ class IndexStateStore:
         """Clear pending changes after successful sync."""
         current = self.load()
         current["pending_changes"] = {"changed": [], "added": [], "deleted": []}
+        self.save(current)
+
+    # ── Per-file pending changes (v2) ───────────────────────────────────
+
+    def set_pending_changes_v2(
+        self,
+        changed: "list[PendingFileChange]",
+        added: "list[PendingFileChange]",
+        deleted: "list[PendingFileChange]",
+    ) -> None:
+        """Record per-file pending changes before sync.
+
+        Each entry is a ``PendingFileChange`` with file_path, mtime,
+        synced status, affected_symbols, and appeared_in_response.
+        """
+        from codegraph.storage.pending_models import PendingFileChange
+
+        current = self.load()
+        current["pending_changes"] = {
+            "changed": [pc.model_dump() for pc in changed],
+            "added": [pc.model_dump() for pc in added],
+            "deleted": [pc.model_dump() for pc in deleted],
+        }
+        self.save(current)
+
+    def get_pending_changes(self) -> "PendingChangeSet":
+        """Load pending changes as a structured ``PendingChangeSet``.
+
+        Handles backward-compatible migration: if the stored data is in
+        the old flat-string format, it is auto-upgraded to per-file records
+        with minimal fields populated.
+        """
+        from codegraph.storage.pending_models import PendingChangeSet, PendingFileChange
+
+        current = self.load()
+        raw = current.get("pending_changes", {"changed": [], "added": [], "deleted": []})
+
+        def _parse_list(items: list, default_change_type: str) -> list[PendingFileChange]:
+            result: list[PendingFileChange] = []
+            for item in items:
+                if isinstance(item, str):
+                    # Legacy flat format — auto-upgrade
+                    result.append(PendingFileChange(
+                        file_path=item,
+                        mtime=0.0,
+                        change_type=default_change_type,
+                    ))
+                elif isinstance(item, dict):
+                    try:
+                        result.append(PendingFileChange.model_validate(item))
+                    except Exception:
+                        # Skip malformed entries
+                        continue
+            return result
+
+        return PendingChangeSet(
+            changed=_parse_list(raw.get("changed", []), "structural"),
+            added=_parse_list(raw.get("added", []), "added"),
+            deleted=_parse_list(raw.get("deleted", []), "deleted"),
+        )
+
+    def mark_appeared_in_response(self, file_paths: set[str]) -> None:
+        """Mark that these pending files appeared in the current MCP response.
+
+        Call this after building an MCP response that references symbols
+        from pending files, so the agent can see which pending changes
+        are reflected in the current response.
+        """
+        current = self.load()
+        raw = current.get("pending_changes", {})
+        for category in ("changed", "added", "deleted"):
+            entries = raw.get(category, [])
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("file_path") in file_paths:
+                    entry["appeared_in_response"] = True
         self.save(current)
 
     def mark_indexing(self) -> None:
@@ -191,8 +271,10 @@ class IndexStateStore:
                 "none": 0,
                 "cosmetic": 0,
                 "structural": 0,
+                "architecture": 0,
                 "added": 0,
                 "deleted": 0,
+                "full_reindex_required": 0,
             },
             "last_incremental_stats": {
                 "changed_files": 0,

@@ -3297,9 +3297,14 @@ def enrich_prepare(
     .codegraph/intermediate/enrich_input.json by default.
     """
     from codegraph.enrich.prepare import generate_prepare_output, write_prepare_output
+    from codegraph.storage.intermediate_store import IntermediateStore
 
     store, cg_dir = _load_store(root)
-    output_path = Path(output) if output else cg_dir / "intermediate" / "enrich_input.json"
+
+    # Default: use intermediate store for batch tracking
+    intermediate = IntermediateStore(cg_dir)
+    default_path = intermediate.dir / "enrich_input.json"
+    output_path = Path(output) if output else default_path
 
     if output_path.exists() and not force:
         typer.echo(f"Error: {output_path} already exists. Use --force to overwrite.", err=True)
@@ -3312,6 +3317,8 @@ def enrich_prepare(
         max_symbols_per_file=max_symbols_per_file,
     )
     written_path = write_prepare_output(prepare_output, cg_dir)
+    # Also write a timestamped batch copy for audit trail
+    intermediate.write_batch("prepare", prepare_output.model_dump())
     typer.echo(f"Prepare output written to: {written_path}")
     typer.echo(f"  Files: {len(prepare_output.files)}")
     typer.echo(f"  Total symbols: {sum(len(f.symbols) for f in prepare_output.files)}")
@@ -3340,6 +3347,7 @@ def enrich_validate(
     produced its output.
     """
     from codegraph.enrich.validate import validate_agent_output
+    from codegraph.storage.intermediate_store import IntermediateStore
 
     store, cg_dir = _load_store(root)
     output_path = Path(input_path) if input_path else cg_dir / "intermediate" / "enrich_output.json"
@@ -3349,6 +3357,10 @@ def enrich_validate(
         raise typer.Exit(1)
 
     result = validate_agent_output(output_path, store)
+
+    # Write validation report to intermediate directory for audit trail
+    intermediate = IntermediateStore(cg_dir)
+    intermediate.write_validation_report(result)
 
     typer.echo()
     typer.echo(f"Validation {'PASSED' if result.valid else 'FAILED'}")
@@ -3396,9 +3408,20 @@ def enrich_import(
     """
     from codegraph.enrich.validate import validate_agent_output
     from codegraph.enrich.import_enrich import import_enrichment
+    from codegraph.storage.intermediate_store import IntermediateStore
 
     store, cg_dir = _load_store(root)
-    output_path = Path(input_path) if input_path else cg_dir / "intermediate" / "enrich_output.json"
+
+    # Resolve input path: explicit arg > latest batch > default name
+    if input_path:
+        output_path = Path(input_path)
+    else:
+        intermediate = IntermediateStore(cg_dir)
+        latest = intermediate.latest_batch()
+        if latest:
+            output_path = latest
+        else:
+            output_path = cg_dir / "intermediate" / "enrich_output.json"
 
     if not output_path.exists():
         typer.echo(f"Error: File not found: {output_path}", err=True)
@@ -3448,6 +3471,7 @@ def enrich_status(
     confidence breakdown, and last import time.
     """
     from codegraph.enrich.status import get_enrichment_status
+    from codegraph.storage.intermediate_store import IntermediateStore
 
     cg_dir = _find_codegraph_dir(root)
     if cg_dir is None:
@@ -3464,8 +3488,14 @@ def enrich_status(
     status = get_enrichment_status(sqlite_store)
     sqlite_store.close()
 
+    # Load audit trail from intermediate store
+    intermediate = IntermediateStore(cg_dir)
+    trail = intermediate.audit_trail()
+
     if json_output:
-        typer.echo(status.model_dump_json(indent=2))
+        output = status.model_dump()
+        output["audit_trail"] = trail
+        typer.echo(json.dumps(output, indent=2))
     else:
         pct = (status.enriched_nodes / status.total_nodes * 100) if status.total_nodes > 0 else 0
         typer.echo()
@@ -3484,6 +3514,20 @@ def enrich_status(
         if status.last_enriched_at:
             typer.echo()
             typer.echo(f"  Last enriched:   {status.last_enriched_at}")
+
+        # Audit trail
+        if trail:
+            typer.echo()
+            typer.echo("Audit Trail (batch files):")
+            for entry in trail:
+                typer.echo(
+                    f"  {entry['batch_file']} — "
+                    f"{entry['file_count']} files, "
+                    f"{entry['symbol_count']} symbols"
+                )
+        else:
+            typer.echo()
+            typer.echo("Audit Trail: no batch files found.")
 
 
 @enrich_app.command(name="clear")
@@ -3528,6 +3572,84 @@ def enrich_clear(
     sqlite_store.close()
 
     typer.echo(f"Enrichment cleared from {count} nodes.")
+
+
+@enrich_app.command(name="batches")
+def enrich_batches(
+    prune: bool = typer.Option(
+        False, "--prune",
+        help="Remove old batch files, keeping the most recent",
+    ),
+    keep: int = typer.Option(
+        10, "--keep", "-k",
+        help="Number of most recent batch files to keep when pruning",
+    ),
+    clear: bool = typer.Option(
+        False, "--clear",
+        help="Remove ALL intermediate files (batch + validation reports)",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root directory (auto-detected if omitted)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Skip confirmation prompt for --clear",
+    ),
+) -> None:
+    """List, prune, or clear intermediate enrichment batch files.
+
+    Shows audit trail of batch enrichment files in
+    .codegraph/intermediate/. Use --prune to remove old batches
+    (keeps the most recent N). Use --clear to remove everything.
+    """
+    from codegraph.storage.intermediate_store import IntermediateStore
+
+    cg_dir = _find_codegraph_dir(root)
+    if cg_dir is None:
+        typer.echo("Error: No .codegraph directory found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    intermediate = IntermediateStore(cg_dir)
+
+    if clear:
+        if not force:
+            typer.echo("This will remove ALL intermediate files:")
+            typer.echo(f"  {intermediate.dir}")
+            answer = typer.prompt("Continue? [y/N]")
+            if answer.lower() not in ("y", "yes"):
+                typer.echo("Aborted.")
+                raise typer.Exit(0)
+        count = intermediate.clear_all()
+        typer.echo(f"Removed {count} intermediate file(s).")
+        return
+
+    if prune:
+        removed = intermediate.prune_batches(keep=keep)
+        typer.echo(f"Removed {removed} batch file(s); kept {keep} most recent.")
+        return
+
+    # Default: list batches
+    batches = intermediate.list_batches()
+    if not batches:
+        typer.echo("No batch files found in .codegraph/intermediate/")
+        return
+
+    trail = intermediate.audit_trail()
+    typer.echo()
+    typer.echo(f"Batch files ({len(batches)}):")
+    typer.echo("=" * 60)
+    for entry in trail:
+        typer.echo(
+            f"  {entry['batch_file']}"
+        )
+        typer.echo(
+            f"    Files: {entry['file_count']}, "
+            f"Symbols: {entry['symbol_count']}"
+        )
+        if entry.get("enriched_at"):
+            typer.echo(f"    Enriched at: {entry['enriched_at']}")
+        typer.echo()
 
 
 # ── workflow command group ──────────────────────────────────────────────────

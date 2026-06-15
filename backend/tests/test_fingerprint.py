@@ -381,11 +381,36 @@ class TestChangeClassificationEndToEnd:
         result = ChangeClassifier.classify(sig, base)
         assert result == ChangeType.STRUCTURAL
 
-    def test_base_vs_import_classified_as_structural(self):
+    def test_base_vs_import_classified_as_architecture(self):
+        """Import-only change (same functions, same calls) → ARCHITECTURE."""
         base = compute_file_hashes(_path("base_file.py"))
         imp = compute_file_hashes(_path("structural_import.py"))
         result = ChangeClassifier.classify(imp, base)
-        assert result == ChangeType.STRUCTURAL
+        assert result == ChangeType.ARCHITECTURE
+
+    def test_import_and_call_change_is_structural_not_architecture(self):
+        """Regression: both imports AND calls change → STRUCTURAL, not ARCHITECTURE.
+
+        When imports_hash AND calls_hash both differ (but structural+symbols
+        match), the change is STRUCTURAL because code logic changed, not just
+        the dependency graph.
+        """
+        # Construct two fingerprints where structural+symbols match,
+        # but both imports and calls differ
+        base = FileFingerprint(
+            file_path="a.py", mtime=1.0, size=10,
+            sha256="AAA", structural_hash="SAME", symbols_hash="SAME",
+            imports_hash="IMP1", calls_hash="CALL1",
+        )
+        changed = FileFingerprint(
+            file_path="a.py", mtime=2.0, size=11,
+            sha256="BBB", structural_hash="SAME", symbols_hash="SAME",
+            imports_hash="IMP2", calls_hash="CALL2",
+        )
+        result = ChangeClassifier.classify(changed, base)
+        assert result == ChangeType.STRUCTURAL, (
+            f"Expected STRUCTURAL when both imports and calls change, got {result}"
+        )
 
     def test_base_vs_call_classified_as_structural(self):
         base = compute_file_hashes(_path("base_file.py"))
