@@ -3,12 +3,38 @@
 from pathlib import Path
 from typing import Any
 
-from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata, NodeType, Resolution
+from codegraph.graph.models import (
+    GraphNode, GraphEdge, EdgeType, EdgeLocation, EdgeMetadata,
+    NodeType, Resolution, DropReason,
+)
 from codegraph.graph.confidence import get_confidence
 from codegraph.indexer.scanner import scan_python_files, scan_supported_files, read_file, normalize_path
 from codegraph.indexer.parser_python import parse_file
 from codegraph.indexer.symbol_extractor import extract_symbols
 from codegraph.indexer.call_extractor import extract_calls
+
+
+# ── Indexer-level diagnostic accumulators ──────────────────────────────
+# These collect drop and auto-correct events that happen during indexing
+# (before validation runs).  validate_graph() drains them via
+# get_indexer_diagnostics() and merges them into the validation report.
+
+_indexer_drops: list[dict[str, Any]] = []
+_indexer_auto_corrected: list[dict[str, Any]] = []
+
+
+def get_indexer_diagnostics() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return and clear the indexer-level drop/auto-correct accumulators.
+
+    Called by :func:`~codegraph.graph.validation.validate_graph` to merge
+    indexer-level events into the validation report.
+    """
+    global _indexer_drops, _indexer_auto_corrected
+    drops = list(_indexer_drops)
+    auto = list(_indexer_auto_corrected)
+    _indexer_drops = []
+    _indexer_auto_corrected = []
+    return drops, auto
 
 
 def _rel_path(root: Path, path: Path) -> str:
@@ -99,6 +125,15 @@ def _renumber_ids(
         if node.id not in seen_ids:
             seen_ids.add(node.id)
             unique_nodes.append(node)
+        else:
+            _indexer_drops.append({
+                "issue": DropReason.duplicate_node_id.value,
+                "reason": DropReason.duplicate_node_id.value,
+                "category": "dropped",
+                "message": f"Duplicate node ID '{node.id}' — first occurrence kept",
+                "node_id": node.id,
+                "node_name": node.name,
+            })
     # (Drop duplicate nodes rather than renumbering them, since they
     #  represent the same symbol — e.g. external:typing.Optional.)
 
@@ -119,10 +154,25 @@ def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
     seen: set[tuple[str, str, str]] = set()
     result: list[GraphEdge] = []
     for e in edges:
-        key = (e.source, e.target, e.type.value if hasattr(e.type, 'value') else str(e.type))
+        etype_str = e.type.value if hasattr(e.type, 'value') else str(e.type)
+        key = (e.source, e.target, etype_str)
         if key not in seen:
             seen.add(key)
             result.append(e)
+        else:
+            _indexer_drops.append({
+                "issue": DropReason.duplicate_edge.value,
+                "reason": DropReason.duplicate_edge.value,
+                "category": "dropped",
+                "message": (
+                    f"Duplicate edge dropped (first-kept): "
+                    f"{e.source} -> {e.target} ({etype_str})"
+                ),
+                "edge_id": e.id,
+                "source": e.source,
+                "target": e.target,
+                "edge_type": etype_str,
+            })
     return result
 
 
@@ -614,10 +664,27 @@ def build_index_v2(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
 
         lang_id = registry.detect(rel)
         if lang_id is None:
+            _indexer_drops.append({
+                "issue": DropReason.parser_missing.value,
+                "reason": DropReason.parser_missing.value,
+                "category": "dropped",
+                "message": f"Unsupported language for {rel}",
+                "file_path": rel,
+            })
             continue
 
         extractor = _get_extractor(lang_id)
         if extractor is None:
+            _indexer_drops.append({
+                "issue": DropReason.parser_missing.value,
+                "reason": DropReason.parser_missing.value,
+                "category": "dropped",
+                "message": (
+                    f"No extractor available for language '{lang_id}' on {rel}"
+                ),
+                "file_path": rel,
+                "language_id": lang_id,
+            })
             continue
 
         try:
@@ -625,8 +692,16 @@ def build_index_v2(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
                 file_path=str(path),
                 project_root=str(root),
             )
-        except Exception:
+        except Exception as exc:
             # A single broken extractor must not fail the whole index
+            _indexer_drops.append({
+                "issue": DropReason.parser_missing.value,
+                "reason": DropReason.parser_missing.value,
+                "category": "dropped",
+                "message": f"Extractor failed for {rel}: {exc}",
+                "file_path": rel,
+                "language_id": lang_id,
+            })
             continue
 
         extractor_results_by_lang.setdefault(lang_id, []).append(result)
@@ -642,7 +717,16 @@ def build_index_v2(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
         try:
             resolved = resolver.resolve(results)
             all_edges = _merge_resolved_edges(all_edges, resolved)
-        except Exception:
+        except Exception as exc:
+            _indexer_drops.append({
+                "issue": DropReason.framework_unresolved.value,
+                "reason": DropReason.framework_unresolved.value,
+                "category": "dropped",
+                "message": (
+                    f"Resolver failed for language '{lang_id}': {exc}"
+                ),
+                "language_id": lang_id,
+            })
             continue
 
     # Deduplicate
@@ -714,5 +798,39 @@ def _merge_resolved_edges(
                 ),
                 metadata=meta,
             ))
+
+    # Track discarded possible-tier edges
+    for pe in (getattr(resolved, 'possible', None) or []):
+        pe_type = pe.edge_type.value if hasattr(pe.edge_type, 'value') else str(pe.edge_type)
+        _indexer_drops.append({
+            "issue": DropReason.framework_unresolved.value,
+            "reason": DropReason.framework_unresolved.value,
+            "category": "dropped",
+            "message": (
+                f"Possible/low-confidence resolved edge discarded: "
+                f"{pe.source} -> {pe.target} ({pe_type})"
+            ),
+            "source": pe.source,
+            "target": pe.target,
+            "edge_type": pe_type,
+            "resolution": pe.resolution.value if hasattr(pe.resolution, 'value') else str(pe.resolution),
+        })
+
+    # Track discarded unresolved_candidates tier
+    for ue in (getattr(resolved, 'unresolved_candidates', None) or []):
+        ue_type = ue.edge_type.value if hasattr(ue.edge_type, 'value') else str(ue.edge_type)
+        _indexer_drops.append({
+            "issue": DropReason.external_unresolved.value,
+            "reason": DropReason.external_unresolved.value,
+            "category": "dropped",
+            "message": (
+                f"Unresolved edge discarded: "
+                f"{ue.source} -> {ue.target} ({ue_type})"
+            ),
+            "source": ue.source,
+            "target": ue.target,
+            "edge_type": ue_type,
+            "resolution": ue.resolution.value if hasattr(ue.resolution, 'value') else str(ue.resolution),
+        })
 
     return raw_edges

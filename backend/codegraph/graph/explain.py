@@ -123,7 +123,26 @@ def explain_symbol(
     else:
         snippet_block = {"included": False, "content": None, "truncated": False}
 
-    return {
+    # ── Enrichment block (if available) ──────────────────────────────────
+    enrichment: dict[str, Any] | None = None
+    if getattr(node, "enrichment_status", "") == "analyzed":
+        enrichment = {}
+        if getattr(node, "summary", ""):
+            enrichment["summary"] = node.summary
+        if getattr(node, "role", ""):
+            enrichment["role"] = node.role
+        if getattr(node, "responsibilities", []):
+            enrichment["responsibilities"] = node.responsibilities
+        if getattr(node, "edge_cases", []):
+            enrichment["edge_cases"] = node.edge_cases
+        if getattr(node, "test_relevance", ""):
+            enrichment["test_relevance"] = node.test_relevance
+        if getattr(node, "enrichment_confidence", ""):
+            enrichment["confidence"] = node.enrichment_confidence
+        if getattr(node, "enrichment_evidence", []):
+            enrichment["evidence"] = node.enrichment_evidence
+
+    result: dict[str, Any] = {
         "target": target,
         "explanation": {
             "summary": summary_text,
@@ -137,6 +156,9 @@ def explain_symbol(
         "evidence": evidence,
         "warnings": warnings,
     }
+    if enrichment:
+        result["enrichment"] = enrichment
+    return result
 
 
 def explain_file(

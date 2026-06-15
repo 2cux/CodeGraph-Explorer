@@ -408,6 +408,8 @@ def get_index_status(project_root: str | Path) -> dict[str, Any]:
                 "status": vr["status"],
                 "generated_at": vr.get("generated_at"),
                 "issue_counts": vr.get("issue_counts", {}),
+                "edge_health": vr.get("edge_health", {}),
+                "stats": vr.get("stats", {}),
             }
     except Exception:
         pass

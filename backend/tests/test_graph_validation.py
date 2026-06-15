@@ -28,6 +28,26 @@ from codegraph.graph.validation import (
 )
 from codegraph.storage.sqlite_store import SUPPORTED_SCHEMA_VERSION, SqliteStore
 
+
+# ── Fixtures ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clear_indexer_accumulator():
+    """Drain the indexer diagnostic accumulator before each test.
+
+    The module-level ``_indexer_drops`` / ``_indexer_auto_corrected`` lists
+    in ``graph_builder`` persist across tests.  If a previous test ran
+    ``build_index``, stale drops would inflate counts when
+    ``validate_graph`` drains them.
+    """
+    try:
+        from codegraph.indexer.graph_builder import get_indexer_diagnostics
+        get_indexer_diagnostics()  # drain and discard
+    except ImportError:
+        pass
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -107,8 +127,9 @@ class TestValidateGraphInMemory:
         report = validate_graph(cg_dir, root, nodes=nodes, edges=edges)
 
         assert len(report["dropped"]) >= 2
-        dropped_issues = [d["issue"] for d in report["dropped"]]
-        assert "dangling_edge" in dropped_issues
+        dropped_reasons = [d.get("reason", d.get("issue", "")) for d in report["dropped"]]
+        assert "missing_source" in dropped_reasons
+        assert "missing_target" in dropped_reasons
 
     def test_confidence_clamped(self, tmp_path):
         """Confidence outside [0,1] is clamped."""

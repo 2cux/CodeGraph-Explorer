@@ -989,7 +989,7 @@ class JavaExtractor(LanguageExtractor):
                 target = f"unresolved:{iface_name}"
                 edges.append(GraphEdge(
                     id=_next_edge_id(),
-                    type=EdgeType.implements,
+                    type=EdgeType.inherits,
                     source=cls_node.id,
                     target=target,
                     confidence=0.85,
