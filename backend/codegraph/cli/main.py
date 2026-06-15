@@ -3059,7 +3059,7 @@ def configure_git_hook(
     # 1. Check if current directory is a Git repo
     git_dir = cwd / ".git"
     if git_dir.is_file():
-        # Worktree support
+        # Worktree support — .git is a file containing "gitdir: <real-path>"
         try:
             content = git_dir.read_text(encoding="utf-8").strip()
             if content.startswith("gitdir: "):
@@ -3190,6 +3190,10 @@ def workflow_impact(
         False, "--force-output",
         help="Overwrite existing output file",
     ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted)",
+    ),
 ) -> None:
     """Run a deterministic impact analysis workflow.
 
@@ -3211,20 +3215,28 @@ def workflow_impact(
     VALID_FORMATS = {"markdown", "json"}
 
     # ── Validate arguments ──────────────────────────────────────────────
-    if change_type not in VALID_CHANGE_TYPES:
-        typer.echo(
-            f"Error: Invalid change_type '{change_type}'. "
-            f"Valid: {', '.join(sorted(VALID_CHANGE_TYPES))}",
-            err=True,
-        )
+    def _exit_error(msg: str) -> None:
+        """Exit with error, using JSON format if requested."""
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": msg,
+                "workflow": "impact",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: {msg}", err=True)
         raise typer.Exit(1)
 
-    if fmt not in VALID_FORMATS:
-        typer.echo(
-            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
-            err=True,
+    if change_type not in VALID_CHANGE_TYPES:
+        _exit_error(
+            f"Invalid change_type '{change_type}'. "
+            f"Valid: {', '.join(sorted(VALID_CHANGE_TYPES))}"
         )
-        raise typer.Exit(1)
+
+    if fmt not in VALID_FORMATS:
+        _exit_error(
+            f"Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}"
+        )
 
     # Parse comma-separated inputs
     planned_file_list: list[str] = []
@@ -3236,15 +3248,11 @@ def workflow_impact(
         planned_symbol_names = [s.strip() for s in symbols.split(",") if s.strip()]
 
     if not planned_file_list and not planned_symbol_names:
-        typer.echo(
-            "Error: At least one of --files or --symbols must be provided.",
-            err=True,
-        )
-        raise typer.Exit(1)
+        _exit_error("At least one of --files or --symbols must be provided.")
 
     # ── Load store ──────────────────────────────────────────────────────
     try:
-        store, cg_dir = _load_store()
+        store, cg_dir = _load_store(root)
     except typer.Exit:
         raise
     except Exception as e:
@@ -3357,7 +3365,7 @@ def _format_workflow_json(
         "index_status": {
             "freshness": idx_status.get("status", "unknown"),
             "project_root": idx_status.get("project_root", ""),
-            "index_path": str(idx_status.get("index_path", "")),
+            "index_path": str(idx_status.get("index_path") or ""),
             "indexed_at": idx_status.get("indexed_at"),
             "stats": {
                 "files": stats.get("files", 0),

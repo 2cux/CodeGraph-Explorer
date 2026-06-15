@@ -311,3 +311,477 @@ class TestCliUpdate:
             (tmp_path / ".claude.json").read_text(encoding="utf-8")
         )
         assert "codegraph" in claude_config_after["mcpServers"]
+
+
+# ── Workflow Impact CLI tests ────────────────────────────────────────────
+
+
+@pytest.fixture
+def indexed_project(tmp_path) -> Path:
+    """Create a small indexed Python project for workflow tests."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    # Create a Python file with a function that calls another function
+    (proj / "greeter.py").write_text("""
+def format_greeting(name: str) -> str:
+    '''Format a greeting string.'''
+    return f"Hello, {name}!"
+
+def greet(name: str) -> str:
+    '''Greet someone.'''
+    return format_greeting(name)
+
+class Greeter:
+    '''A greeter class.'''
+    def __init__(self, prefix: str = "Hello"):
+        self.prefix = prefix
+
+    def greet(self, name: str) -> str:
+        return f"{self.prefix}, {name}!"
+""", encoding="utf-8")
+
+    # Index the project
+    from typer.testing import CliRunner
+    runner = CliRunner()
+    result = runner.invoke(app, ["init", str(proj), "--no-hook"])
+    assert result.exit_code == 0, f"Index failed: {result.output}"
+
+    return proj
+
+
+class TestWorkflowImpact:
+    """Tests for ``codegraph workflow impact`` CLI command."""
+
+    def test_help(self, runner):
+        """workflow impact --help should show usage."""
+        result = runner.invoke(app, ["workflow", "impact", "--help"])
+        assert result.exit_code == 0
+        assert "--files" in result.output
+        assert "--symbols" in result.output
+        assert "--change-type" in result.output
+        assert "--format" in result.output
+
+    def test_missing_files_and_symbols(self, runner):
+        """Missing both --files and --symbols should return non-zero."""
+        result = runner.invoke(app, ["workflow", "impact"])
+        assert result.exit_code != 0
+        assert "files" in result.output.lower() or "symbols" in result.output.lower()
+
+    def test_invalid_change_type(self, runner):
+        """Invalid change_type should return non-zero."""
+        result = runner.invoke(
+            app, ["workflow", "impact", "--files", "test.py", "--change-type", "invalid"]
+        )
+        assert result.exit_code != 0
+
+    def test_invalid_format(self, runner):
+        """Invalid format should return non-zero."""
+        result = runner.invoke(
+            app, ["workflow", "impact", "--files", "test.py", "--format", "xml"]
+        )
+        assert result.exit_code != 0
+
+    def test_no_index(self, runner, tmp_path):
+        """Running without an index should return non-zero."""
+        result = runner.invoke(
+            app, ["workflow", "impact", "--files", "greeter.py", "--root", str(tmp_path)]
+        )
+        assert result.exit_code != 0
+        assert "No .codegraph directory found" in result.output
+
+    def test_with_files_markdown(self, runner, indexed_project):
+        """Basic invocation with --files should produce Markdown."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--change-type", "refactor",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "# CodeGraph Impact Workflow Report" in result.output
+
+    def test_with_symbols_markdown(self, runner, indexed_project):
+        """Invocation with --symbols should produce Markdown."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--symbols", "greet",
+                "--change-type", "bugfix",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "# CodeGraph Impact Workflow Report" in result.output
+
+    def test_markdown_contains_impact_summary(self, runner, indexed_project):
+        """Markdown output should contain Impact Summary section."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--change-type", "refactor",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "## Impact Summary" in result.output
+        assert "Risk level:" in result.output
+
+    def test_markdown_contains_index_status(self, runner, indexed_project):
+        """Markdown output should contain Index Status section."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "## Index Status" in result.output
+        assert "Freshness:" in result.output
+
+    def test_markdown_contains_recommended_checks(self, runner, indexed_project):
+        """Markdown output should contain Recommended Checks section."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "## Recommended Checks" in result.output
+
+    def test_json_output_valid(self, runner, indexed_project):
+        """--format json should output valid JSON."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--change-type", "feature",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, dict)
+
+    def test_json_contains_workflow_field(self, runner, indexed_project):
+        """JSON output should contain workflow=impact."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data.get("workflow") == "impact"
+        assert data.get("ok") is True
+
+    def test_json_contains_planned_symbols(self, runner, indexed_project):
+        """JSON output should contain planned_symbols."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "planned_symbols" in data
+        assert isinstance(data["planned_symbols"], list)
+
+    def test_json_contains_impact_summary(self, runner, indexed_project):
+        """JSON output should contain impact_summary."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "impact_summary" in data
+        assert "risk_level" in data["impact_summary"]
+
+    def test_json_contains_warnings(self, runner, indexed_project):
+        """JSON output should contain warnings list."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "warnings" in data
+        assert isinstance(data["warnings"], list)
+
+    def test_json_error_on_missing_args(self, runner):
+        """JSON mode should output JSON error when args are missing."""
+        result = runner.invoke(
+            app,
+            ["workflow", "impact", "--format", "json"],
+        )
+        assert result.exit_code != 0
+        # Error may be on stdout or stderr
+        output = result.output.strip() or result.stderr.strip()
+        data = json.loads(output)
+        assert data.get("ok") is False
+
+    def test_output_writes_file(self, runner, indexed_project):
+        """--output should write report to file."""
+        out_path = indexed_project / "report.md"
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--output", str(out_path),
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Report written to:" in result.output
+        assert out_path.exists()
+        content = out_path.read_text(encoding="utf-8")
+        assert "# CodeGraph Impact Workflow Report" in content
+
+    def test_no_output_flag_does_not_write_file(self, runner, indexed_project):
+        """Without --output, no report file should be created in .codegraph/reports/."""
+        reports_dir = indexed_project / ".codegraph" / "reports"
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        # Reports dir should not be created by default
+        assert not reports_dir.exists() or not list(reports_dir.glob("impact*.md"))
+
+    def test_existing_output_not_overwritten(self, runner, indexed_project):
+        """Existing output file should not be overwritten without --force-output."""
+        out_path = indexed_project / "report.md"
+        out_path.write_text("existing content", encoding="utf-8")
+
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--output", str(out_path),
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+        # Content should be unchanged
+        assert out_path.read_text(encoding="utf-8") == "existing content"
+
+    def test_force_output_overwrites(self, runner, indexed_project):
+        """--force-output should overwrite existing output file."""
+        out_path = indexed_project / "report.md"
+        out_path.write_text("existing content", encoding="utf-8")
+
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--output", str(out_path),
+                "--force-output",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Report written to:" in result.output
+        content = out_path.read_text(encoding="utf-8")
+        assert "# CodeGraph Impact Workflow Report" in content
+
+    def test_output_creates_parent_dirs(self, runner, indexed_project):
+        """--output should create parent directories if needed."""
+        out_path = indexed_project / "sub" / "deep" / "report.md"
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--output", str(out_path),
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert out_path.exists()
+
+    def test_with_both_files_and_symbols(self, runner, indexed_project):
+        """Using both --files and --symbols should work."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--symbols", "Greeter",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "# CodeGraph Impact Workflow Report" in result.output
+
+    def test_symbol_not_found_warning(self, runner, indexed_project):
+        """Non-existent symbol should produce warning but not error out."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--symbols", "nonexistent_func",
+                "--root", str(indexed_project),
+            ],
+        )
+        # Should still exit 0 (workflow completed, just no symbols found)
+        assert result.exit_code == 0
+        assert "## Impact Summary" in result.output
+
+    def test_file_not_indexed_warning(self, runner, indexed_project):
+        """Non-indexed file should produce warning but not error out."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "nonexistent.py",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "## Impact Summary" in result.output
+
+    def test_json_contains_input_field(self, runner, indexed_project):
+        """JSON should contain input section with files/symbols/change_type."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--symbols", "greet",
+                "--change-type", "refactor",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["input"]["files"] == ["greeter.py"]
+        assert data["input"]["symbols"] == ["greet"]
+        assert data["input"]["change_type"] == "refactor"
+
+    def test_json_contains_index_status(self, runner, indexed_project):
+        """JSON should contain index_status section."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "index_status" in data
+        assert "freshness" in data["index_status"]
+
+    def test_workflow_help_shows_in_main_help(self, runner):
+        """Main help should show workflow subcommand."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "workflow" in result.output
+
+    def test_workflow_group_help(self, runner):
+        """workflow --help should show impact subcommand."""
+        result = runner.invoke(app, ["workflow", "--help"])
+        assert result.exit_code == 0
+        assert "impact" in result.output
+
+    def test_no_include_tests_flag(self, runner, indexed_project):
+        """--no-include-tests should still produce valid output."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--no-include-tests",
+                "--format", "json",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["affected_tests"] == []
+
+    def test_with_description(self, runner, indexed_project):
+        """--description should appear in report."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--description", "Refactor greeting module",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Refactor greeting module" in result.output
+
+    def test_workflow_does_not_create_frontend_deps(self, runner, indexed_project):
+        """Workflow should not create any frontend files."""
+        result = runner.invoke(
+            app,
+            [
+                "workflow", "impact",
+                "--files", "greeter.py",
+                "--root", str(indexed_project),
+            ],
+        )
+        assert result.exit_code == 0
+        # No HTML, JS, CSS files should be created
+        frontend_files = list(indexed_project.glob("*.html")) + \
+            list(indexed_project.glob("*.js")) + \
+            list(indexed_project.glob("*.css"))
+        assert len(frontend_files) == 0
+
+    def test_mcp_pre_edit_check_unchanged(self):
+        """MCP pre_edit_check should still be importable and callable."""
+        from codegraph.mcp_server import pre_edit_check
+        import inspect
+        sig = inspect.signature(pre_edit_check)
+        params = list(sig.parameters.keys())
+        # Verify signature unchanged
+        assert "files" in params
+        assert "symbols" in params
+        assert "change_type" in params
+        assert "response_mode" in params

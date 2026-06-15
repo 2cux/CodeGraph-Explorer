@@ -90,6 +90,42 @@ REM {SENTINEL_END}
 """
 
 
+def build_pre_commit_impact_hook_script() -> str:
+    """Build a Unix (sh) pre-commit hook script for impact analysis.
+
+    The hook:
+    - Reads staged changed files via ``git diff --cached``
+    - Calls ``codegraph workflow impact`` with those files
+    - Always exits 0 (never blocks commits)
+    - If staged files are empty, exits immediately
+
+    Returns:
+        Complete hook script content.
+    """
+    return """#!/usr/bin/env sh
+set -u
+
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR | tr '\\n' ',' | sed 's/,$//')"
+
+if [ -z "$STAGED_FILES" ]; then
+  exit 0
+fi
+
+echo "[CodeGraph] Running pre-commit impact check..."
+codegraph workflow impact --files "$STAGED_FILES" --change-type unknown --format markdown
+
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+  echo "[CodeGraph] Impact check failed or index is unavailable."
+  echo "[CodeGraph] Commit is not blocked by default."
+  exit 0
+fi
+
+exit 0
+"""
+
+
 def _is_windows_without_sh() -> bool:
     """Return True on Windows when sh.exe is not available."""
     import shutil

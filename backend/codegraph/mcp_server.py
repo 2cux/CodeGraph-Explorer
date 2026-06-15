@@ -4251,279 +4251,38 @@ def pre_edit_check(
             tool="codegraph_pre_edit_check",
         )
 
-    # ── Pre-build warning and index structures ──────────────────────────────
-    warnings_list: list[dict[str, Any]] = []
+    # ── Delegate core logic to reusable helper ───────────────────────────
+    from codegraph.workflow import run_pre_edit_check
+
+    helper_result = run_pre_edit_check(
+        store=store,
+        files=planned_file_list,
+        symbols=planned_symbol_names,
+        change_type=change_type,
+        description=description,
+        include_tests=include_tests,
+        limit=limit,
+    )
+
+    # Unpack helper result
+    planned_files_out = helper_result["planned_files"]
+    planned_symbols_out = helper_result["planned_symbols"]
+    all_callers = helper_result["affected_callers"]
+    all_affected_files = helper_result["affected_files"]
+    all_affected_tests = helper_result["affected_tests"]
+    recommended_checks = helper_result["recommended_checks"]
+    impact_errors = helper_result.get("impact_errors", [])
+    warnings_list = helper_result.get("warnings", [])
+
+    agg_risk = helper_result["impact_summary"]["risk_level"]
+    risk_confidence = helper_result["impact_summary"]["confidence"]
+    risk_summary = helper_result["impact_summary"]["summary"].replace("[pre-edit heuristic] ", "")
+
+    # ── Downgrade confidence if index is stale ──────────────────────────
     idx = _build_index_status()
-
-    # ── Build planned_files ─────────────────────────────────────────────────
-    planned_files_out: list[dict[str, Any]] = []
-    all_indexed_nodes = list(store.all_nodes())
-    node_by_file: dict[str, list[GraphNode]] = {}
-    for n in all_indexed_nodes:
-        fp = n.file_path
-        if fp:
-            node_by_file.setdefault(fp, []).append(n)
-
-    for f in planned_file_list:
-        normalized = f.replace("\\", "/")
-        matching_nodes: list[GraphNode] = []
-
-        if normalized in node_by_file:
-            matching_nodes = node_by_file[normalized]
-        else:
-            # Try suffix match (relative path match)
-            for indexed_fp in node_by_file:
-                if indexed_fp.endswith(normalized) or indexed_fp.endswith("/" + normalized):
-                    matching_nodes.extend(node_by_file[indexed_fp])
-
-        if not matching_nodes:
-            planned_files_out.append({
-                "file": f,
-                "indexed": False,
-                "symbols_found": 0,
-            })
-            warnings_list.append(build_warning(
-                "file_not_indexed",
-                message=f"File '{f}' is not indexed. Impact analysis may miss this file.",
-                reason_code="file_not_indexed",
-            ))
-        else:
-            # Deduplicate by file_path
-            unique_files = list({n.file_path for n in matching_nodes if n.file_path})
-            for uf in unique_files:
-                file_nodes = [n for n in matching_nodes if n.file_path == uf]
-                planned_files_out.append({
-                    "file": uf,
-                    "indexed": True,
-                    "symbols_found": len(file_nodes),
-                })
-
-    # ── Resolve planned_symbols ─────────────────────────────────────────────
-    planned_symbols_out: list[dict[str, Any]] = []
-    seen_symbol_ids: set[str] = set()
-
-    # From explicit symbol names
-    for sym_name in planned_symbol_names:
-        resolved = _resolve_node_detailed(store, sym_name)
-        if resolved is None:
-            warnings_list.append(build_warning(
-                "symbol_not_found",
-                message=f"Symbol '{sym_name}' not found in index.",
-                reason_code="symbol_not_found",
-            ))
-            continue
-        if resolved["node"] is None:
-            # Ambiguous or unable to resolve to a single node
-            if resolved.get("match_reason") == "ambiguous":
-                candidates = resolved.get("candidates", [])
-                candidate_names = [c.get("symbol_id", c.get("name", "?")) for c in candidates[:3]]
-                warnings_list.append(build_warning(
-                    "ambiguous_symbol",
-                    message=(
-                        f"Symbol '{sym_name}' is ambiguous. "
-                        f"Candidates: {', '.join(candidate_names)}. "
-                        f"Use codegraph_find or codegraph_search_symbols to disambiguate."
-                    ),
-                    reason_code="ambiguous_symbol",
-                ))
-            else:
-                warnings_list.append(build_warning(
-                    "symbol_not_found",
-                    message=f"Symbol '{sym_name}' not found in index.",
-                    reason_code="symbol_not_found",
-                ))
-            continue
-        node = resolved["node"]
-        if node.id in seen_symbol_ids:
-            continue
-        seen_symbol_ids.add(node.id)
-        # Skip test symbols as primary impact starting points unless user
-        # only passed test files
-        if node.type == NodeType.test and planned_file_list:
-            continue
-        planned_symbols_out.append({
-            "symbol": node.name,
-            "symbol_id": node.id,
-            "type": node.type.value if isinstance(node.type, NodeType) else str(node.type),
-            "file": node.file_path,
-            "line_start": node.location.line_start if node.location else None,
-            "line_end": node.location.line_end if node.location else None,
-            "reason": "Symbol explicitly listed in planned symbols.",
-        })
-
-    # From planned files: collect all non-test symbols from indexed files
-    for pf in planned_files_out:
-        if not pf.get("indexed"):
-            continue
-        file_path = pf["file"]
-        for n in all_indexed_nodes:
-            if n.file_path != file_path:
-                continue
-            if n.id in seen_symbol_ids:
-                continue
-            if n.type == NodeType.test:
-                continue
-            seen_symbol_ids.add(n.id)
-            planned_symbols_out.append({
-                "symbol": n.name,
-                "symbol_id": n.id,
-                "type": n.type.value if isinstance(n.type, NodeType) else str(n.type),
-                "file": n.file_path,
-                "line_start": n.location.line_start if n.location else None,
-                "line_end": n.location.line_end if n.location else None,
-                "reason": "Symbol is defined in a planned edit file.",
-            })
-
-    # ── Run impact analysis for each planned symbol ─────────────────────────
-    all_callers: list[dict[str, Any]] = []
-    all_affected_files: dict[str, dict[str, Any]] = {}
-    all_affected_tests: list[dict[str, Any]] = []
-    caller_ids: set[str] = set()
-    test_ids: set[str] = set()
-    risk_levels: list[str] = []
-    impact_errors: list[dict[str, Any]] = []
-
-    for ps in planned_symbols_out:
-        sym_id = ps["symbol_id"]
-        try:
-            impact_result = graph_impact.analyze_impact(
-                store, sym_id, depth=2, min_confidence=0.6,
-            )
-        except Exception as exc:
-            impact_errors.append({
-                "symbol_id": sym_id,
-                "error": str(exc),
-            })
-            warnings_list.append(build_warning(
-                "impact_error",
-                message=f"Impact analysis failed for '{sym_id}': {exc}",
-                reason_code="impact_error",
-            ))
-            continue
-
-        # Collect risk level
-        risk_data = impact_result.get("risk", {})
-        rl = risk_data.get("level", "unknown")
-        risk_levels.append(rl)
-
-        # Collect callers from confirmed impact
-        confirmed = impact_result.get("confirmed_impact", {})
-        for s in confirmed.get("symbols", []):
-            if s.get("impact_type") == "upstream_caller":
-                sid = s.get("symbol_id", "")
-                if sid and sid not in caller_ids:
-                    caller_ids.add(sid)
-                    all_callers.append({
-                        "symbol_id": sid,
-                        "name": s.get("name", ""),
-                        "type": s.get("type", "unknown"),
-                        "file_path": s.get("file_path", ""),
-                        "distance": s.get("distance", 0),
-                        "confidence": s.get("confidence", 1.0),
-                        "confidence_level": s.get("confidence_level", "unknown"),
-                    })
-
-        # Collect affected files
-        for f in confirmed.get("files", []):
-            fp = f.get("file_path", "")
-            if fp and fp not in all_affected_files:
-                all_affected_files[fp] = {
-                    "file_path": fp,
-                    "layer": _assign_layer(fp),
-                    "priority": f.get("priority", "medium"),
-                }
-
-        # Collect tests
-        if include_tests:
-            for t in impact_result.get("related_tests", []):
-                tid = t.get("symbol_id", "")
-                if tid and tid not in test_ids:
-                    test_ids.add(tid)
-                    all_affected_tests.append({
-                        "symbol_id": tid,
-                        "name": t.get("name", ""),
-                        "file_path": t.get("file_path", ""),
-                        "confidence": t.get("confidence", 1.0),
-                        "confidence_level": t.get("confidence_level", "unknown"),
-                    })
-
-    # ── Compute aggregate risk_level ────────────────────────────────────────
     idx_envelope = _build_index_status_envelope(idx)
-
-    if not risk_levels:
-        # No symbols were analyzed — unknown risk
-        agg_risk = "unknown"
-        risk_summary = "No symbols were found in the index for the planned files or symbols."
-        risk_confidence = "unknown"
-    else:
-        # Heuristic: pick the highest risk among all planned symbols
-        risk_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
-        agg_risk = max(risk_levels, key=lambda r: risk_order.get(r, 0))
-
-        # Build summary
-        num_callers = len(all_callers)
-        num_files = len(all_affected_files)
-        num_tests = len(all_affected_tests)
-        num_planned = len(planned_symbols_out)
-
-        parts: list[str] = []
-        if num_planned > 0:
-            parts.append(f"Editing {num_planned} symbol(s)")
-        if num_callers > 0:
-            parts.append(f"may affect {num_callers} caller(s)")
-        if num_files > 0:
-            parts.append(f"{num_files} file(s)")
-        if num_tests > 0:
-            parts.append(f"and {num_tests} test(s)")
-        if parts:
-            risk_summary = ", ".join(parts) + "."
-        else:
-            risk_summary = "No callers, files, or tests detected for the planned symbols."
-
-        # Confidence heuristic
-        if num_callers > 0 or num_files > 0:
-            risk_confidence = "medium"
-        else:
-            risk_confidence = "low"
-
-        # Downgrade confidence if there were impact errors or index is stale
-        if impact_errors:
-            risk_confidence = "low"
-        if idx_envelope.get("freshness") == "stale":
-            risk_confidence = "low"
-
-    # Override: if no planned symbols at all, risk is unknown
-    if not planned_symbols_out:
-        agg_risk = "unknown"
-        risk_summary = "No symbols could be resolved from the planned files or symbols. Impact cannot be assessed."
-        risk_confidence = "unknown"
-
-    # ── Build recommended_checks ─────────────────────────────────────────────
-    recommended_checks: list[dict[str, Any]] = []
-
-    # 1. Read the planned files
-    for pf in planned_files_out[:2]:
-        if pf.get("indexed"):
-            recommended_checks.append({
-                "type": "read",
-                "target": pf["file"],
-                "reason": "Read exact source before editing the planned file.",
-            })
-
-    # 2. Suggest running tests for affected test files
-    affected_test_files: set[str] = set()
-    for t in all_affected_tests[:5]:
-        tf = t.get("file_path", "")
-        if tf and tf not in affected_test_files:
-            affected_test_files.add(tf)
-            recommended_checks.append({
-                "type": "test",
-                "target": tf,
-                "reason": "Likely covers affected behavior of planned changes.",
-            })
-
-    # Cap at 5
-    recommended_checks = recommended_checks[:5]
+    if idx_envelope.get("freshness") == "stale":
+        risk_confidence = "low"
 
     # ── Build next_recommended_tools ─────────────────────────────────────────
     next_tools: list[dict[str, Any]] = []
@@ -4544,24 +4303,19 @@ def pre_edit_check(
         })
 
     # ── Build response data ─────────────────────────────────────────────────
+    # Re-wrap impact_summary with potentially downgraded confidence
+    impact_summary_out = dict(helper_result["impact_summary"])
+    impact_summary_out["confidence"] = risk_confidence
+
     if response_mode == "compact":
         data: dict[str, Any] = {
             "change_type": change_type,
             "description": description or "",
             "planned_files": planned_files_out,
             "planned_symbols": planned_symbols_out[:effective_limit],
-            "impact_summary": {
-                "risk_level": agg_risk,
-                "confidence": risk_confidence,
-                "summary": (
-                    f"[pre-edit heuristic] {risk_summary}"
-                ),
-            },
+            "impact_summary": impact_summary_out,
             "affected_callers": all_callers[:effective_limit],
-            "affected_files": sorted(
-                all_affected_files.values(),
-                key=lambda x: (0 if x.get("priority") == "high" else 1, x["file_path"]),
-            )[:effective_limit],
+            "affected_files": all_affected_files[:effective_limit],
             "affected_tests": all_affected_tests[:effective_limit] if include_tests else [],
             "recommended_checks": recommended_checks,
         }
@@ -4571,18 +4325,9 @@ def pre_edit_check(
             "description": description or "",
             "planned_files": planned_files_out,
             "planned_symbols": planned_symbols_out[:effective_limit],
-            "impact_summary": {
-                "risk_level": agg_risk,
-                "confidence": risk_confidence,
-                "summary": (
-                    f"[pre-edit heuristic] {risk_summary}"
-                ),
-            },
+            "impact_summary": impact_summary_out,
             "affected_callers": all_callers[:effective_limit],
-            "affected_files": sorted(
-                all_affected_files.values(),
-                key=lambda x: (0 if x.get("priority") == "high" else 1, x["file_path"]),
-            )[:effective_limit],
+            "affected_files": all_affected_files[:effective_limit],
             "affected_tests": all_affected_tests[:effective_limit] if include_tests else [],
             "recommended_checks": recommended_checks,
             "impact_errors": impact_errors if impact_errors else [],
