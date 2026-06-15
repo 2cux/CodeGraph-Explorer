@@ -2882,5 +2882,693 @@ def configure_remove(
         _print_configure_result(result)
 
 
+@configure_app.command(name="workflows")
+def configure_workflows(
+    agent: str = typer.Option(
+        ..., "--agent", "-a",
+        help="Target agent to install workflow commands for (e.g. 'claude')",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing workflow command files",
+    ),
+) -> None:
+    """Install CodeGraph workflow commands for the target agent.
+
+    Copies workflow command templates into the target project so that
+    the agent can follow CodeGraph-first workflows via explicit slash
+    commands like /codegraph-impact, /codegraph-test-audit, etc.
+
+    Currently only ``--agent claude`` is supported, which writes
+    markdown command files into ``.claude/commands/``.
+
+    Examples:
+        codegraph configure workflows --agent claude
+        codegraph configure workflows --agent claude --force
+    """
+    if agent not in ("claude",):
+        typer.echo(
+            f"Error: Unsupported agent '{agent}'. "
+            f"Currently only 'claude' is supported.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Locate the template directory
+    try:
+        import codegraph
+        pkg_dir = Path(codegraph.__file__).parent
+    except Exception:
+        typer.echo("Error: Could not locate codegraph package directory.", err=True)
+        raise typer.Exit(1)
+
+    templates_dir = pkg_dir / "templates" / "claude_commands"
+    if not templates_dir.is_dir():
+        typer.echo(
+            f"Error: Template directory not found: {templates_dir}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Target directory in CWD
+    target_dir = Path.cwd() / ".claude" / "commands"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Command file list
+    command_files = [
+        "codegraph-impact.md",
+        "codegraph-test-audit.md",
+        "codegraph-explain.md",
+        "codegraph-find.md",
+    ]
+
+    installed: list[str] = []
+    skipped: list[str] = []
+    overwritten: list[str] = []
+    errors: list[str] = []
+
+    for filename in command_files:
+        src = templates_dir / filename
+        dst = target_dir / filename
+
+        if not src.exists():
+            errors.append(f"{filename}: template not found at {src}")
+            continue
+
+        if dst.exists() and not force:
+            skipped.append(filename)
+            continue
+
+        action = "overwritten" if dst.exists() else "installed"
+        try:
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            if action == "overwritten":
+                overwritten.append(filename)
+            else:
+                installed.append(filename)
+        except OSError as e:
+            errors.append(f"{filename}: {e}")
+
+    # ── Output ──────────────────────────────────────────────────────────
+    if errors:
+        typer.echo()
+        for err in errors:
+            typer.echo(f"  [ERROR] {err}", err=True)
+
+    if installed:
+        typer.echo()
+        typer.echo("Installed Claude Code workflow commands:")
+        typer.echo()
+        for f in installed:
+            typer.echo(f"  - .claude/commands/{f}")
+
+    if overwritten:
+        typer.echo()
+        typer.echo("Overwritten (--force):")
+        typer.echo()
+        for f in overwritten:
+            typer.echo(f"  - .claude/commands/{f}")
+
+    if skipped:
+        typer.echo()
+        for f in skipped:
+            typer.echo(
+                f"  [SKIP] .claude/commands/{f} already exists. "
+                f"Use --force to overwrite."
+            )
+
+    if installed or overwritten:
+        typer.echo()
+        typer.echo("Use them in Claude Code:")
+        typer.echo()
+        typer.echo("  - /codegraph-impact")
+        typer.echo("  - /codegraph-test-audit")
+        typer.echo("  - /codegraph-explain")
+        typer.echo("  - /codegraph-find")
+        typer.echo()
+
+    if skipped and not installed and not overwritten:
+        typer.echo()
+        typer.echo(
+            "All workflow commands already exist. Use --force to overwrite."
+        )
+        typer.echo()
+
+
+# ── configure git-hook command ────────────────────────────────────────────
+
+
+@configure_app.command(name="git-hook")
+def configure_git_hook(
+    pre_commit_impact: bool = typer.Option(
+        False, "--pre-commit-impact",
+        help="Install optional pre-commit impact check hook",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Overwrite existing pre-commit hook (backs up old hook)",
+    ),
+) -> None:
+    """Install optional Git hooks for CodeGraph workflows.
+
+    Currently supports --pre-commit-impact which installs a hook that
+    runs ``codegraph workflow impact`` on staged changed files before
+    each commit.  The hook is advisory only — it never blocks commits.
+
+    Examples:
+        codegraph configure git-hook --pre-commit-impact
+        codegraph configure git-hook --pre-commit-impact --force
+    """
+    import stat
+    from datetime import datetime
+
+    if not pre_commit_impact:
+        typer.echo(
+            "Usage: codegraph configure git-hook --pre-commit-impact\n"
+            "\n"
+            "Install optional Git pre-commit impact hook.\n"
+            "\n"
+            "Options:\n"
+            "  --pre-commit-impact  Install pre-commit impact check hook\n"
+            "  --force              Overwrite existing hook (backs up old hook)",
+        )
+        return
+
+    cwd = Path.cwd().resolve()
+
+    # 1. Check if current directory is a Git repo
+    git_dir = cwd / ".git"
+    if git_dir.is_file():
+        # Worktree support
+        try:
+            content = git_dir.read_text(encoding="utf-8").strip()
+            if content.startswith("gitdir: "):
+                real = content[len("gitdir: "):]
+                real_path = Path(real)
+                if not real_path.is_absolute():
+                    real_path = (cwd / real_path).resolve()
+                if real_path.is_dir():
+                    git_dir = real_path
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    if not git_dir.is_dir():
+        typer.echo(
+            "Error: Not a Git repository.\n"
+            f"  Current directory: {cwd}\n"
+            "  Run this command from within a Git repository.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # 2. Ensure hooks directory exists
+    hooks_dir = git_dir / "hooks"
+    if not hooks_dir.exists():
+        typer.echo(
+            f"Error: .git/hooks/ directory not found at {hooks_dir}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    hook_path = hooks_dir / "pre-commit"
+
+    # 3. Build the hook script
+    from codegraph.hooks.template import build_pre_commit_impact_hook_script
+
+    hook_script = build_pre_commit_impact_hook_script()
+
+    # 4. Handle existing hook
+    if hook_path.exists():
+        if not force:
+            typer.echo(
+                "Existing pre-commit hook found. Not overwritten.\n"
+                "\n"
+                "To install manually, add the CodeGraph hook block from:\n"
+                "  docs/git-hooks.md\n"
+                "\n"
+                "Or rerun with:\n"
+                "  codegraph configure git-hook --pre-commit-impact --force"
+            )
+            return
+
+        # --force: backup existing hook before overwriting
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        backup_path = hooks_dir / "pre-commit.codegraph.bak"
+
+        if backup_path.exists():
+            # Add timestamp to avoid overwriting old backup
+            backup_path = hooks_dir / f"pre-commit.codegraph.bak.{timestamp}"
+
+        existing_content = hook_path.read_bytes()
+        backup_path.write_bytes(existing_content)
+        typer.echo(f"Backed up existing hook to: {backup_path.name}")
+
+    # 5. Write the hook
+    hook_path.write_text(hook_script, encoding="utf-8", newline="\n")
+
+    # 6. Make executable on Unix
+    if sys.platform != "win32":
+        st = hook_path.stat()
+        hook_path.chmod(st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    # 7. Output success
+    typer.echo()
+    typer.echo("Installed CodeGraph pre-commit impact hook:")
+    typer.echo()
+    typer.echo(f"  {hook_path}")
+    typer.echo()
+    typer.echo("This hook runs:")
+    typer.echo("  codegraph workflow impact --files <staged files> --change-type unknown --format markdown")
+    typer.echo()
+    typer.echo("Default behavior: warning only. It does not block commits.")
+
+
+# ── workflow command group ──────────────────────────────────────────────────
+
+workflow_app = typer.Typer(
+    name="workflow",
+    help="Deterministic workflow commands for CI, hooks, and fallback",
+)
+app.add_typer(workflow_app)
+
+
+@workflow_app.command(name="impact")
+def workflow_impact(
+    files: str | None = typer.Option(
+        None, "--files",
+        help="Comma-separated file paths you plan to edit",
+    ),
+    symbols: str | None = typer.Option(
+        None, "--symbols",
+        help="Comma-separated symbol names you plan to modify",
+    ),
+    change_type: str = typer.Option(
+        "unknown", "--change-type", "-t",
+        help="Change type: refactor | bugfix | feature | test | cleanup | unknown",
+    ),
+    description: str | None = typer.Option(
+        None, "--description",
+        help="Optional short description (used in report summary only)",
+    ),
+    include_tests: bool = typer.Option(
+        True, "--include-tests/--no-include-tests",
+        help="Include affected tests in the report",
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-l",
+        help="Maximum results per category",
+    ),
+    fmt: str = typer.Option(
+        "markdown", "--format",
+        help="Output format: markdown | json",
+    ),
+    output: str | None = typer.Option(
+        None, "--output", "-o",
+        help="Write report to file instead of stdout",
+    ),
+    force_output: bool = typer.Option(
+        False, "--force-output",
+        help="Overwrite existing output file",
+    ),
+) -> None:
+    """Run a deterministic impact analysis workflow.
+
+    This is the CLI fallback for ``codegraph_pre_edit_check``. It produces
+    a Markdown (default) or JSON impact report based on the local CodeGraph
+    index. Prefer MCP ``codegraph_pre_edit_check`` when available; use this
+    CLI command when MCP is unavailable, in CI, in hooks, or when you need
+    a deterministic written report.
+
+    Examples:
+
+        codegraph workflow impact --files src/server.ts --change-type refactor
+
+        codegraph workflow impact --symbols startServer,applyMiddleware --change-type cleanup --format json
+
+        codegraph workflow impact --files app/api/auth.py --output .codegraph/reports/impact.md
+    """
+    VALID_CHANGE_TYPES = {"refactor", "bugfix", "feature", "test", "cleanup", "unknown"}
+    VALID_FORMATS = {"markdown", "json"}
+
+    # ── Validate arguments ──────────────────────────────────────────────
+    if change_type not in VALID_CHANGE_TYPES:
+        typer.echo(
+            f"Error: Invalid change_type '{change_type}'. "
+            f"Valid: {', '.join(sorted(VALID_CHANGE_TYPES))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if fmt not in VALID_FORMATS:
+        typer.echo(
+            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Parse comma-separated inputs
+    planned_file_list: list[str] = []
+    if files:
+        planned_file_list = [f.strip() for f in files.split(",") if f.strip()]
+
+    planned_symbol_names: list[str] = []
+    if symbols:
+        planned_symbol_names = [s.strip() for s in symbols.split(",") if s.strip()]
+
+    if not planned_file_list and not planned_symbol_names:
+        typer.echo(
+            "Error: At least one of --files or --symbols must be provided.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # ── Load store ──────────────────────────────────────────────────────
+    try:
+        store, cg_dir = _load_store()
+    except typer.Exit:
+        raise
+    except Exception as e:
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": str(e),
+                "workflow": "impact",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    # ── Build index status ──────────────────────────────────────────────
+    from codegraph.indexer.status import get_index_status
+
+    project_root = str(cg_dir.parent)
+    idx_status = get_index_status(project_root)
+    fresh = idx_status.get("status", "unknown")
+
+    # ── Run pre-edit check ──────────────────────────────────────────────
+    from codegraph.workflow import run_pre_edit_check
+
+    try:
+        result = run_pre_edit_check(
+            store=store,
+            files=planned_file_list,
+            symbols=planned_symbol_names,
+            change_type=change_type,
+            description=description,
+            include_tests=include_tests,
+            limit=limit,
+        )
+    except Exception as e:
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": f"Workflow failed: {e}",
+                "workflow": "impact",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: Workflow failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    # ── Format output ───────────────────────────────────────────────────
+    if fmt == "json":
+        output_text = _format_workflow_json(
+            result=result,
+            files=planned_file_list,
+            symbols=planned_symbol_names,
+            change_type=change_type,
+            idx_status=idx_status,
+        )
+    else:
+        output_text = _format_workflow_markdown(
+            result=result,
+            files=planned_file_list,
+            symbols=planned_symbol_names,
+            change_type=change_type,
+            fresh=fresh,
+            project_root=project_root,
+            idx_status=idx_status,
+        )
+
+    # ── Write output ────────────────────────────────────────────────────
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and not force_output:
+            typer.echo(
+                f"Error: Output file '{output}' already exists. "
+                f"Use --force-output to overwrite.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        out_path.write_text(output_text, encoding="utf-8")
+        typer.echo(f"Report written to: {out_path.resolve()}")
+    else:
+        typer.echo(output_text)
+
+
+def _format_workflow_json(
+    result: dict,
+    files: list[str],
+    symbols: list[str],
+    change_type: str,
+    idx_status: dict,
+) -> str:
+    """Format workflow result as JSON."""
+    stats = idx_status.get("stats", {})
+    warnings_list = result.get("warnings", [])
+    # Convert index warnings for JSON output
+    idx_warnings_list: list[dict] = []
+    raw_idx_warnings = idx_status.get("warnings", [])
+    if isinstance(raw_idx_warnings, list):
+        for w in raw_idx_warnings:
+            if isinstance(w, dict):
+                idx_warnings_list.append(w)
+            else:
+                idx_warnings_list.append({"message": str(w)})
+
+    output_data = {
+        "ok": True,
+        "workflow": "impact",
+        "input": {
+            "files": files,
+            "symbols": symbols,
+            "change_type": change_type,
+        },
+        "index_status": {
+            "freshness": idx_status.get("status", "unknown"),
+            "project_root": idx_status.get("project_root", ""),
+            "index_path": str(idx_status.get("index_path", "")),
+            "indexed_at": idx_status.get("indexed_at"),
+            "stats": {
+                "files": stats.get("files", 0),
+                "symbols": stats.get("symbols", 0),
+                "edges": stats.get("edges", 0),
+            } if stats else {},
+        },
+        "planned_symbols": result.get("planned_symbols", []),
+        "impact_summary": result.get("impact_summary", {}),
+        "affected_callers": result.get("affected_callers", []),
+        "affected_files": result.get("affected_files", []),
+        "affected_tests": result.get("affected_tests", []),
+        "recommended_checks": result.get("recommended_checks", []),
+        "warnings": warnings_list + idx_warnings_list,
+    }
+    return json.dumps(output_data, indent=2, ensure_ascii=False)
+
+
+def _format_workflow_markdown(
+    result: dict,
+    files: list[str],
+    symbols: list[str],
+    change_type: str,
+    fresh: str,
+    project_root: str,
+    idx_status: dict,
+) -> str:
+    """Format workflow result as Markdown."""
+    impact_summary = result.get("impact_summary", {})
+    planned_symbols = result.get("planned_symbols", [])
+    affected_callers = result.get("affected_callers", [])
+    affected_files = result.get("affected_files", [])
+    affected_tests = result.get("affected_tests", [])
+    recommended_checks = result.get("recommended_checks", [])
+    warnings_list = result.get("warnings", [])
+    change_desc = result.get("description", "")
+
+    lines: list[str] = []
+
+    # Header
+    lines.append("# CodeGraph Impact Workflow Report")
+    lines.append("")
+
+    # Input section
+    lines.append("## Input")
+    lines.append(f"- Change type: {change_type}")
+    if change_desc:
+        lines.append(f"- Description: {change_desc}")
+    if files:
+        lines.append("- Files:")
+        for f in files:
+            lines.append(f"  - `{f}`")
+    if symbols:
+        lines.append("- Symbols:")
+        for s in symbols:
+            lines.append(f"  - `{s}`")
+    lines.append("")
+
+    # Index Status
+    lines.append("## Index Status")
+    lines.append(f"- Freshness: {fresh}")
+    lines.append(f"- Project root: `{project_root}`")
+    idx_warnings = idx_status.get("warnings", [])
+    if isinstance(idx_warnings, list) and idx_warnings:
+        for w in idx_warnings:
+            if isinstance(w, dict):
+                lines.append(f"- Warning: {w.get('message', str(w))}")
+            else:
+                lines.append(f"- Warning: {w}")
+
+    # Stale index warning
+    if fresh == "stale":
+        lines.append("")
+        lines.append(
+            "> **⚠ Warning: Index is stale.** "
+            "Results may not reflect recent file changes."
+        )
+        cs = idx_status.get("last_change_summary", {})
+        total = sum(cs.values()) if cs else 0
+        if total > 0:
+            lines.append(f"> {total} file(s) changed since last index.")
+        suggested = idx_status.get("suggested_fix", "Run: codegraph init --incremental")
+        lines.append(f"> {suggested}")
+    elif fresh == "missing":
+        lines.append("")
+        lines.append(
+            "> **⚠ Warning: Index is missing.** Run `codegraph init` first."
+        )
+    elif fresh == "indexing":
+        lines.append("")
+        lines.append(
+            "> **ℹ Index update is in progress.** "
+            "Results may reflect the previous index."
+        )
+    elif fresh == "error":
+        lines.append("")
+        lines.append(
+            f"> **⚠ Index error:** "
+            f"{idx_status.get('last_error', 'Unknown error')}"
+        )
+
+    lines.append("")
+
+    # Planned Symbols
+    lines.append("## Planned Symbols")
+    if planned_symbols:
+        lines.append("| Symbol | Type | File | Lines |")
+        lines.append("|---|---|---|---|")
+        for ps in planned_symbols[:20]:
+            sym_name = ps.get("symbol", "?")
+            sym_type = ps.get("type", "?")
+            sym_file = ps.get("file", "?")
+            line_start = ps.get("line_start")
+            line_end = ps.get("line_end")
+            lines_str = f"L{line_start}" if line_start else ""
+            if line_end and line_end != line_start:
+                lines_str += f"-{line_end}"
+            lines.append(
+                f"| `{sym_name}` | {sym_type} | `{sym_file}` | {lines_str} |"
+            )
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # Impact Summary
+    lines.append("## Impact Summary")
+    risk_level = impact_summary.get("risk_level", "unknown")
+    confidence = impact_summary.get("confidence", "unknown")
+    summary = impact_summary.get("summary", "")
+    lines.append(f"- Risk level: **{risk_level}**")
+    lines.append(f"- Confidence: {confidence}")
+    lines.append(f"- Summary: {summary}")
+    lines.append("")
+
+    # Affected Callers
+    lines.append("## Affected Callers")
+    if affected_callers:
+        lines.append("| Symbol | File | Distance | Confidence |")
+        lines.append("|---|---|---|---|")
+        for c in affected_callers[:30]:
+            cid = c.get("symbol_id", "?")
+            cname = c.get("name", cid)
+            cfile = c.get("file_path", "?")
+            cdist = c.get("distance", 0)
+            cconf = c.get("confidence", 1.0)
+            lines.append(
+                f"| `{cname}` | `{cfile}` | {cdist} | {cconf:.0%} |"
+            )
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # Affected Files
+    lines.append("## Affected Files")
+    if affected_files:
+        lines.append("| File | Priority | Layer |")
+        lines.append("|---|---|---|")
+        for af in affected_files[:20]:
+            af_path = af.get("file_path", "?")
+            af_priority = af.get("priority", "medium")
+            af_layer = af.get("layer", "unknown")
+            lines.append(f"| `{af_path}` | {af_priority} | {af_layer} |")
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # Affected Tests
+    lines.append("## Affected Tests")
+    if affected_tests:
+        lines.append("| Test | File | Confidence |")
+        lines.append("|---|---|---|")
+        for t in affected_tests[:20]:
+            tname = t.get("name", t.get("symbol_id", "?"))
+            tfile = t.get("file_path", "?")
+            tconf = t.get("confidence", 1.0)
+            lines.append(f"| `{tname}` | `{tfile}` | {tconf:.0%} |")
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # Recommended Checks
+    lines.append("## Recommended Checks")
+    if recommended_checks:
+        for i, rc in enumerate(recommended_checks, 1):
+            rc_type = rc.get("type", "?")
+            rc_target = rc.get("target", "?")
+            rc_reason = rc.get("reason", "")
+            lines.append(f"{i}. **[{rc_type}]** `{rc_target}`: {rc_reason}")
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # Warnings
+    if warnings_list:
+        lines.append("## Warnings")
+        for w in warnings_list:
+            w_msg = w.get("message", str(w))
+            lines.append(f"- ⚠ {w_msg}")
+        lines.append("")
+
+    # Footer
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "*This is a CodeGraph heuristic impact workflow report. "
+        "It does not execute tests or modify files.*"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     app()

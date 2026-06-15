@@ -265,6 +265,36 @@ codegraph hooks install --force
 codegraph watch
 ```
 
+### Optional Git pre-commit impact hook
+
+CodeGraph can install an optional backend-only pre-commit hook:
+
+```bash
+codegraph configure git-hook --pre-commit-impact
+```
+
+The hook checks staged changed files with:
+
+```bash
+codegraph workflow impact --files <staged files> --change-type unknown --format markdown
+```
+
+Default behavior:
+
+- **warning only** — does not block commits
+- does not run tests
+- does not modify files
+- does not install frontend/dashboard
+- does not call external services
+
+If you already have a pre-commit hook, CodeGraph will not overwrite it unless `--force` is used.
+
+```bash
+codegraph configure git-hook --pre-commit-impact --force
+```
+
+See [docs/git-hooks.md](docs/git-hooks.md) for details.
+
 ## Makefile
 
 ```makefile
@@ -457,6 +487,38 @@ codegraph doctor
 - CodeGraph 提供 MCP 工具和使用建议，帮助 Agent 优先使用结构化代码导航，减少重复 grep/read。
 - 提示块不会自动写入任何文件，需要手动复制。
 - 提示块是**建议性**的，不强制 Agent 调用 MCP。
+
+### Claude Code Workflow Commands
+
+CodeGraph 可以安装可选的 Claude Code workflow command 文件，为 Agent 提供显式的 CodeGraph-first 工作流入口：
+
+```bash
+codegraph configure workflows --agent claude
+```
+
+这会在 `.claude/commands/` 中创建 4 个 command 文件：
+
+```
+.claude/commands/codegraph-impact.md
+.claude/commands/codegraph-test-audit.md
+.claude/commands/codegraph-explain.md
+.claude/commands/codegraph-find.md
+```
+
+安装后，Agent 可以通过显式 slash command 进入 CodeGraph-first 工作流：
+
+- `/codegraph-impact` — 编辑前影响检查（先 `codegraph_repo_status` → `codegraph_pre_edit_check` 或 `codegraph_get_impact`，再 Read）
+- `/codegraph-test-audit` — 测试覆盖审计（先 `codegraph_coverage_gaps`，再按需 `codegraph_explain`/`codegraph_get_neighbors`，再 Read）
+- `/codegraph-explain` — 理解 symbol 或 file（先 `codegraph_explain`，再 `codegraph_get_neighbors`，再 Read）
+- `/codegraph-find` — 查找函数/类/路由（先 `codegraph_find`，再 `codegraph_get_neighbors`/`codegraph_get_impact`，再 Read）
+
+如果文件已存在，默认不覆盖。如需覆盖，加 `--force`：
+
+```bash
+codegraph configure workflows --agent claude --force
+```
+
+这些文件是纯后端 Markdown workflow 文件，不安装 hook、不修改源码、不启动 dashboard、不调用外部服务。
 
 ---
 
@@ -946,6 +1008,7 @@ MIT
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见问题及修复 |
 | [docs/multi-project-setup.md](docs/multi-project-setup.md) | 多项目配置指南：全局 vs 项目绑定 |
 | [docs/evidence-pack.md](docs/evidence-pack.md) | Evidence Pack 格式、用法与限制 |
+| [docs/git-hooks.md](docs/git-hooks.md) | 可选 Git pre-commit impact hook 说明 |
 | [docs/agent-adoption-test.md](docs/agent-adoption-test.md) | Agent 是否使用 CodeGraph 的验证流程 |
 | [docs/development.md](docs/development.md) | 开发环境、规范与工作流 |
 | [docs/storage.md](docs/storage.md) | 存储层详情 |

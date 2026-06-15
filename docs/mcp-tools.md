@@ -859,3 +859,87 @@ CodeGraph should guide what to read next; it does not replace reading exact sour
 - **Confidence-aware**: All inferred edges carry `confidence` and `resolution` fields
 - **No reading_plan / agent_instructions**: Tools don't tell agents how to work — they only provide structured code facts
 - **Index freshness exposed**: Every response includes index status so agents know if data is current
+
+## Claude Code Workflow Commands
+
+CodeGraph can install optional Claude Code workflow commands that help agents follow CodeGraph-first workflows instead of falling back to broad Grep/Read exploration:
+
+```bash
+codegraph configure workflows --agent claude
+```
+
+This creates:
+
+```
+.claude/commands/codegraph-impact.md
+.claude/commands/codegraph-test-audit.md
+.claude/commands/codegraph-explain.md
+.claude/commands/codegraph-find.md
+```
+
+### Available Commands
+
+| Command | Purpose | Key MCP Tools |
+|---------|---------|---------------|
+| `/codegraph-impact` | Pre-edit impact check | `codegraph_repo_status` → `codegraph_pre_edit_check` or `codegraph_get_impact` → `codegraph_get_neighbors` → Read |
+| `/codegraph-test-audit` | Test coverage audit | `codegraph_repo_status` → `codegraph_coverage_gaps` → `codegraph_explain`/`codegraph_get_neighbors` → Read |
+| `/codegraph-explain` | Symbol/file understanding | `codegraph_repo_status` → `codegraph_explain` → `codegraph_get_neighbors` → Read |
+| `/codegraph-find` | Find functions/classes/routes | `codegraph_repo_status` → `codegraph_find` → `codegraph_get_neighbors`/`codegraph_get_impact` → Read |
+
+### Key Rules Enforced by Workflow Commands
+
+- Do not start with Grep/Glob/Read — always check `codegraph_repo_status` first
+- Use CodeGraph MCP tools for discovery, then Read only for exact source verification
+- If index is stale or missing, stop and ask the user to refresh
+- These are backend-only Markdown workflow files — they do not install hooks, modify source code, open a dashboard, or call external services
+
+## Deterministic Workflow CLI
+
+CodeGraph includes backend-only workflow commands for deterministic impact checks before editing shared code, public APIs, services, routes, or types.
+
+### Impact workflow
+
+```bash
+codegraph workflow impact --files src/server.ts --change-type refactor
+```
+
+This produces a Markdown (default) or JSON impact report based on the local CodeGraph index. It reuses the same core logic as `codegraph_pre_edit_check` but runs as a standalone CLI command — suitable for CI, git hooks, or as a fallback when MCP is unavailable.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--files` | string | `None` | Comma-separated file paths you plan to edit |
+| `--symbols` | string | `None` | Comma-separated symbol names you plan to modify |
+| `--change-type` | string | `"unknown"` | refactor, bugfix, feature, test, cleanup, or unknown |
+| `--format` | string | `"markdown"` | Output format: `markdown` or `json` |
+| `--output` | string | `None` | Write report to file instead of stdout |
+| `--force-output` | flag | `false` | Overwrite existing output file |
+| `--include-tests` / `--no-include-tests` | flag | `true` | Include affected tests in the report |
+| `--limit` | int | `50` | Maximum results per category |
+
+**Examples:**
+
+```bash
+# Basic impact check on planned files
+codegraph workflow impact --files src/server.ts,src/toolSchemas.ts --change-type refactor
+
+# Impact check for specific symbols, JSON output
+codegraph workflow impact --symbols startServer,applyMiddleware --change-type cleanup --format json
+
+# Write report to file (creates parent directories)
+codegraph workflow impact --files app/api/auth.py --output .codegraph/reports/impact.md
+
+# Overwrite existing report
+codegraph workflow impact --files src/server.ts --output .codegraph/reports/impact.md --force-output
+```
+
+**What it does NOT do:**
+
+- Edit files
+- Run tests
+- Install hooks
+- Open a dashboard
+- Call external services
+- Read user editing history
+- Parse natural language queries

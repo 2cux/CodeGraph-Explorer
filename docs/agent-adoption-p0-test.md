@@ -352,7 +352,138 @@ codegraph_pre_edit_check(files="src/server.ts", change_type="refactor")
 
 | 日期 | 变更 |
 |---|---|
+| 2026-06-15 | 新增 `codegraph workflow impact` CLI 工作流作为 MCP fallback |
 | 2026-06-14 | 新增 `codegraph_pre_edit_check` 作为任务级编辑前影响检查工具 |
 | 2026-06-14 | 新增 `codegraph_find` 作为首选入口工具（搜索+详情融合） |
 | 2026-06-14 | 新增 `codegraph_coverage_gaps` 验证任务 |
 | 2026-06-12 | 初始版本：P0 验证文档，含 3 个测试任务、验证表格、判断标准 |
+
+## Claude Code Workflow Commands 验证
+
+### 安装
+
+```bash
+codegraph configure workflows --agent claude
+```
+
+### 验证清单
+
+| 检查项 | 通过 | 备注 |
+|---|---|---|
+| `.claude/commands/` 目录已创建 | | |
+| `codegraph-impact.md` 已安装且内容包含 `codegraph_pre_edit_check` | | |
+| `codegraph-test-audit.md` 已安装且内容包含 `codegraph_coverage_gaps` | | |
+| `codegraph-explain.md` 已安装且内容包含 `codegraph_explain` | | |
+| `codegraph-find.md` 已安装且内容包含 `codegraph_find` | | |
+| 文件不包含 `CODEGRAPH_PROJECT_ROOT` 硬编码 | | |
+| 文件不包含当前项目绝对路径 | | |
+| 再次运行不覆盖已有文件（跳过提示） | | |
+| `--force` 可以覆盖已有文件 | | |
+| 文件内容不引用 frontend / dashboard / browser UI | | |
+| 文件内容不引用 git hook | | |
+| 所有现有测试通过 (`pytest backend/tests/`) | | |
+
+## Optional Git pre-commit impact hook 验证
+
+### 安装
+
+```bash
+codegraph configure git-hook --pre-commit-impact
+```
+
+### 验证清单
+
+| 检查项 | 通过 | 备注 |
+|---|---|---|
+| `.git/hooks/pre-commit` 文件已创建 | | |
+| hook 文件包含 `codegraph workflow impact` | | |
+| hook 文件可执行（Unix） | | |
+| 非 Git repo 下返回可读错误 | | |
+| 已有 pre-commit hook 且无 `--force` 时不覆盖 | | |
+| 已有 pre-commit hook 且 `--force` 时备份旧 hook (`.codegraph.bak`) | | |
+| `--force` 后写入新 hook | | |
+| 命令不修改 MCP config | | |
+| 命令不自动运行测试 | | |
+| 命令不自动 `codegraph init` | | |
+| 命令不新增前端依赖 | | |
+| `docs/git-hooks.md` 存在并说明 warning-only 行为 | | |
+| 所有现有测试通过 (`pytest backend/tests/`) | | |
+
+### Hook 行为验证
+
+| 检查项 | 通过 | 备注 |
+|---|---|---|
+| staged files 为空时 hook exit 0 | | |
+| `codegraph workflow impact` 失败时 hook 默认 exit 0 | | |
+| hook 不阻塞 commit（始终 exit 0） | | |
+| hook 不写文件到 `.codegraph/reports/` | | |
+| hook 不调用外部服务 | | |
+
+### 工作流集成验证
+
+安装后，在 Git repo 中测试：
+
+```bash
+# 模拟一次有 staged files 的 commit
+echo "test" > test_file.py
+git add test_file.py
+git commit -m "test: verify pre-commit hook"
+
+# 预期：hook 运行 impact check，输出 Markdown 到终端，commit 正常完成
+# 如果 codegraph workflow impact 不存在，hook 输出提示但不阻塞
+```
+
+清理：
+
+```bash
+git reset HEAD~1
+rm test_file.py
+```
+
+### 工作流验证
+
+安装后，在 Claude Code 中测试以下 slash command：
+
+#### `/codegraph-impact`
+
+```
+/codegraph-impact <symbol>
+```
+
+预期行为：
+1. Agent 调用 `codegraph_repo_status`
+2. Agent 调用 `codegraph_pre_edit_check` 或 `codegraph_get_impact`
+3. Agent 仅在 CodeGraph 返回结果后 Read 具体文件
+4. Agent 不先 Grep/Glob
+
+#### `/codegraph-test-audit`
+
+预期行为：
+1. Agent 调用 `codegraph_repo_status`
+2. Agent 调用 `codegraph_coverage_gaps`
+3. Agent 按需调用 `codegraph_explain` 或 `codegraph_get_neighbors`
+4. Agent 不先 Glob 测试文件
+
+#### `/codegraph-explain`
+
+```
+/codegraph-explain <symbol_or_file>
+```
+
+预期行为：
+1. Agent 调用 `codegraph_repo_status`
+2. Agent 调用 `codegraph_explain`
+3. Agent 按需调用 `codegraph_get_neighbors`
+4. Agent 不先 Read 全文件
+
+#### `/codegraph-find`
+
+```
+/codegraph-find <name>
+```
+
+预期行为：
+1. Agent 调用 `codegraph_repo_status`
+2. Agent 调用 `codegraph_find`
+3. Agent 调用 `codegraph_get_neighbors` 查看关系
+4. Agent 不先 Grep

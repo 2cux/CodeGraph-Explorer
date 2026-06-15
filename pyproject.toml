@@ -31,7 +31,7 @@ codegraph = "codegraph.cli.main:app"
 where = ["backend"]
 
 [tool.setuptools.package-data]
-codegraph = ["py.typed"]
+codegraph = ["py.typed", "templates/claude_commands/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
