@@ -39,6 +39,62 @@ class EdgeType(str, Enum):
     depends_on = "depends_on"
 
 
+class DropReason(str, Enum):
+    """Why an edge or node was dropped during validation or indexing."""
+
+    missing_source = "missing_source"
+    """Edge source node does not exist in the graph."""
+    missing_target = "missing_target"
+    """Edge target node does not exist in the graph."""
+    missing_both = "missing_both"
+    """Both source and target nodes are missing."""
+    invalid_edge_type = "invalid_edge_type"
+    """Edge type string is not in the canonical EdgeType enum and has no alias."""
+    alias_mismatch = "alias_mismatch"
+    """Edge type was an alias but could not be normalized (legacy; now handled by normalize layer)."""
+    path_mismatch = "path_mismatch"
+    """Node file_path resolves outside the project root."""
+    external_unresolved = "external_unresolved"
+    """Unresolved external symbol edge (resolver 'unresolved' tier discarded)."""
+    duplicate_edge = "duplicate_edge"
+    """Duplicate (source, target, type) triple — first occurrence kept."""
+    duplicate_node_id = "duplicate_node_id"
+    """Duplicate node ID — first occurrence kept."""
+    malformed_edge = "malformed_edge"
+    """Edge is missing required fields (source, target, or type)."""
+    parser_missing = "parser_missing"
+    """No extractor available or extractor raised an exception for a file."""
+    framework_unresolved = "framework_unresolved"
+    """Resolver possible/unresolved tier edge discarded during merge."""
+    schema_mismatch = "schema_mismatch"
+    """SQLite schema version does not match the supported version."""
+
+
+class AutoCorrectReason(str, Enum):
+    """Why an edge or node was auto-corrected during validation."""
+
+    missing_edge_id = "missing_edge_id"
+    """Edge had no ID — a new one was generated."""
+    duplicate_edge_id = "duplicate_edge_id"
+    """Duplicate edge ID — regenerated to be unique."""
+    confidence_clamped = "confidence_clamped"
+    """Confidence value was outside [0, 1] — clamped to valid range."""
+    missing_tags = "missing_tags"
+    """Node had null tags — set to empty list."""
+    missing_reason_code = "missing_reason_code"
+    """Edge metadata had null reason — set to empty string."""
+    type_alias_corrected = "type_alias_corrected"
+    """Non-canonical edge/node type normalized to canonical form (e.g. implements → inherits)."""
+    path_normalized = "path_normalized"
+    """File path backslashes normalized to forward slashes."""
+    symbol_kind_normalized = "symbol_kind_normalized"
+    """Non-canonical node type normalized (e.g. func → function, cls → class)."""
+    line_range_fixed = "line_range_fixed"
+    """Line range was invalid (end < start) — fixed."""
+    duplicate_merged = "duplicate_merged"
+    """Duplicate (source, target, type) merged — later occurrences dropped."""
+
+
 class Resolution(str, Enum):
     """Confidence resolution strategy — PRD §12.8.
 
@@ -296,6 +352,25 @@ class GraphNode(BaseModel):
     visibility: str = "public"
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # ── Enrichment fields (schema 1.1.0) ─────────────────────────────
+    summary: str = ""
+    """AI-generated summary of the symbol's purpose and behavior."""
+    role: str = ""
+    """Inferred architectural role (e.g. service, controller, model, config)."""
+    responsibilities: list[str] = Field(default_factory=list)
+    """List of responsibilities this symbol fulfills."""
+    edge_cases: list[str] = Field(default_factory=list)
+    """Known edge cases and boundary conditions."""
+    test_relevance: str = ""
+    """Guidance on what to focus testing on for this symbol."""
+    enrichment_confidence: str = ""
+    """Confidence of the enrichment analysis: high, medium, or low."""
+    enrichment_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    """Evidence references: [{file, line_start, line_end}, ...]."""
+    enrichment_status: str = ""
+    """Enrichment pipeline status: pending, analyzed, skipped, or error."""
+    enriched_at: str = ""
+    """ISO 8601 timestamp of when enrichment was imported."""
 
 
 class GraphEdge(BaseModel):
@@ -346,3 +421,60 @@ class CodeGraph(BaseModel):
     edges: list[GraphEdge] = Field(default_factory=list)
     indexes: dict[str, Any] = Field(default_factory=dict)
     stats: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Validation / Health models ────────────────────────────────────────
+
+
+class DropEntry(BaseModel):
+    """A single dropped edge or node with full classification."""
+
+    reason: DropReason
+    category: str = "dropped"
+    message: str
+    edge_id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    edge_type: str | None = None
+    node_id: str | None = None
+    node_name: str | None = None
+    file_path: str | None = None
+    language_id: str | None = None
+    resolution: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutoCorrectEntry(BaseModel):
+    """A single auto-correction applied to an edge or node."""
+
+    reason: AutoCorrectReason
+    category: str = "auto_corrected"
+    message: str
+    edge_id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    original_value: str | None = None
+    corrected_value: str | None = None
+    node_id: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class ByReasonBreakdown(BaseModel):
+    """Aggregated counts and top examples grouped by reason."""
+
+    reason: str
+    count: int
+    top_examples: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class EdgeHealth(BaseModel):
+    """Structured edge quality report for MCP responses and doctor output."""
+
+    total_edges: int = 0
+    total_dropped: int = 0
+    total_auto_corrected: int = 0
+    dropped_ratio: float = 0.0
+    dropped_by_reason: list[ByReasonBreakdown] = Field(default_factory=list)
+    auto_corrected_by_reason: list[ByReasonBreakdown] = Field(default_factory=list)
+    impact_assessment: str = ""
+    suggested_actions: list[str] = Field(default_factory=list)

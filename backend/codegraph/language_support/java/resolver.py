@@ -537,7 +537,7 @@ class JavaResolver(Resolver):
         unresolved: list[ResolvedEdge] = []
 
         for edge in raw_edges:
-            if edge.type not in (EdgeType.inherits, EdgeType.implements):
+            if edge.type not in (EdgeType.inherits,):
                 continue
 
             source_file = edge.source_location.file_path if edge.source_location else ""

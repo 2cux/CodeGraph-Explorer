@@ -790,6 +790,28 @@ COMPACT_FIELD_WHITELIST: set[str] = {
     "is_framework_entry", "is_test_code", "uses_async",
     "tested_by_count", "kind", "symbol_count",
     "snippet", "truncated",
+    # ── Sufficiency upgrade (Round 16): evidence, freshness, declarations ──
+    "evidence", "evidence_items",
+    # Multi-candidate transparency (Req 3.2)
+    "candidates_note", "selected", "selected_reason",
+    "other_candidates", "other_partial_matches", "best_partial_match",
+    # Failure resilience (Req 3.3)
+    "fallback", "likely_breakpoints", "known_endpoint_details",
+    "immediate_callers", "immediate_callees", "same_file_siblings",
+    "same_file_siblings_truncated",
+    # File freshness (Req 3.4)
+    "file_freshness", "files", "status", "mtime_delta_ms",
+    "in_this_response", "unrelated_pending",
+    # Source declarations (Req 3.5)
+    "declaration", "provenance", "is_stale_cache", "is_summary",
+    "equivalent_to", "lines", "source_line_start", "source_line_end",
+    # Container outline (Req 3.7)
+    "container_outline", "member_list", "public_methods",
+    "other_members", "total_members",
+    # Budget / necessity (Req 3.6)
+    "necessity", "budget", "necessary_items", "incidental_items",
+    "incidental_cut", "would_expand_if_budget_available",
+    "estimated_used", "max_tokens",
 }
 
 # ── Reason codes ──────────────────────────────────────────────────────────
@@ -1026,11 +1048,19 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
         # Docstring excerpt in standard (first 200 chars only)
         if node.docstring:
             result["docstring"] = node.docstring[:200]
+        # Enrichment fields (standard mode: summary + role + confidence only)
+        if getattr(node, "enrichment_status", "") == "analyzed":
+            if node.summary:
+                result["enrichment_summary"] = node.summary
+            if node.role:
+                result["enrichment_role"] = node.role
+            if node.enrichment_confidence:
+                result["enrichment_confidence"] = node.enrichment_confidence
         return result
     elif response_mode == "full":
         # Debug mode — returns all available fields
         loc = node.location
-        return {
+        result = {
             "symbol_id": node.id,
             "name": node.name,
             "type": node_type,
@@ -1049,6 +1079,18 @@ def _serialize_node(node: GraphNode, response_mode: ResponseMode = "compact") ->
             "column_start": loc.column_start if loc else None,
             "column_end": loc.column_end if loc else None,
         }
+        # Full mode: include all enrichment fields when available
+        if getattr(node, "enrichment_status", "") == "analyzed":
+            result["enrichment_summary"] = node.summary or None
+            result["enrichment_role"] = node.role or None
+            result["enrichment_responsibilities"] = node.responsibilities or None
+            result["enrichment_edge_cases"] = node.edge_cases or None
+            result["enrichment_test_relevance"] = node.test_relevance or None
+            result["enrichment_confidence"] = node.enrichment_confidence or None
+            result["enrichment_evidence"] = node.enrichment_evidence or None
+            result["enrichment_status"] = node.enrichment_status
+            result["enriched_at"] = node.enriched_at or None
+        return result
     else:  # standard (fallback)
         return {
             "symbol_id": node.id,
@@ -1148,8 +1190,8 @@ def _serialize_edge(
                     base[key] = evidence[key]
         if include_explanations:
             base["reason"] = reason or ""
-            if evidence:
-                base["evidence"] = evidence
+            # ── Typed evidence (Req 3.1) ────────────────────────────
+            base["evidence"] = _build_typed_evidence_for_edge(edge)
         return base
 
     elif response_mode == "full":
@@ -1157,8 +1199,8 @@ def _serialize_edge(
         if reason_code:
             base["reason_code"] = reason_code
         base["reason"] = reason or ""
-        if evidence:
-            base["evidence"] = evidence
+        # ── Typed evidence (Req 3.1) ─────────────────────────────────
+        base["evidence"] = _build_typed_evidence_for_edge(edge)
         if edge.metadata:
             base["call_expr"] = edge.metadata.call_expr
             base["is_dynamic"] = edge.metadata.is_dynamic
@@ -1375,12 +1417,17 @@ def _build_index_health_envelope(idx: dict[str, Any]) -> dict[str, Any]:
             "auto_corrected": 0,
             "dropped": 0,
             "total_symbols": total_symbols,
+            "total_edges": stats.get("edges", 0),
             "dropped_ratio": 0.0,
+            "dropped_by_reason": [],
+            "auto_corrected_by_reason": [],
             "impact": "No validation issues detected. Index is healthy.",
+            "suggested_actions": [],
             "suggested_fix": None,
         }
 
     issue_counts = index_health.get("issue_counts", {})
+    edge_health_data = index_health.get("edge_health", {})
     auto_corrected = issue_counts.get("auto_corrected", 0)
     dropped = issue_counts.get("dropped", 0)
     warnings_count = issue_counts.get("warnings", 0)
@@ -1390,12 +1437,14 @@ def _build_index_health_envelope(idx: dict[str, Any]) -> dict[str, Any]:
     # Prefer validation report's own node_count for ratio consistency
     validation_stats = index_health.get("stats", {})
     validation_node_count = validation_stats.get("node_count", 0)
+    validation_edge_count = validation_stats.get("edge_count", 0)
     if validation_node_count > 0:
         total_symbols = validation_node_count
 
-    # Compute dropped ratio safely
-    if total_symbols > 0:
-        dropped_ratio = dropped / total_symbols
+    # Correct dropped_ratio: dropped / (edge_count + dropped)
+    total_edges_with_dropped = validation_edge_count + dropped
+    if total_edges_with_dropped > 0:
+        dropped_ratio = dropped / total_edges_with_dropped
     else:
         dropped_ratio = 0.0
 
@@ -1461,13 +1510,23 @@ def _build_index_health_envelope(idx: dict[str, Any]) -> dict[str, Any]:
             "or `codegraph init --force` to rebuild."
         )
 
+    dropped_by_reason = edge_health_data.get("dropped_by_reason", [])
+    auto_corrected_by_reason = edge_health_data.get(
+        "auto_corrected_by_reason", []
+    )
+    suggested_actions = edge_health_data.get("suggested_actions", [])
+
     return {
         "status": health_status,
         "auto_corrected": auto_corrected,
         "dropped": dropped,
         "total_symbols": total_symbols,
+        "total_edges": validation_edge_count,
         "dropped_ratio": round(dropped_ratio, 4),
+        "dropped_by_reason": dropped_by_reason,
+        "auto_corrected_by_reason": auto_corrected_by_reason,
         "impact": impact,
+        "suggested_actions": suggested_actions,
         "suggested_fix": suggested_fix,
     }
 
@@ -1535,8 +1594,8 @@ def _collect_warnings(
         dropped = issue_counts.get("dropped", 0)
         auto_corrected = issue_counts.get("auto_corrected", 0)
         fatal_count = issue_counts.get("fatal", 0)
-        stats = index_health.get("stats", {})
-        total_symbols = stats.get("node_count", 0)
+        edge_health_data = index_health.get("edge_health", {})
+        dropped_ratio = edge_health_data.get("dropped_ratio", 0.0)
 
         # Build an agent-friendly message that explains impact scope
         if fatal_count > 0 or health_status == "error":
@@ -1546,7 +1605,7 @@ def _collect_warnings(
                 f"Run: codegraph init --force"
             )
         elif dropped > 0:
-            if total_symbols > 0 and (dropped / total_symbols) < 0.05:
+            if dropped_ratio < 0.05:
                 message = (
                     f"Index is usable for symbol search, but impact "
                     f"analysis may miss some low-confidence edges "
@@ -1751,8 +1810,13 @@ def _apply_result_shaping(
 # ── Store helpers ─────────────────────────────────────────────────────────
 
 
-def _get_project_info() -> dict[str, Any]:
-    """Return current project root and index path with resolution info."""
+def _get_project_info(fallback: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return current project root and index path with resolution info.
+
+    When *fallback* is provided (from ``_build_failure_fallback``), it is
+    included so the agent has structured context even when a symbol is not
+    found (Req 3.3).
+    """
     info: dict[str, Any] = {}
     if _project_root:
         info["project_root"] = _project_root
@@ -1762,6 +1826,8 @@ def _get_project_info() -> dict[str, Any]:
         info["resolution_method"] = _resolution_method
     if _resolved_cwd:
         info["cwd"] = _resolved_cwd
+    if fallback:
+        info["fallback"] = fallback
     return info
 
 
@@ -2361,6 +2427,516 @@ def _apply_compact_whitelist(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sufficiency helpers — evidence, freshness, source declarations,
+# container outlines, failure fallbacks, multi-candidate transparency.
+# These enrich MCP tool responses so agents don't need immediate
+# Read/Grep after a CodeGraph call (Req 3.1–3.7).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ── File-level staleness (Req 3.4) ─────────────────────────────────────
+
+
+def _check_file_freshness(
+    files_in_response: list[str],
+    cg_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Produce per-file staleness instead of a global "index may be stale" warning.
+
+    Uses ``FingerprintStore`` from ``codegraph.indexer.fingerprint`` to
+    compare current file mtimes against the indexed fingerprint for each
+    file referenced in the current response. Also counts unrelated pending
+    files — files that have changed but are NOT in this response.
+
+    Returns a dict matching ``FileFreshnessBlock`` shape:
+        ``files`` — list of ``{file, status, mtime_delta_ms, in_this_response}``
+        ``summary`` — human-readable summary string
+        ``unrelated_pending`` — count of changed files NOT in this response
+    """
+    result: dict[str, Any] = {
+        "files": [],
+        "summary": "File freshness unavailable.",
+        "unrelated_pending": 0,
+    }
+
+    if cg_dir is None:
+        result["summary"] = "Fingerprint store unavailable — cannot assess file freshness."
+        return result
+
+    fp_path = cg_dir / "fingerprints.json"
+    if not fp_path.exists():
+        result["summary"] = "No fingerprint store — run codegraph init to enable freshness checks."
+        return result
+
+    try:
+        from codegraph.indexer.fingerprint import FingerprintStore
+        fp_store = FingerprintStore.load(fp_path)
+    except Exception:
+        result["summary"] = "Could not load fingerprint store."
+        return result
+
+    response_set = set(files_in_response)
+
+    stale_count = 0
+    stale_files: list[str] = []
+    file_entries: list[dict[str, Any]] = []
+
+    for file_path in sorted(files_in_response):
+        full_path = Path(_project_root) / file_path if _project_root else Path(file_path)
+        entry: dict[str, Any] = {
+            "file": file_path,
+            "status": "fresh",
+            "mtime_delta_ms": 0,
+            "in_this_response": True,
+        }
+        try:
+            if full_path.exists():
+                current_mtime_ms = int(full_path.stat().st_mtime * 1000)
+                fp_entry = fp_store.get(file_path) if hasattr(fp_store, "get") else None
+                if fp_entry:
+                    indexed_mtime = getattr(fp_entry, "mtime", None)
+                    if indexed_mtime:
+                        indexed_mtime_ms = int(indexed_mtime * 1000) if indexed_mtime < 1e12 else int(indexed_mtime)
+                        delta = current_mtime_ms - indexed_mtime_ms
+                        entry["mtime_delta_ms"] = delta
+                        if abs(delta) > 1000:  # > 1 second difference
+                            entry["status"] = "edited_recently"
+                            stale_count += 1
+                            stale_files.append(file_path)
+            else:
+                entry["status"] = "pending_change"
+                entry["mtime_delta_ms"] = None
+                stale_count += 1
+                stale_files.append(file_path)
+        except Exception:
+            entry["status"] = "unknown"
+            entry["mtime_delta_ms"] = None
+
+        file_entries.append(entry)
+
+    # Count unrelated pending — changed files NOT in this response
+    unrelated_pending = 0
+    try:
+        for fp_key in fp_store.keys() if hasattr(fp_store, "keys") else []:
+            if fp_key not in response_set:
+                full_path = Path(_project_root) / fp_key if _project_root else Path(fp_key)
+                if full_path.exists():
+                    try:
+                        current_mtime_ms = int(full_path.stat().st_mtime * 1000)
+                        fp_entry = fp_store.get(fp_key) if hasattr(fp_store, "get") else None
+                        if fp_entry:
+                            indexed_mtime = getattr(fp_entry, "mtime", None)
+                            if indexed_mtime:
+                                indexed_mtime_ms = int(indexed_mtime * 1000) if indexed_mtime < 1e12 else int(indexed_mtime)
+                                if abs(current_mtime_ms - indexed_mtime_ms) > 1000:
+                                    unrelated_pending += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # Build summary
+    if stale_count == 0:
+        result["summary"] = (
+            f"All {len(file_entries)} file(s) in this response are fresh. "
+            f"{unrelated_pending} unrelated pending file(s) exist elsewhere."
+        )
+    elif stale_count == 1:
+        result["summary"] = (
+            f"{stale_files[0]} was edited and appears in this response. "
+            f"Other files in this response are fresh. "
+            f"{unrelated_pending} unrelated pending file(s) exist elsewhere."
+        )
+    else:
+        names = ", ".join(stale_files[:3])
+        if len(stale_files) > 3:
+            names += f", and {len(stale_files) - 3} more"
+        result["summary"] = (
+            f"{stale_count} file(s) were edited and appear in this response: {names}. "
+            f"{unrelated_pending} unrelated pending file(s) exist elsewhere."
+        )
+
+    result["files"] = file_entries
+    result["unrelated_pending"] = unrelated_pending
+    return result
+
+
+# ── Typed evidence builder (Req 3.1) ───────────────────────────────────
+
+
+def _build_typed_evidence_for_edge(
+    edge: GraphEdge,
+    store: GraphStore | None = None,
+) -> list[dict[str, Any]]:
+    """Build typed evidence items from a ``GraphEdge`` and its metadata.
+
+    Returns a list of evidence-item dicts matching the ``EvidenceItem`` schema,
+    suitable for inclusion in MCP response ``evidence`` arrays.
+
+    Each evidence item carries: ``type``, ``symbol``, ``symbol_id``,
+    ``file``, ``line``, ``confidence``, ``resolution``, ``reason``.
+    """
+    evidence: list[dict[str, Any]] = []
+
+    # 1. Edge metadata as evidence
+    edge_res = edge.metadata.resolution if edge.metadata else None
+    resolution_str = (
+        edge_res.value if edge_res is not None and hasattr(edge_res, "value")
+        else "unresolved"
+    )
+    provenance = edge.metadata.provenance if edge.metadata else None
+    edge_type_val = edge.type.value if hasattr(edge.type, "value") else str(edge.type)
+
+    evidence.append({
+        "type": "edge",
+        "symbol": None,
+        "symbol_id": None,
+        "file": None,
+        "line": None,
+        "confidence": get_confidence_level(edge.confidence),
+        "resolution": resolution_str,
+        "reason": edge.metadata.reason if edge.metadata else None,
+        "provenance": provenance,
+    })
+
+    # 2. Source node info (caller for incoming, callee source for outgoing)
+    if store is not None:
+        src_node = store.get_node(edge.source)
+        if src_node and src_node.type != NodeType.external_symbol:
+            evidence.append({
+                "type": "caller" if edge_type_val == "calls" else "edge",
+                "symbol": src_node.name,
+                "symbol_id": src_node.id,
+                "file": src_node.file_path,
+                "line": src_node.location.line_start if src_node.location else None,
+                "confidence": get_confidence_level(edge.confidence),
+                "resolution": resolution_str,
+                "reason": None,
+                "provenance": provenance,
+            })
+
+    # 3. Target node info (callee for outgoing)
+    if store is not None:
+        tgt_node = store.get_node(edge.target)
+        if tgt_node and tgt_node.type != NodeType.external_symbol:
+            evidence.append({
+                "type": "callee" if edge_type_val == "calls" else "edge",
+                "symbol": tgt_node.name,
+                "symbol_id": tgt_node.id,
+                "file": tgt_node.file_path,
+                "line": tgt_node.location.line_start if tgt_node.location else None,
+                "confidence": get_confidence_level(edge.confidence),
+                "resolution": resolution_str,
+                "reason": None,
+                "provenance": provenance,
+            })
+
+    # 4. Elevate edge.metadata.evidence if present
+    if edge.metadata and edge.metadata.evidence:
+        raw_ev = edge.metadata.evidence
+        if isinstance(raw_ev, dict):
+            evidence.append({
+                "type": "edge",
+                "symbol": raw_ev.get("target_name") or raw_ev.get("source_name"),
+                "symbol_id": raw_ev.get("target") or raw_ev.get("source"),
+                "file": raw_ev.get("file"),
+                "line": raw_ev.get("line"),
+                "confidence": get_confidence_level(edge.confidence),
+                "resolution": resolution_str,
+                "reason": raw_ev.get("reason"),
+                "provenance": provenance,
+            })
+
+    # Deduplicate by (type, symbol_id, file)
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for item in evidence:
+        key = (item["type"], item.get("symbol_id") or "", item.get("file") or "")
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+# ── Source snippet declaration wrapper (Req 3.5) ───────────────────────
+
+
+def _wrap_source_snippet(
+    snippet: dict[str, Any],
+    file_path: str,
+    freshness_block: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Wrap ``_read_source_snippet`` output with provenance declaration.
+
+    Every source snippet returned by CodeGraph now declares:
+    - It was read from current disk (not stale cache, not summary)
+    - Its line range and line count
+    - Whether the source file has been modified since indexing
+    - That it is equivalent to one Read tool call
+
+    Returns the enriched snippet dict (backward compatible — all original
+    fields are preserved).
+    """
+    # Determine staleness for this file
+    is_stale = False
+    if freshness_block:
+        for fe in freshness_block.get("files", []):
+            if fe.get("file") == file_path:
+                is_stale = fe.get("status") != "fresh"
+                break
+
+    declaration: dict[str, Any] = {
+        "provenance": "live_disk_read",
+        "file": file_path,
+        "line_start": snippet.get("source_line_start", snippet.get("line_start")),
+        "line_end": snippet.get("source_line_end", snippet.get("line_end")),
+        "lines": snippet.get("lines", 0),
+        "truncated": snippet.get("truncated", False),
+        "is_stale_cache": is_stale,
+        "is_summary": False,
+        "equivalent_to": "one Read tool call",
+    }
+
+    enriched = dict(snippet)
+    enriched["declaration"] = declaration
+    return enriched
+
+
+# ── Container outline builder (Req 3.7) ────────────────────────────────
+
+
+def _build_container_outline(
+    store: GraphStore,
+    node: GraphNode,
+    max_members: int = 50,
+) -> dict[str, Any] | None:
+    """Build a member-list outline for large class/interface nodes.
+
+    Returns None if *node* is not a class/interface or has too few members
+    to warrant an outline. Returns a ``ContainerOutline``-shaped dict with:
+    - ``public_methods`` — list of ``{name, signature, line_start, line_end}``
+    - ``other_members`` — private methods, attributes, nested classes
+    - ``total_members``, ``truncated``
+
+    This lets the agent see the structure of a large class without
+    receiving thousands of source lines (Req 3.7).
+    """
+    if node.type != NodeType.class_:
+        return None
+
+    # Find all member nodes whose ID starts with class_id + "."
+    class_prefix = node.id + "."
+    members: list[GraphNode] = []
+    for n in store.all_nodes():
+        if n.id.startswith(class_prefix):
+            members.append(n)
+
+    if len(members) <= 3:
+        # Too few members to warrant an outline
+        return None
+
+    public_methods: list[dict[str, Any]] = []
+    other_members: list[dict[str, Any]] = []
+
+    for m in members:
+        entry = {
+            "name": m.name,
+            "type": m.type.value if isinstance(m.type, NodeType) else str(m.type),
+            "signature": m.signature,
+            "line_start": m.location.line_start if m.location else None,
+            "line_end": m.location.line_end if m.location else None,
+            "visibility": m.visibility,
+        }
+        is_public = (
+            m.visibility == "public"
+            and not m.name.startswith("_")
+            and m.type in (NodeType.method, NodeType.function)
+        )
+        if is_public:
+            public_methods.append(entry)
+        else:
+            other_members.append(entry)
+
+    # Sort public methods by line number
+    public_methods.sort(key=lambda x: x.get("line_start") or 0)
+    other_members.sort(key=lambda x: x.get("line_start") or 0)
+
+    total = len(members)
+    truncated = total > max_members
+
+    return {
+        "symbol_id": node.id,
+        "name": node.name,
+        "type": "class",
+        "file": node.file_path,
+        "line_start": node.location.line_start if node.location else 0,
+        "line_end": node.location.line_end if node.location else 0,
+        "total_members": total,
+        "public_methods": public_methods[:max_members],
+        "other_members": other_members[:max(0, max_members - len(public_methods))],
+        "truncated": truncated,
+    }
+
+
+# ── Failure fallback builder (Req 3.3) ──────────────────────────────────
+
+
+def _build_failure_fallback(
+    store: GraphStore,
+    query_str: str,
+    path_hint: str | None = None,
+) -> dict[str, Any] | None:
+    """Build structured fallback context when a symbol is not found.
+
+    Instead of returning an empty error, provides whatever context IS
+    available: same-file siblings, known patterns, breakpoint analysis.
+
+    Returns None if nothing useful could be found.
+    """
+    fallback: dict[str, Any] = {
+        "message": f"No static path found for '{query_str}'.",
+        "likely_breakpoints": [],
+        "known_endpoint_details": None,
+        "immediate_callers": None,
+        "immediate_callees": None,
+        "same_file_siblings": None,
+    }
+
+    # If we have a path_hint, try to find siblings in that file
+    if path_hint:
+        normalized = path_hint.replace("\\", "/")
+        siblings: list[dict[str, Any]] = []
+        for n in store.all_nodes():
+            node_path = (n.file_path or "").replace("\\", "/")
+            if node_path == normalized or node_path.endswith("/" + normalized):
+                if n.type not in (NodeType.file, NodeType.module, NodeType.import_, NodeType.external_symbol):
+                    siblings.append({
+                        "symbol_id": n.id,
+                        "name": n.name,
+                        "type": n.type.value if isinstance(n.type, NodeType) else str(n.type),
+                        "file_path": n.file_path,
+                        "line_start": n.location.line_start if n.location else None,
+                    })
+        if siblings:
+            siblings.sort(key=lambda x: x.get("line_start") or 0)
+            fallback["same_file_siblings"] = siblings[:20]
+            if len(siblings) > 20:
+                fallback["same_file_siblings_truncated"] = True
+
+    # Try broader matching — partial name substring across all nodes
+    q_lower = query_str.lower()
+    broad_matches: list[dict[str, Any]] = []
+    for n in store.all_nodes():
+        if n.type in (NodeType.file, NodeType.module, NodeType.import_, NodeType.external_symbol):
+            continue
+        if q_lower in n.name.lower() or q_lower in n.id.lower():
+            broad_matches.append({
+                "symbol_id": n.id,
+                "name": n.name,
+                "type": n.type.value if isinstance(n.type, NodeType) else str(n.type),
+                "file_path": n.file_path,
+                "line_start": n.location.line_start if n.location else None,
+            })
+        if len(broad_matches) >= 20:
+            break
+
+    if broad_matches:
+        # Get callers/callees for the best partial match
+        best = broad_matches[0]
+        best_id = best["symbol_id"]
+        callers: list[dict[str, Any]] = []
+        callees: list[dict[str, Any]] = []
+        for edge in store.get_incoming_edges(best_id):
+            if edge.type == EdgeType.calls and len(callers) < 5:
+                cn = store.get_node(edge.source)
+                if cn:
+                    callers.append({
+                        "symbol_id": cn.id, "name": cn.name,
+                        "file_path": cn.file_path,
+                    })
+        for edge in store.get_outgoing_edges(best_id):
+            if edge.type == EdgeType.calls and len(callees) < 5:
+                cn = store.get_node(edge.target)
+                if cn:
+                    callees.append({
+                        "symbol_id": cn.id, "name": cn.name,
+                        "file_path": cn.file_path,
+                    })
+
+        fallback["message"] = (
+            f"No exact match for '{query_str}'. "
+            f"Closest partial match: {best['name']} ({best['file_path']})."
+        )
+        fallback["known_endpoint_details"] = {
+            "best_partial_match": best,
+            "other_partial_matches": broad_matches[1:10],
+        }
+        if callers:
+            fallback["immediate_callers"] = callers
+        if callees:
+            fallback["immediate_callees"] = callees
+
+        # Likely breakpoints
+        breakpoints: list[str] = []
+        if any("callback" in n.get("name", "").lower() for n in broad_matches):
+            breakpoints.append("callback")
+        if "dispatch" in q_lower or "route" in q_lower:
+            breakpoints.append("framework_dispatch")
+        if "interface" in q_lower or "protocol" in q_lower:
+            breakpoints.append("interface_dispatch")
+        if breakpoints:
+            fallback["likely_breakpoints"] = breakpoints
+
+        return fallback
+
+    # If we found same_file_siblings, still return useful fallback
+    if fallback["same_file_siblings"]:
+        return fallback
+
+    return None
+
+
+# ── Multi-candidate transparency for _resolve_input_symbol (Req 3.2) ────
+
+
+def _build_candidates_note(
+    selected_symbol_id: str,
+    candidates: list[dict[str, Any]],
+    selected_reason: str = "",
+) -> dict[str, Any] | None:
+    """Build a candidates transparency note when multiple symbols matched.
+
+    If only one candidate exists, returns None (no need for transparency).
+    Otherwise returns ``{selected, selected_reason, other_candidates}``.
+
+    This ensures the agent knows there were alternatives, rather than
+    silently picking the first match (Req 3.2).
+    """
+    if len(candidates) <= 1:
+        return None
+
+    others = [
+        {
+            "symbol_id": c.get("symbol_id", ""),
+            "name": c.get("name", ""),
+            "type": c.get("type", ""),
+            "file_path": c.get("file_path", ""),
+        }
+        for c in candidates
+        if c.get("symbol_id") != selected_symbol_id
+    ]
+
+    if not others:
+        return None
+
+    return {
+        "selected": selected_symbol_id,
+        "selected_reason": selected_reason,
+        "other_candidates": others[:10],
+    }
+
+
 # ── Tool: search_symbols ──────────────────────────────────────────────────
 
 
@@ -2861,6 +3437,10 @@ def codegraph_find(
     # Total before capping to effective_limit
     total = len(items)
 
+    # ── File freshness for all result files (Req 3.4) ──────────────────
+    result_files = list({item.get("file_path", "") for item in items if item.get("file_path")})
+    file_freshness = _check_file_freshness(result_files, cg_dir)
+
     # Build enriched results (capped at effective_limit)
     serialized_results: list[dict[str, Any]] = []
     for item in items[:effective_limit]:
@@ -2873,6 +3453,28 @@ def codegraph_find(
             "score": item.get("score"),
             "reason": f"Best match for '{query}'." if item.get("score", 0) > 0.8 else f"Partial match for '{query}'.",
         }
+
+        # ── Evidence array per result (Req 3.1) ─────────────────────────
+        match_sources = item.get("match_sources", [])
+        evidence_items: list[dict[str, Any]] = []
+        for ms in match_sources:
+            evidence_items.append({
+                "type": "name_match",
+                "symbol": item["name"],
+                "symbol_id": item.get("symbol_id", ""),
+                "file": item.get("file_path"),
+                "confidence": "high" if ms == "exact_name" else "medium",
+                "reason": f"Matched via {ms}.",
+            })
+        evidence_items.append({
+            "type": "symbol_metadata",
+            "symbol": item["name"],
+            "symbol_id": item.get("symbol_id", ""),
+            "file": item.get("file_path"),
+            "confidence": "high",
+            "reason": f"Type: {item['type']}",
+        })
+        entry["evidence"] = evidence_items
 
         # Fetch the store node once — shared by details, snippets, and standard mode
         node: GraphNode | None = None
@@ -2893,27 +3495,35 @@ def codegraph_find(
         else:
             entry["details"] = None
 
-        # Optionally include source snippets (max 40 lines default)
+        # Optionally include source snippets with declaration (Req 3.5)
         if include_snippets and item.get("file_path") and item.get("line_start"):
-            snippet = _read_source_snippet(
+            raw_snippet = _read_source_snippet(
                 item["file_path"],
                 item["line_start"],
                 item.get("line_end", item["line_start"]),
                 source_mode="body",
                 max_source_lines=40,
             )
-            if snippet.get("included"):
+            if raw_snippet.get("included"):
+                wrapped = _wrap_source_snippet(raw_snippet, item["file_path"], file_freshness)
                 entry["snippet"] = {
                     "file": item["file_path"],
-                    "snippet": snippet["content"],
+                    "snippet": wrapped["content"],
                     "line_start": item["line_start"],
                     "line_end": item.get("line_end", item["line_start"]),
-                    "truncated": snippet.get("truncated", False),
+                    "truncated": wrapped.get("truncated", False),
+                    "declaration": wrapped.get("declaration"),
                 }
             else:
                 entry["snippet"] = None
         else:
             entry["snippet"] = None
+
+        # ── Container outline for class results in review mode (Req 3.7)
+        if mode == "review" and node and node.type == NodeType.class_:
+            outline = _build_container_outline(store, node)
+            if outline:
+                entry["container_outline"] = outline
 
         if response_mode == "standard":
             if node:
@@ -2944,13 +3554,43 @@ def codegraph_find(
             f"Inspect neighbors or impact before editing shared code."
         )
 
+    # ── Multi-candidate transparency (Req 3.2) ──────────────────────────
+    candidates_note: dict[str, Any] | None = None
+    if total > effective_limit:
+        other_ids = [
+            {"symbol_id": item.get("symbol_id", item.get("id", "")),
+             "name": item.get("name", ""),
+             "type": item.get("type", ""),
+             "file_path": item.get("file_path", "")}
+            for item in items[effective_limit:effective_limit + 10]
+        ]
+        if other_ids:
+            best = serialized_results[0] if serialized_results else items[0]
+            candidates_note = {
+                "selected": best.get("symbol", best.get("name", "")),
+                "selected_reason": f"Top match for '{query}' (score: {best.get('score', 0):.2f})",
+                "other_candidates": other_ids,
+            }
+
+    # ── Failure fallback when no results (Req 3.3) ──────────────────────
+    fallback_block: dict[str, Any] | None = None
+    if total == 0:
+        fallback_block = _build_failure_fallback(store, query)
+
+    response_data: dict[str, Any] = {
+        "query": query,
+        "results": serialized_results,
+        "total": total,
+        "summary": summary,
+        "file_freshness": file_freshness,
+    }
+    if candidates_note:
+        response_data["candidates_note"] = candidates_note
+    if fallback_block:
+        response_data["fallback"] = fallback_block
+
     return _respond_ok(
-        data={
-            "query": query,
-            "results": serialized_results,
-            "total": total,
-            "summary": summary,
-        },
+        data=response_data,
         tool="codegraph_find",
         warnings=_collect_warnings(),
         response_mode=response_mode,
@@ -3615,11 +4255,13 @@ def get_neighbors(
     )
     query_str = symbol_id or symbol or ""
     if result is None:
+        # ── Failure resilience (Req 3.3) ──────────────────────────────
+        fallback = _build_failure_fallback(store, query_str, path_hint=path_hint)
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
             message=f"No symbol found matching '{query_str}'",
             tool="codegraph_get_neighbors",
-            details=_get_project_info(),
+            details=_get_project_info(fallback=fallback),
         )
 
     if result.get("match_reason") == "ambiguous":
@@ -3644,10 +4286,12 @@ def get_neighbors(
 
     center_node = result["node"]
     if center_node is None:
+        fallback_n2 = _build_failure_fallback(store, query_str, path_hint=path_hint)
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
             message=f"No symbol found matching '{query_str}'",
             tool="codegraph_get_neighbors",
+            details=_get_project_info(fallback=fallback_n2),
         )
 
     # BFS traversal with direction support
@@ -3780,13 +4424,30 @@ def get_neighbors(
             "low_confidence_filtered": filtered_counts["low_confidence_edges"],
         }
 
+        # ── File freshness (Req 3.4) ──────────────────────────────────
+        all_nbr_files = list({n.get("file_path", "") for n in nodes_out if n.get("file_path")})
+        nbr_freshness = _check_file_freshness(all_nbr_files, cg_dir)
+
+        # ── Multi-candidate transparency (Req 3.2) ────────────────────
+        nbr_candidates: dict[str, Any] | None = None
+        if not result.get("exact_match"):
+            nbr_candidates = _build_candidates_note(
+                center_node.id, result.get("candidates", []),
+                selected_reason=f"Best fuzzy match for '{query_str}'",
+            )
+
+        grouped_data: dict[str, Any] = {
+            "center": center_node.id,
+            "groups": {k: v for k, v in groups.items() if v},
+            "counts": counts,
+            "truncated": truncated,
+            "file_freshness": nbr_freshness,
+        }
+        if nbr_candidates:
+            grouped_data["candidates_note"] = nbr_candidates
+
         rv_grouped = _respond_ok(
-            data={
-                "center": center_node.id,
-                "groups": {k: v for k, v in groups.items() if v},
-                "counts": counts,
-                "truncated": truncated,
-            },
+            data=grouped_data,
             tool="codegraph_get_neighbors",
             warnings=_collect_warnings(
                 None if result["exact_match"] else
@@ -3803,19 +4464,35 @@ def get_neighbors(
         if not result["exact_match"]
         else None
     )
-    rv_flat = _respond_ok(
-        data={
-            "center": center_node.id,
-            "nodes": nodes_out,
-            "edges": edges_out,
-            "truncated": truncated,
-            "filtered_counts": filtered_counts,
-            "limits": {
-                "depth": effective_depth,
-                "max_nodes": effective_max_nodes,
-                "min_confidence": min_confidence,
-            },
+
+    # ── File freshness & candidates for flat mode ────────────────────
+    all_flat_files = list({n.get("file_path", "") for n in nodes_out if n.get("file_path")})
+    flat_freshness = _check_file_freshness(all_flat_files, cg_dir)
+    flat_candidates: dict[str, Any] | None = None
+    if not result.get("exact_match"):
+        flat_candidates = _build_candidates_note(
+            center_node.id, result.get("candidates", []),
+            selected_reason=f"Best fuzzy match for '{query_str}'",
+        )
+
+    flat_data: dict[str, Any] = {
+        "center": center_node.id,
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "truncated": truncated,
+        "filtered_counts": filtered_counts,
+        "limits": {
+            "depth": effective_depth,
+            "max_nodes": effective_max_nodes,
+            "min_confidence": min_confidence,
         },
+        "file_freshness": flat_freshness,
+    }
+    if flat_candidates:
+        flat_data["candidates_note"] = flat_candidates
+
+    rv_flat = _respond_ok(
+        data=flat_data,
         tool="codegraph_get_neighbors",
         warnings=_collect_warnings(fuzzy_warning),
     )
@@ -3950,11 +4627,13 @@ def get_impact(
     )
     query_str = symbol_id or symbol or ""
     if result is None:
+        # ── Failure resilience (Req 3.3) ──────────────────────────────
+        fallback = _build_failure_fallback(store, query_str, path_hint=path_hint)
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
             message=f"No symbol found matching '{query_str}'",
             tool="codegraph_get_impact",
-            details=_get_project_info(),
+            details=_get_project_info(fallback=fallback),
         )
 
     if result.get("match_reason") == "ambiguous":
@@ -3979,10 +4658,12 @@ def get_impact(
 
     center_node = result["node"]
     if center_node is None:
+        fallback_i2 = _build_failure_fallback(store, query_str, path_hint=path_hint)
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
             message=f"No symbol found matching '{query_str}'",
             tool="codegraph_get_impact",
+            details=_get_project_info(fallback=fallback_i2),
         )
 
     # Call the impact engine
@@ -4008,6 +4689,76 @@ def get_impact(
     }
     if response_mode != "compact":
         risk["reasons"] = risk_reasons
+
+    # ── Build structured evidence for risk reasons (Req 3.1) ────────────
+    risk_evidence: dict[str, list[dict[str, Any]]] = {}
+    # Evidence from upstream callers
+    upstream_evidence: list[dict[str, Any]] = []
+    for caller in impact_result.get("upstream_callers", []):
+        upstream_evidence.append({
+            "type": "caller",
+            "symbol": caller.get("name", ""),
+            "symbol_id": caller.get("symbol_id", ""),
+            "file": caller.get("file_path", ""),
+            "line": caller.get("line_start"),
+            "confidence": caller.get("confidence_level", "unknown"),
+            "reason": caller.get("reason", ""),
+        })
+    if upstream_evidence:
+        risk_evidence["upstream_caller"] = upstream_evidence[:10]
+
+    # Evidence from downstream callees
+    downstream_evidence: list[dict[str, Any]] = []
+    for callee in impact_result.get("downstream_callees", []):
+        downstream_evidence.append({
+            "type": "callee",
+            "symbol": callee.get("name", ""),
+            "symbol_id": callee.get("symbol_id", ""),
+            "file": callee.get("file_path", ""),
+            "line": callee.get("line_start"),
+            "confidence": callee.get("confidence_level", "unknown"),
+            "reason": callee.get("reason", ""),
+        })
+    if downstream_evidence:
+        risk_evidence["downstream_call"] = downstream_evidence[:10]
+
+    # Evidence from tests
+    test_evidence: list[dict[str, Any]] = []
+    for t in impact_result.get("related_tests", []):
+        test_evidence.append({
+            "type": "test",
+            "symbol": t.get("name", ""),
+            "symbol_id": t.get("symbol_id", ""),
+            "file": t.get("file_path", ""),
+            "confidence": t.get("confidence_level", "unknown"),
+            "reason": t.get("reason", ""),
+        })
+    if test_evidence:
+        risk_evidence["related_tests"] = test_evidence[:10]
+    else:
+        risk_evidence["missing_tests"] = [{
+            "type": "test",
+            "symbol": None,
+            "symbol_id": None,
+            "file": None,
+            "confidence": "heuristic",
+            "reason": "No related tests detected in the index.",
+        }]
+
+    # Evidence from external/unresolved
+    ext_evidence: list[dict[str, Any]] = []
+    for e in impact_result.get("external_or_unresolved", []):
+        ext_evidence.append({
+            "type": "external" if e.get("type") == "external_symbol" else "unresolved",
+            "symbol": e.get("name", ""),
+            "symbol_id": e.get("symbol_id", ""),
+            "confidence": e.get("confidence_level", "unknown"),
+            "reason": e.get("reason", ""),
+        })
+    if ext_evidence:
+        risk_evidence["external_or_unresolved"] = ext_evidence[:10]
+
+    risk["evidence"] = risk_evidence
 
     # ── Confirmed impact (compact: grouped structure) ────────────────────
     confirmed = impact_result.get("confirmed_impact", {})
@@ -4105,6 +4856,21 @@ def get_impact(
     )
     warnings = _collect_warnings(fuzzy_warning)
 
+    # ── File freshness (Req 3.4) ────────────────────────────────────────
+    all_response_files: list[str] = list({f["file_path"] for f in confirmed_files_out if f.get("file_path")})
+    if center_node.file_path:
+        all_response_files.append(center_node.file_path)
+    file_freshness = _check_file_freshness(all_response_files, cg_dir)
+
+    # ── Multi-candidate transparency (Req 3.2) ──────────────────────────
+    candidates_note: dict[str, Any] | None = None
+    if not result.get("exact_match"):
+        candidates_note = _build_candidates_note(
+            center_node.id,
+            result.get("candidates", []),
+            selected_reason=f"Best fuzzy match for '{query_str}'",
+        )
+
     if response_mode == "compact":
         data: dict[str, Any] = {
             "target": center_node.id,
@@ -4121,6 +4887,7 @@ def get_impact(
                 "external": external_out,
             },
             "truncated": truncated,
+            "file_freshness": file_freshness,
         }
     elif response_mode == "full":
         data = {
@@ -4140,6 +4907,7 @@ def get_impact(
             "upstream_callers": impact_result.get("upstream_callers", []),
             "downstream_callees": impact_result.get("downstream_callees", []),
             "truncated": truncated,
+            "file_freshness": file_freshness,
         }
     else:  # standard
         data = {
@@ -4158,7 +4926,11 @@ def get_impact(
             "related_tests": related_tests,
             "external_or_unresolved": external,
             "truncated": truncated,
+            "file_freshness": file_freshness,
         }
+
+    if candidates_note:
+        data["candidates_note"] = candidates_note
 
     return _respond_ok(
         data=data,
@@ -4302,10 +5074,61 @@ def pre_edit_check(
             ),
         })
 
+    # ── Build evidence for impact_summary (Req 3.1) ────────────────────
+    impact_evidence: dict[str, list[dict[str, Any]]] = {}
+    # Evidence from affected callers
+    caller_ev: list[dict[str, Any]] = []
+    for c in all_callers[:20]:
+        caller_ev.append({
+            "type": "caller",
+            "symbol": c.get("symbol", c.get("name", "")),
+            "symbol_id": c.get("symbol_id", ""),
+            "file": c.get("file", c.get("file_path", "")),
+            "confidence": c.get("confidence_level", "unknown"),
+            "reason": c.get("reason", ""),
+        })
+    if caller_ev:
+        impact_evidence["affected_callers"] = caller_ev
+    # Evidence from affected files
+    file_ev: list[dict[str, Any]] = []
+    for f in all_affected_files[:20]:
+        file_ev.append({
+            "type": "edge",
+            "symbol": None,
+            "symbol_id": None,
+            "file": f.get("file", ""),
+            "confidence": "medium",
+            "reason": f.get("reason", ""),
+        })
+    if file_ev:
+        impact_evidence["affected_files"] = file_ev
+    # Evidence from tests
+    test_ev: list[dict[str, Any]] = []
+    for t in all_affected_tests[:10]:
+        test_ev.append({
+            "type": "test",
+            "symbol": t.get("symbol", t.get("name", "")),
+            "symbol_id": t.get("symbol_id", ""),
+            "file": t.get("file", ""),
+            "confidence": t.get("confidence_level", "unknown"),
+            "reason": t.get("reason", ""),
+        })
+    if test_ev:
+        impact_evidence["affected_tests"] = test_ev
+
     # ── Build response data ─────────────────────────────────────────────────
     # Re-wrap impact_summary with potentially downgraded confidence
     impact_summary_out = dict(helper_result["impact_summary"])
     impact_summary_out["confidence"] = risk_confidence
+    impact_summary_out["evidence"] = impact_evidence
+
+    # ── File freshness (Req 3.4) ────────────────────────────────────────
+    all_pec_files = list({f.get("file", "") for f in planned_files_out if f.get("file")})
+    for f in all_affected_files:
+        fp = f.get("file", "")
+        if fp and fp not in all_pec_files:
+            all_pec_files.append(fp)
+    pec_freshness = _check_file_freshness(all_pec_files, cg_dir)
 
     if response_mode == "compact":
         data: dict[str, Any] = {
@@ -4318,6 +5141,7 @@ def pre_edit_check(
             "affected_files": all_affected_files[:effective_limit],
             "affected_tests": all_affected_tests[:effective_limit] if include_tests else [],
             "recommended_checks": recommended_checks,
+            "file_freshness": pec_freshness,
         }
     else:  # standard
         data = {
@@ -4331,6 +5155,7 @@ def pre_edit_check(
             "affected_tests": all_affected_tests[:effective_limit] if include_tests else [],
             "recommended_checks": recommended_checks,
             "impact_errors": impact_errors if impact_errors else [],
+            "file_freshness": pec_freshness,
         }
 
     # Merge with global warnings (stale index, health, etc.)
@@ -4467,18 +5292,21 @@ def _build_source_snippets(
             max_source_lines=max_lines,
         )
         if source.get("included") and source.get("content"):
+            # ── Source snippet declaration (Req 3.5) ────────────────────
+            wrapped = _wrap_source_snippet(source, file_path)
             snippet_data: dict[str, Any] = {
                 "symbol": symbol_name,
                 "file": file_path,
                 "line_start": ls,
                 "line_end": le,
                 "reason": reason[:200],
+                "declaration": wrapped.get("declaration"),
             }
-            snippet_data["snippet"] = source["content"]
-            if source.get("truncated"):
+            snippet_data["snippet"] = wrapped["content"]
+            if wrapped.get("truncated"):
                 snippet_data["truncated"] = True
-                original = (le - ls + 1) if le >= ls else source.get("lines", 0)
-                snippet_data["omitted_lines"] = max(0, original - source.get("lines", 0))
+                original = (le - ls + 1) if le >= ls else wrapped.get("lines", 0)
+                snippet_data["omitted_lines"] = max(0, original - wrapped.get("lines", 0))
             snippets.append(snippet_data)
 
     return snippets
@@ -4675,6 +5503,31 @@ def _decode_context_pack_token(token: str) -> dict[str, Any] | None:
 # Keep backward-compatible aliases (used by tests)
 _generate_scan_token = _generate_context_pack_token
 _decode_scan_token = _decode_context_pack_token
+def _build_why_chosen(ep: "EntryPoint", task_description: str) -> str:
+    """Build a human-readable explanation of why this entry point was chosen."""
+    parts: list[str] = []
+
+    if ep.match_sources:
+        if "symbol_name" in ep.match_sources:
+            parts.append("symbol name directly matched query terms")
+        if "name_decomposition" in ep.match_sources:
+            parts.append("symbol name parts matched query terms")
+        if "file_path" in ep.match_sources:
+            parts.append("file path matched query terms")
+        if "qualified_name" in ep.match_sources:
+            parts.append("fully-qualified name matched")
+
+    if ep.type in ("route", "controller", "service", "component"):
+        parts.append(f"framework entry point ({ep.type})")
+
+    if ep.score >= 0.85:
+        parts.append("high confidence match")
+    elif ep.score >= 0.70:
+        parts.append("moderate confidence match")
+
+    if not parts:
+        return f"Best available match for query (score: {ep.score:.2f})"
+    return "; ".join(parts) + f" (score: {ep.score:.2f})"
 
 
 def _build_scan_result(
@@ -4684,11 +5537,14 @@ def _build_scan_result(
     """Build a lightweight scan-mode result.
 
     Calls the full context pack builder internally to discover entry points,
-    then strips it down to only: entry_points, related_files, summary, next_token.
+    then enriches with index statistics, framework detection, and
+    structured metadata for the agent to decide next steps.
 
-    Does NOT return: subgraph, impact, source code, selected_context.
+    Does NOT return: subgraph source, impact source, selected_context source code.
     """
+    from collections import Counter
     from codegraph.context.pack_builder import build_context_pack as _build_full
+    from codegraph.utils.path_utils import is_test_path, is_production_path, is_framework_entry_point
 
     # Use the existing builder to find entry points — but with minimal budget
     pack = _build_full(
@@ -4700,7 +5556,70 @@ def _build_scan_result(
         include_tests=False,
     )
 
-    # ── Entry points (3-5) ──────────────────────────────────────────────
+    # ── Index statistics ───────────────────────────────────────────────
+    all_nodes = store.all_nodes()
+    lang_counts: Counter[str] = Counter()
+    prod_count = 0
+    test_count = 0
+    core_modules: list[dict[str, Any]] = []
+    test_modules: list[str] = []
+    framework_entries: list[dict[str, Any]] = []
+
+    # Edge count per file (for identifying core modules)
+    file_edge_counts: Counter[str] = Counter()
+    for edge in store.all_edges():
+        for sid in (edge.source, edge.target):
+            fp = sid.split("::", 1)[0] if "::" in sid else ""
+            if fp:
+                file_edge_counts[fp] += 1
+
+    for node in all_nodes:
+        lang = node.language_id or node.metadata.get("language", "unknown")
+        if lang:
+            lang_counts[lang] += 1
+        fp = node.file_path or ""
+        if is_test_path(fp):
+            test_count += 1
+            if fp not in test_modules:
+                test_modules.append(fp)
+        elif is_production_path(fp):
+            prod_count += 1
+        if is_framework_entry_point(
+            node_type=node.type.value if node.type else "",
+            tags=node.tags,
+            framework_id=node.framework_id,
+            name=node.name,
+            file_path=node.file_path or "",
+        ):
+            framework_entries.append({
+                "symbol_id": node.id,
+                "name": node.name,
+                "file": fp,
+                "type": node.type.value if node.type else "unknown",
+            })
+
+    # Core modules: top files by edge count, excluding test files
+    top_files = [
+        (fp, cnt) for fp, cnt in file_edge_counts.most_common(15)
+        if not is_test_path(fp)
+    ][:5]
+    core_modules = [
+        {"file": fp, "edge_count": cnt, "reason": f"High connectivity ({cnt} edges)"}
+        for fp, cnt in top_files
+    ]
+
+    language_distribution = [
+        {"language": lang, "count": cnt}
+        for lang, cnt in lang_counts.most_common()
+    ]
+
+    production_test_counts = {
+        "production": prod_count,
+        "test": test_count,
+        "other": len(all_nodes) - prod_count - test_count,
+    }
+
+    # ── Entry points (3-5, enriched) ───────────────────────────────────
     entry_points: list[dict[str, Any]] = []
     for ep in pack.entry_points[:_SCAN_MAX_ENTRY_POINTS]:
         entry_points.append({
@@ -4711,28 +5630,37 @@ def _build_scan_result(
             "line_end": ep.location.line_end if ep.location else None,
             "reason": ep.reason or "Likely entry point for the requested task.",
             "confidence": round(ep.score, 4),
+            "why_chosen": _build_why_chosen(ep, task_description),
         })
 
-    # ── Related files (3-5, deduplicated) ────────────────────────────────
-    seen_files: set[str] = set()
+    # Filter core_modules to exclude entry point files
+    ep_files = {ep["file"] for ep in entry_points}
+    core_modules = [
+        cm for cm in core_modules if cm["file"] not in ep_files
+    ][:5]
+
+    # Suspected entry points: framework entries not in top entry_points
+    ep_ids = {ep["symbol_id"] for ep in entry_points}
+    suspected_entry_points = [
+        fw for fw in framework_entries[:8]
+        if fw["symbol_id"] not in ep_ids
+    ][:5]
+
+    # ── Related files (3-5, deduplicated) ──────────────────────────────
+    seen_files: set[str] = set(ep_files)
     related_files: list[dict[str, Any]] = []
 
-    # Priority 1: entry point files
     for ep in entry_points:
         fp = ep.get("file", "")
-        if fp and fp not in seen_files:
-            seen_files.add(fp)
+        if fp:
             related_files.append({
                 "file": fp,
                 "reason": "Contains the highest-confidence entry point.",
             })
 
-    # Priority 2: files from related_symbols
     for rs in pack.related_symbols:
         if len(related_files) >= _SCAN_MAX_RELATED_FILES:
             break
-        # RelatedSymbol has symbol_id (e.g. "app/api/auth.py::login"),
-        # extract file path from it
         sid = rs.symbol_id
         fp = sid.split("::", 1)[0] if "::" in sid else ""
         if not fp:
@@ -4744,26 +5672,64 @@ def _build_scan_result(
                 "reason": rs.reason or "Related to entry points via call graph or imports.",
             })
 
-    # ── Summary ──────────────────────────────────────────────────────────
+    # ── Summary ────────────────────────────────────────────────────────
     ep_count = len(entry_points)
     rf_count = len(related_files)
     if ep_count == 0:
-        summary = "No entry points found for this task. Try rephrasing or use search_symbols directly."
+        summary = (
+            f"No entry points found for this task. "
+            f"Index has {prod_count} production and {test_count} test symbols. "
+            "Try rephrasing or use search_symbols directly."
+        )
     elif ep_count == 1:
         summary = (
             f"Found 1 likely entry point and {rf_count} related file(s). "
+            f"Index: {prod_count} prod / {test_count} test symbols. "
             "Use get_neighbors to inspect relationships around the entry point."
         )
     else:
         summary = (
             f"Found {ep_count} likely entry points and {rf_count} related file(s). "
+            f"Index: {prod_count} prod / {test_count} test symbols. "
             "Use get_neighbors or get_impact to narrow down before reading multiple files."
         )
 
-    # ── Next token ───────────────────────────────────────────────────────
+    # ── Why excluded tests ─────────────────────────────────────────────
+    why_excluded_tests = (
+        "Scan mode excludes test files to keep output compact. "
+        "Use deepen mode (next_token from this response) to expand "
+        "with test coverage and neighbors around the selected entry points."
+    )
+
+    # ── Deepen suggestions ─────────────────────────────────────────────
+    deepen_suggestions: list[dict[str, Any]] = []
+    if entry_points:
+        deepen_suggestions.append({
+            "stage": "deepen",
+            "what": "Neighbor relationships around entry point",
+            "symbol": entry_points[0]["symbol"],
+            "tool": "codegraph_build_context_pack",
+            "reason": (
+                "Expand to include callers, callees, imports, and tests "
+                "around the top entry point."
+            ),
+        })
+    if core_modules:
+        deepen_suggestions.append({
+            "stage": "deepen",
+            "what": "Core module analysis",
+            "symbol": core_modules[0]["file"].split("/")[-1] if core_modules else "",
+            "tool": "codegraph_build_context_pack",
+            "reason": (
+                "Investigate high-connectivity core modules "
+                "for architecture understanding."
+            ),
+        })
+
+    # ── Next token ─────────────────────────────────────────────────────
     next_token = _generate_scan_token(task_description, entry_points, related_files)
 
-    # ── Next recommended tools (conservative: only existing tools) ───────
+    # ── Next recommended tools ─────────────────────────────────────────
     next_tools: list[dict[str, Any]] = []
     if entry_points:
         next_tools.append({
@@ -4789,6 +5755,13 @@ def _build_scan_result(
         "summary": summary,
         "next_token": next_token,
         "next_recommended_tools": next_tools,
+        "language_distribution": language_distribution,
+        "production_test_counts": production_test_counts,
+        "suspected_entry_points": suspected_entry_points,
+        "core_modules": core_modules,
+        "test_modules": test_modules[:5],
+        "why_excluded_tests": why_excluded_tests,
+        "deepen_suggestions": deepen_suggestions,
     }
 
 
@@ -5662,11 +6635,13 @@ def codegraph_explain(
             path_hint=path_hint,
         )
         if resolved is None:
+            # ── Failure resilience (Req 3.3) ──────────────────────────
+            fallback = _build_failure_fallback(store, symbol_str, path_hint=file_str if file_str else None)
             return _respond_error(
                 code=ERROR_CODES["SYMBOL_NOT_FOUND"],
                 message=f"No symbol found matching '{symbol_str}'",
                 tool="codegraph_explain",
-                details=_get_project_info(),
+                details=_get_project_info(fallback=fallback),
             )
 
         if resolved.get("match_reason") == "ambiguous":
@@ -5691,21 +6666,35 @@ def codegraph_explain(
 
         node = resolved["node"]
 
+        # ── Multi-candidate transparency (Req 3.2) ──────────────────────
+        candidates_note: dict[str, Any] | None = None
         if not resolved.get("exact_match"):
             fuzzy_warning = (
                 f"No exact match for '{symbol_str}'. "
                 f"Using closest match: {node.name} ({node.id})."
             )
+            candidates_note = _build_candidates_note(
+                node.id,
+                resolved.get("candidates", []),
+                selected_reason=f"Best fuzzy match for '{symbol_str}'",
+            )
+
+        # ── Source snippet with declaration (Req 3.5) ───────────────────
+        # ── File freshness (Req 3.4) ────────────────────────────────────
+        response_files: list[str] = [node.file_path] if node.file_path else []
+        freshness = _check_file_freshness(response_files, cg_dir)
 
         source: dict[str, Any] = {"included": False, "content": None, "truncated": False}
         if include_snippet and node.location and node.file_path:
-            source = _read_source_snippet(
+            raw_source = _read_source_snippet(
                 node.file_path,
                 node.location.line_start,
                 node.location.line_end,
                 source_mode="body",
                 max_source_lines=effective_max_lines,
             )
+            if raw_source.get("included"):
+                source = _wrap_source_snippet(raw_source, node.file_path, freshness)
 
         data = graph_explain.explain_symbol(
             store,
@@ -5717,6 +6706,17 @@ def codegraph_explain(
             project_root=project_root,
             source_snippet=source,
         )
+
+        # ── Container outline for large classes (Req 3.7) ───────────────
+        if node.type == NodeType.class_:
+            outline = _build_container_outline(store, node)
+            if outline:
+                data["container_outline"] = outline
+
+        # ── Enrich response with freshness and candidates ──────────────
+        data["file_freshness"] = freshness
+        if candidates_note:
+            data["candidates_note"] = candidates_note
 
     else:
         normalized = file_str.replace("\\", "/")
@@ -5734,6 +6734,9 @@ def codegraph_explain(
                 tool="codegraph_explain",
                 details=_get_project_info(),
             )
+
+        # ── File freshness for file explanation (Req 3.4) ──────────────
+        data["file_freshness"] = _check_file_freshness([normalized], cg_dir)
 
     return _respond_ok(
         data=data,
@@ -6033,6 +7036,11 @@ def build_context_pack(
             "suggested_tests": pack_dict.get("suggested_tests", []),
             "token_budget": pack_dict.get("token_budget", {}),
             "truncated": pack_truncated,
+            # ── Necessity tagging (Req 3.6) ────────────────────────────
+            "necessity": {
+                "necessary_count": len(pack_dict.get("entry_points", [])),
+                "incidental_count": len(pack_dict.get("related_symbols", [])),
+            },
         }
     elif mode == "markdown":
         from codegraph.context.markdown_exporter import save_markdown
@@ -6092,6 +7100,7 @@ def build_context_pack(
             "selected_context_count": len(pack_dict.get("selected_context", [])),
             "token_budget": pack_dict.get("token_budget", {}),
             "truncated": pack_dict.get("truncated", False),
+            "necessity": pack_dict.get("necessity", {}),
         }
 
     # Apply compact whitelist as safety net
@@ -6691,6 +7700,10 @@ def coverage_gaps(
         include_low_confidence=include_low_confidence,
         limit=effective_limit,
     )
+
+    # ── File freshness for gap files (Req 3.4) ──────────────────────────
+    gap_files = [f.get("file", "") for f in result.get("files_without_tests", [])]
+    result["file_freshness"] = _check_file_freshness(gap_files, cg_dir)
 
     return _respond_ok(
         data=result,

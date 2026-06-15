@@ -1516,29 +1516,75 @@ def doctor(
                 else:
                     fail(f"Graph validation: {status}")
 
-                issue_counts = report.get("issue_counts", {})
+                edge_health = report.get("edge_health", {})
                 typer.echo(
-                    f"     Auto-corrected: {issue_counts.get('auto_corrected', 0)}"
+                    f"     Total edges (incl. dropped): "
+                    f"{edge_health.get('total_edges', 0)}"
                 )
                 typer.echo(
-                    f"     Dropped:        {issue_counts.get('dropped', 0)}"
+                    f"     Auto-corrected: "
+                    f"{edge_health.get('total_auto_corrected', 0)}"
                 )
                 typer.echo(
-                    f"     Warnings:       {issue_counts.get('warnings', 0)}"
+                    f"     Dropped:        "
+                    f"{edge_health.get('total_dropped', 0)}"
                 )
                 typer.echo(
-                    f"     Fatal:          {issue_counts.get('fatal', 0)}"
+                    f"     Dropped ratio:  "
+                    f"{edge_health.get('dropped_ratio', 0):.1%}"
                 )
 
+                # Show dropped by reason (top 5)
+                dropped_br = edge_health.get("dropped_by_reason", [])
+                if dropped_br:
+                    typer.echo("     Dropped by reason:")
+                    for br in dropped_br[:5]:
+                        reason = br.get("reason", "?")
+                        count = br.get("count", 0)
+                        examples = br.get("top_examples", [])
+                        first_ex = (
+                            examples[0].get("message", "")[:100]
+                            if examples else ""
+                        )
+                        typer.echo(f"       {reason}: {count}")
+                        if first_ex:
+                            typer.echo(f"         e.g. {first_ex}")
+
+                # Show auto-corrected by reason (top 5)
+                ac_br = edge_health.get("auto_corrected_by_reason", [])
+                if ac_br:
+                    typer.echo("     Auto-corrected by reason:")
+                    for br in ac_br[:5]:
+                        reason = br.get("reason", "?")
+                        count = br.get("count", 0)
+                        examples = br.get("top_examples", [])
+                        first_ex = (
+                            examples[0].get("message", "")[:100]
+                            if examples else ""
+                        )
+                        typer.echo(f"       {reason}: {count}")
+                        if first_ex:
+                            typer.echo(f"         e.g. {first_ex}")
+
+                # Show impact assessment
+                impact = edge_health.get("impact_assessment", "")
+                if impact:
+                    typer.echo(f"     Impact: {impact}")
+
+                # Show suggested actions
+                actions = edge_health.get("suggested_actions", [])
+                for action in actions:
+                    typer.echo(f"     Action: {action}")
+
+                # Legacy stats
                 stats = report.get("stats", {})
                 typer.echo(
-                    f"     Orphan ratio:       {stats.get('orphan_ratio', 0):.1%}"
+                    f"     Orphan ratio:       "
+                    f"{stats.get('orphan_ratio', 0):.1%}"
                 )
                 typer.echo(
-                    f"     External ratio:     {stats.get('external_ratio', 0):.1%}"
-                )
-                typer.echo(
-                    f"     Low-conf edge ratio:{stats.get('low_confidence_ratio', 0):.1%}"
+                    f"     Low-conf edge ratio:"
+                    f"{stats.get('low_confidence_ratio', 0):.1%}"
                 )
 
                 suggested = report.get("suggested_fix")
@@ -2567,6 +2613,12 @@ configure_app = typer.Typer(
 )
 app.add_typer(configure_app)
 
+enrich_app = typer.Typer(
+    name="enrich",
+    help="LLM-assisted semantic enrichment via agent-side analysis",
+)
+app.add_typer(enrich_app)
+
 
 def _show_configure_success(root: str | None = None) -> None:
     """Show project root and index status after a successful configure.
@@ -2940,6 +2992,14 @@ def configure_workflows(
         "codegraph-test-audit.md",
         "codegraph-explain.md",
         "codegraph-find.md",
+        "codegraph-enrich.md",
+    ]
+
+    # Agent file list
+    agent_files = [
+        "codegraph-file-enricher.md",
+        "codegraph-symbol-enricher.md",
+        "codegraph-enrich-reviewer.md",
     ]
 
     installed: list[str] = []
@@ -3005,6 +3065,7 @@ def configure_workflows(
         typer.echo("  - /codegraph-test-audit")
         typer.echo("  - /codegraph-explain")
         typer.echo("  - /codegraph-find")
+        typer.echo("  - /codegraph-enrich")
         typer.echo()
 
     if skipped and not installed and not overwritten:
@@ -3012,6 +3073,65 @@ def configure_workflows(
         typer.echo(
             "All workflow commands already exist. Use --force to overwrite."
         )
+        typer.echo()
+
+    # ── Agent templates ──────────────────────────────────────────────────
+
+    agents_dir = pkg_dir / "templates" / "agents"
+    if agents_dir.is_dir():
+        target_agents_dir = Path.cwd() / ".claude" / "agents"
+        target_agents_dir.mkdir(parents=True, exist_ok=True)
+
+        ag_installed: list[str] = []
+        ag_skipped: list[str] = []
+        ag_errors: list[str] = []
+
+        for filename in agent_files:
+            src = agents_dir / filename
+            dst = target_agents_dir / filename
+
+            if not src.exists():
+                ag_errors.append(f"{filename}: template not found at {src}")
+                continue
+
+            if dst.exists() and not force:
+                ag_skipped.append(filename)
+                continue
+
+            try:
+                dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                ag_installed.append(filename)
+            except OSError as e:
+                ag_errors.append(f"{filename}: {e}")
+
+        if ag_errors:
+            for err in ag_errors:
+                typer.echo(f"  [ERROR] {err}", err=True)
+
+        if ag_installed:
+            typer.echo()
+            typer.echo("Installed enrichment agent definitions:")
+            typer.echo()
+            for f in ag_installed:
+                typer.echo(f"  - .claude/agents/{f}")
+
+        if ag_skipped:
+            for f in ag_skipped:
+                typer.echo(
+                    f"  [SKIP] .claude/agents/{f} already exists. "
+                    f"Use --force to overwrite."
+                )
+
+    # ── Enrich usage hint ────────────────────────────────────────────────
+
+    if "codegraph-enrich.md" in installed or "codegraph-enrich.md" in overwritten:
+        typer.echo()
+        typer.echo("Enrichment workflow available:")
+        typer.echo()
+        typer.echo("  - /codegraph-enrich")
+        typer.echo()
+        typer.echo("This runs agent-side LLM enrichment with zero API config:")
+        typer.echo("  prepare -> analyze -> validate -> import")
         typer.echo()
 
 
@@ -3141,6 +3261,273 @@ def configure_git_hook(
     typer.echo("  codegraph workflow impact --files <staged files> --change-type unknown --format markdown")
     typer.echo()
     typer.echo("Default behavior: warning only. It does not block commits.")
+
+
+# ── enrich command group ──────────────────────────────────────────────────
+
+
+@enrich_app.command(name="prepare")
+def enrich_prepare(
+    max_files: int = typer.Option(
+        100, "--max-files", "-n",
+        help="Maximum number of files to include in the prepare output",
+    ),
+    max_symbols_per_file: int = typer.Option(
+        20, "--max-symbols-per-file", "-s",
+        help="Maximum symbols per file",
+    ),
+    output: str = typer.Option(
+        None, "--output", "-o",
+        help="Output path (default: .codegraph/intermediate/enrich_input.json)",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root directory (auto-detected if omitted)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing output file",
+    ),
+) -> None:
+    """Generate bounded input JSON for enrichment agents.
+
+    Reads the code graph index and produces per-file metadata
+    (symbols, imports, exports, callers, callees, snippets) within
+    configured limits. The output is written to
+    .codegraph/intermediate/enrich_input.json by default.
+    """
+    from codegraph.enrich.prepare import generate_prepare_output, write_prepare_output
+
+    store, cg_dir = _load_store(root)
+    output_path = Path(output) if output else cg_dir / "intermediate" / "enrich_input.json"
+
+    if output_path.exists() and not force:
+        typer.echo(f"Error: {output_path} already exists. Use --force to overwrite.", err=True)
+        raise typer.Exit(1)
+
+    prepare_output = generate_prepare_output(
+        store=store,
+        cg_dir=cg_dir,
+        max_files=max_files,
+        max_symbols_per_file=max_symbols_per_file,
+    )
+    written_path = write_prepare_output(prepare_output, cg_dir)
+    typer.echo(f"Prepare output written to: {written_path}")
+    typer.echo(f"  Files: {len(prepare_output.files)}")
+    typer.echo(f"  Total symbols: {sum(len(f.symbols) for f in prepare_output.files)}")
+    typer.echo(f"  Constraints: max_summary={prepare_output.constraints.max_summary_chars} chars")
+
+
+@enrich_app.command(name="validate")
+def enrich_validate(
+    input_path: str = typer.Argument(
+        None,
+        help="Path to agent output JSON (default: .codegraph/intermediate/enrich_output.json)",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root directory (auto-detected if omitted)",
+    ),
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Treat warnings as errors",
+    ),
+) -> None:
+    """Validate agent-produced enrichment output.
+
+    Checks JSON schema, path/symbol existence, evidence validity,
+    and constraint compliance. Use after the enrichment agent has
+    produced its output.
+    """
+    from codegraph.enrich.validate import validate_agent_output
+
+    store, cg_dir = _load_store(root)
+    output_path = Path(input_path) if input_path else cg_dir / "intermediate" / "enrich_output.json"
+
+    if not output_path.exists():
+        typer.echo(f"Error: File not found: {output_path}", err=True)
+        raise typer.Exit(1)
+
+    result = validate_agent_output(output_path, store)
+
+    typer.echo()
+    typer.echo(f"Validation {'PASSED' if result.valid else 'FAILED'}")
+    typer.echo(f"  Files checked: {result.stats.get('files_checked', 0)}")
+    typer.echo(f"  Symbols checked: {result.stats.get('symbols_checked', 0)}")
+    typer.echo(f"  Errors: {result.stats.get('total_errors', 0)}")
+    typer.echo(f"  Warnings: {result.stats.get('total_warnings', 0)}")
+
+    if result.errors:
+        typer.echo()
+        typer.echo("Errors:")
+        for e in result.errors:
+            typer.echo(f"  [{e.severity.upper()}] {e.path}: {e.message}")
+    if result.warnings:
+        typer.echo()
+        typer.echo("Warnings:")
+        for w in result.warnings:
+            typer.echo(f"  [{w.severity.upper()}] {w.path}: {w.message}")
+
+    exit_code = 1 if result.errors or (strict and result.warnings) else 0
+    if exit_code:
+        raise typer.Exit(exit_code)
+
+
+@enrich_app.command(name="import")
+def enrich_import(
+    input_path: str = typer.Argument(
+        None,
+        help="Path to validated agent output JSON (default: .codegraph/intermediate/enrich_output.json)",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root directory (auto-detected if omitted)",
+    ),
+    skip_validation: bool = typer.Option(
+        False, "--skip-validation",
+        help="Skip validation (dangerous: may import invalid data)",
+    ),
+) -> None:
+    """Import validated enrichment data into the SQLite index.
+
+    Reads validated agent output and writes enrichment fields
+    (summary, role, responsibilities, edge_cases, test_relevance,
+    confidence, evidence) to the nodes table. Tags are merged.
+    """
+    from codegraph.enrich.validate import validate_agent_output
+    from codegraph.enrich.import_enrich import import_enrichment
+
+    store, cg_dir = _load_store(root)
+    output_path = Path(input_path) if input_path else cg_dir / "intermediate" / "enrich_output.json"
+
+    if not output_path.exists():
+        typer.echo(f"Error: File not found: {output_path}", err=True)
+        raise typer.Exit(1)
+
+    if not skip_validation:
+        result = validate_agent_output(output_path, store)
+        if not result.valid:
+            typer.echo("Error: Validation failed. Fix errors or use --skip-validation.", err=True)
+            raise typer.Exit(1)
+        if result.warnings:
+            typer.echo(f"Warnings ({len(result.warnings)}):")
+            for w in result.warnings[:5]:
+                typer.echo(f"  - {w.path}: {w.message}")
+            typer.echo()
+
+    sqlite_path = cg_dir / "index.sqlite"
+    if not sqlite_path.exists():
+        typer.echo("Error: No SQLite index found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    sqlite_store = SqliteStore(sqlite_path)
+    sqlite_store.initialize()
+    stats = import_enrichment(output_path, store, sqlite_store)
+    sqlite_store.close()
+
+    typer.echo("Import complete:")
+    typer.echo(f"  Files enriched: {stats['file_count']}")
+    typer.echo(f"  Symbols enriched: {stats['symbol_count']}")
+    typer.echo(f"  Enriched at: {stats['enriched_at']}")
+
+
+@enrich_app.command(name="status")
+def enrich_status(
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root directory (auto-detected if omitted)",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", "-j",
+        help="Output as JSON",
+    ),
+) -> None:
+    """Show enrichment statistics.
+
+    Displays how many nodes and files have been enriched,
+    confidence breakdown, and last import time.
+    """
+    from codegraph.enrich.status import get_enrichment_status
+
+    cg_dir = _find_codegraph_dir(root)
+    if cg_dir is None:
+        typer.echo("Error: No .codegraph directory found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    sqlite_path = cg_dir / "index.sqlite"
+    if not sqlite_path.exists():
+        typer.echo("Error: No SQLite index found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    sqlite_store = SqliteStore(sqlite_path)
+    sqlite_store.initialize()
+    status = get_enrichment_status(sqlite_store)
+    sqlite_store.close()
+
+    if json_output:
+        typer.echo(status.model_dump_json(indent=2))
+    else:
+        pct = (status.enriched_nodes / status.total_nodes * 100) if status.total_nodes > 0 else 0
+        typer.echo()
+        typer.echo("Enrichment Status")
+        typer.echo("==================")
+        typer.echo(f"  Total nodes:     {status.total_nodes}")
+        typer.echo(f"  Enriched:        {status.enriched_nodes} ({pct:.1f}%)")
+        typer.echo(f"  Pending:         {status.pending_nodes}")
+        typer.echo(f"  Skipped:         {status.skipped_nodes}")
+        typer.echo(f"  Errors:          {status.error_nodes}")
+        typer.echo(f"  Enriched files:  {status.enriched_files} / {status.total_files}")
+        typer.echo()
+        typer.echo("Confidence breakdown (analyzed nodes):")
+        for level, count in status.confidence_breakdown.items():
+            typer.echo(f"  {level}: {count}")
+        if status.last_enriched_at:
+            typer.echo()
+            typer.echo(f"  Last enriched:   {status.last_enriched_at}")
+
+
+@enrich_app.command(name="clear")
+def enrich_clear(
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root directory (auto-detected if omitted)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Skip confirmation prompt",
+    ),
+) -> None:
+    """Remove all enrichment data from the index.
+
+    Resets enrichment columns to defaults on all nodes.
+    The structural index (symbols, edges) is not affected.
+    """
+    from codegraph.enrich.clear import clear_enrichment
+
+    if not force:
+        typer.echo("This will remove all enrichment data from the index.")
+        typer.echo("Structural index (symbols, edges) will NOT be affected.")
+        answer = typer.prompt("Continue? [y/N]")
+        if answer.lower() not in ("y", "yes"):
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+
+    cg_dir = _find_codegraph_dir(root)
+    if cg_dir is None:
+        typer.echo("Error: No .codegraph directory found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    sqlite_path = cg_dir / "index.sqlite"
+    if not sqlite_path.exists():
+        typer.echo("Error: No SQLite index found. Run 'codegraph init' first.", err=True)
+        raise typer.Exit(1)
+
+    sqlite_store = SqliteStore(sqlite_path)
+    sqlite_store.initialize()
+    count = clear_enrichment(sqlite_store)
+    sqlite_store.close()
+
+    typer.echo(f"Enrichment cleared from {count} nodes.")
 
 
 # ── workflow command group ──────────────────────────────────────────────────
@@ -3563,7 +3950,7 @@ def _format_workflow_markdown(
         lines.append("## Warnings")
         for w in warnings_list:
             w_msg = w.get("message", str(w))
-            lines.append(f"- ⚠ {w_msg}")
+            lines.append(f"- [!] {w_msg}")
         lines.append("")
 
     # Footer
@@ -3573,6 +3960,775 @@ def _format_workflow_markdown(
         "*This is a CodeGraph heuristic impact workflow report. "
         "It does not execute tests or modify files.*"
     )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── workflow test-audit ──────────────────────────────────────────────────
+
+
+@workflow_app.command(name="test-audit")
+def workflow_test_audit(
+    paths: str | None = typer.Option(
+        None, "--paths",
+        help="Comma-separated path glob patterns to restrict scope (e.g. 'src/**,backend/**')",
+    ),
+    types: str | None = typer.Option(
+        None, "--types",
+        help="Comma-separated node types (e.g. 'function,method,class'). Default: production types.",
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-l",
+        help="Maximum results per category",
+    ),
+    include_low_confidence: bool = typer.Option(
+        True, "--include-low-confidence/--no-low-confidence",
+        help="Include low-confidence test links",
+    ),
+    fmt: str = typer.Option(
+        "markdown", "--format",
+        help="Output format: markdown | json",
+    ),
+    output: str | None = typer.Option(
+        None, "--output", "-o",
+        help="Write report to file instead of stdout",
+    ),
+    force_output: bool = typer.Option(
+        False, "--force-output",
+        help="Overwrite existing output file",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted)",
+    ),
+) -> None:
+    """Run a deterministic test coverage audit workflow.
+
+    Lists production symbols and files without confident ``tested_by``
+    coverage signals. This is a heuristic graph signal, NOT runtime line
+    coverage.
+
+    Examples:
+
+        codegraph workflow test-audit
+
+        codegraph workflow test-audit --paths src/** --types function,method
+
+        codegraph workflow test-audit --format json --output .codegraph/reports/test-audit.json
+    """
+    VALID_FORMATS = {"markdown", "json"}
+
+    if fmt not in VALID_FORMATS:
+        typer.echo(
+            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Parse comma-separated inputs
+    path_list: list[str] | None = None
+    if paths:
+        path_list = [p.strip() for p in paths.split(",") if p.strip()]
+
+    type_list: list[str] | None = None
+    if types:
+        type_list = [t.strip() for t in types.split(",") if t.strip()]
+
+    # Load store
+    try:
+        store, cg_dir = _load_store(root)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    project_root = str(cg_dir.parent)
+
+    # Run test audit
+    from codegraph.workflow import run_test_audit
+
+    try:
+        result = run_test_audit(
+            store=store,
+            paths=path_list,
+            types=type_list,
+            include_low_confidence=include_low_confidence,
+            limit=limit,
+            project_root=project_root,
+        )
+    except Exception as e:
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": f"Workflow failed: {e}",
+                "workflow": "test-audit",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: Workflow failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    # Format output
+    if fmt == "json":
+        output_text = _format_test_audit_json(result, path_list, type_list)
+    else:
+        output_text = _format_test_audit_markdown(result, path_list, type_list, project_root)
+
+    # Write output
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and not force_output:
+            typer.echo(
+                f"Error: Output file '{output}' already exists. "
+                f"Use --force-output to overwrite.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        out_path.write_text(output_text, encoding="utf-8")
+        typer.echo(f"Report written to: {out_path.resolve()}")
+    else:
+        typer.echo(output_text)
+
+
+def _format_test_audit_json(
+    result: dict,
+    paths: list[str] | None,
+    types: list[str] | None,
+) -> str:
+    """Format test audit result as JSON."""
+    summary = result.get("summary", {})
+    output_data = {
+        "ok": True,
+        "workflow": "test-audit",
+        "input": {
+            "paths": paths,
+            "types": types,
+        },
+        "summary": summary,
+        "symbols_without_tests": result.get("symbols_without_tests", []),
+        "files_without_tests": result.get("files_without_tests", []),
+        "low_confidence_links": result.get("low_confidence_links", []),
+        "warnings": result.get("warnings", []),
+    }
+    return json.dumps(output_data, indent=2, ensure_ascii=False)
+
+
+def _format_test_audit_markdown(
+    result: dict,
+    paths: list[str] | None,
+    types: list[str] | None,
+    project_root: str,
+) -> str:
+    """Format test audit result as Markdown."""
+    summary = result.get("summary", {})
+    symbols_without = result.get("symbols_without_tests", [])
+    files_without = result.get("files_without_tests", [])
+    low_conf_links = result.get("low_confidence_links", [])
+    warnings_list = result.get("warnings", [])
+
+    lines: list[str] = []
+    lines.append("# CodeGraph Test Audit Report")
+    lines.append("")
+
+    # Input
+    lines.append("## Input")
+    if paths:
+        lines.append(f"- Paths: {', '.join(paths)}")
+    if types:
+        lines.append(f"- Types: {', '.join(types)}")
+    if not paths and not types:
+        lines.append("- Scope: all production symbols")
+    lines.append("")
+
+    # Summary
+    lines.append("## Summary")
+    lines.append(f"- Production symbols checked: {summary.get('production_symbols_checked', 0)}")
+    lines.append(f"- Symbols without test signal: {summary.get('symbols_without_test_signal', 0)}")
+    lines.append(f"- Confidence: {summary.get('confidence', 'unknown')}")
+    msg = summary.get("message", "")
+    if msg:
+        lines.append(f"- Message: {msg}")
+    lines.append("")
+    lines.append(
+        "> **Note:** This is a heuristic graph signal — not runtime line coverage. "
+        "Symbols listed here lack ``tested_by`` edges in the code graph."
+    )
+    lines.append("")
+
+    # Symbols Without Tests
+    lines.append("## Symbols Without Confident Test Coverage")
+    if symbols_without:
+        lines.append("| Symbol | File | Type | Suggested Test File |")
+        lines.append("|---|---|---|---|")
+        for s in symbols_without[:30]:
+            s_name = s.get("symbol", s.get("symbol_id", "?"))
+            s_file = s.get("file", "?")
+            s_type = s.get("type", "?")
+            s_test = s.get("suggested_test_file", "")
+            lines.append(f"| `{s_name}` | `{s_file}` | {s_type} | `{s_test}` |")
+    else:
+        lines.append("*(none found — all production symbols have test coverage signals)*")
+    lines.append("")
+
+    # Files Without Tests
+    lines.append("## Files Without Test Coverage")
+    if files_without:
+        lines.append("| File | Symbols Without Test |")
+        lines.append("|---|---|")
+        for f in files_without[:20]:
+            f_path = f.get("file", "?")
+            f_count = f.get("symbols_without_test_signal", 0)
+            lines.append(f"| `{f_path}` | {f_count} |")
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # Low Confidence Links
+    if low_conf_links:
+        lines.append("## Low Confidence Test Links")
+        lines.append("| Symbol | Test | Confidence |")
+        lines.append("|---|---|---|")
+        for link in low_conf_links[:15]:
+            l_sym = link.get("production_symbol", link.get("production_symbol_id", "?"))
+            l_test = link.get("test_symbol", link.get("test_symbol_id", "?"))
+            l_conf = link.get("confidence", "?")
+            lines.append(f"| `{l_sym}` | `{l_test}` | {l_conf} |")
+        lines.append("")
+
+    # Warnings
+    if warnings_list:
+        lines.append("## Warnings")
+        for w in warnings_list:
+            w_msg = w.get("message", str(w)) if isinstance(w, dict) else str(w)
+            lines.append(f"- [!] {w_msg}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "*Generated by CodeGraph workflow test-audit. "
+        "This is a heuristic graph signal, not runtime line coverage.*"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── workflow explain ─────────────────────────────────────────────────────
+
+
+@workflow_app.command(name="explain")
+def workflow_explain(
+    symbol: str | None = typer.Option(
+        None, "--symbol", "-s",
+        help="Symbol name or ID to explain (e.g. 'MemoryService' or 'src/server.py::login')",
+    ),
+    file: str | None = typer.Option(
+        None, "--file", "-f",
+        help="File path relative to project root to explain",
+    ),
+    include_snippet: bool = typer.Option(
+        True, "--include-snippet/--no-snippet",
+        help="Include source code snippet in explanation",
+    ),
+    include_tests: bool = typer.Option(
+        True, "--include-tests/--no-tests",
+        help="Include test coverage signal",
+    ),
+    include_relationships: bool = typer.Option(
+        True, "--include-relationships/--no-relationships",
+        help="Include top callers/callees",
+    ),
+    max_snippet_lines: int = typer.Option(
+        40, "--max-snippet-lines",
+        help="Maximum snippet lines",
+    ),
+    fmt: str = typer.Option(
+        "markdown", "--format",
+        help="Output format: markdown | json",
+    ),
+    output: str | None = typer.Option(
+        None, "--output", "-o",
+        help="Write report to file instead of stdout",
+    ),
+    force_output: bool = typer.Option(
+        False, "--force-output",
+        help="Overwrite existing output file",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted)",
+    ),
+) -> None:
+    """Run a deterministic symbol or file explanation workflow.
+
+    Produces a structured, evidence-backed explanation of a symbol or file
+    using indexed metadata and heuristics — no LLM, no embeddings.
+
+    Examples:
+
+        codegraph workflow explain --symbol MemoryService
+
+        codegraph workflow explain --file src/server.ts
+
+        codegraph workflow explain --symbol "src/server.py::login" --format json
+    """
+    VALID_FORMATS = {"markdown", "json"}
+
+    if fmt not in VALID_FORMATS:
+        typer.echo(
+            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if not symbol and not file:
+        typer.echo("Error: Provide either --symbol or --file.", err=True)
+        raise typer.Exit(1)
+
+    if symbol and file:
+        typer.echo("Error: Provide exactly one of --symbol or --file, not both.", err=True)
+        raise typer.Exit(1)
+
+    # Load store
+    try:
+        store, cg_dir = _load_store(root)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    project_root = str(cg_dir.parent)
+
+    # Run explain
+    from codegraph.workflow import run_explain
+
+    try:
+        result = run_explain(
+            store=store,
+            symbol=symbol,
+            file=file,
+            include_snippet=include_snippet,
+            include_tests=include_tests,
+            include_relationships=include_relationships,
+            max_snippet_lines=max_snippet_lines,
+            project_root=project_root,
+        )
+    except Exception as e:
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": f"Workflow failed: {e}",
+                "workflow": "explain",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: Workflow failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    if not result.get("ok"):
+        if fmt == "json":
+            typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: {result.get('error', 'Unknown error')}", err=True)
+        raise typer.Exit(1)
+
+    # Format output
+    if fmt == "json":
+        output_text = json.dumps(result, indent=2, ensure_ascii=False)
+    else:
+        output_text = _format_explain_markdown(result, project_root)
+
+    # Write output
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and not force_output:
+            typer.echo(
+                f"Error: Output file '{output}' already exists. "
+                f"Use --force-output to overwrite.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        out_path.write_text(output_text, encoding="utf-8")
+        typer.echo(f"Report written to: {out_path.resolve()}")
+    else:
+        typer.echo(output_text)
+
+
+def _format_explain_markdown(result: dict, project_root: str) -> str:
+    """Format explain result as Markdown."""
+    lines: list[str] = []
+    lines.append("# CodeGraph Explain Report")
+    lines.append("")
+
+    target_kind = result.get("target_kind", "unknown")
+    target = result.get("target", {})
+
+    if target_kind == "symbol":
+        # Symbol explanation
+        symbol_name = target.get("symbol", target.get("name", "?"))
+        symbol_id = target.get("symbol_id", "?")
+        symbol_type = target.get("type", "?")
+        file_path = target.get("file", "?")
+        line_start = target.get("line_start")
+        line_end = target.get("line_end")
+
+        lines.append("## Symbol")
+        lines.append(f"- Name: **{symbol_name}**")
+        lines.append(f"- ID: `{symbol_id}`")
+        lines.append(f"- Type: {symbol_type}")
+        lines.append(f"- File: `{file_path}`")
+        if line_start:
+            loc_str = f"L{line_start}"
+            if line_end and line_end != line_start:
+                loc_str += f"-{line_end}"
+            lines.append(f"- Location: {loc_str}")
+        lines.append("")
+
+        # Explanation
+        explanation = result.get("explanation", {})
+        summary = explanation.get("summary", "")
+        confidence = explanation.get("confidence", "unknown")
+        basis = explanation.get("basis", [])
+
+        if summary:
+            lines.append("## Summary")
+            lines.append(f"{summary} (confidence: {confidence})")
+            if basis:
+                lines.append(f"Basis: {', '.join(basis)}")
+            lines.append("")
+
+        # Implementation signals
+        impl_signals = result.get("implementation_signals", {})
+        if impl_signals:
+            active_signals = {k: v for k, v in impl_signals.items() if v}
+            if active_signals:
+                lines.append("## Implementation Signals")
+                for key, val in active_signals.items():
+                    if isinstance(val, bool):
+                        lines.append(f"- {key}: {'yes' if val else 'no'}")
+                    else:
+                        lines.append(f"- {key}: {val}")
+                lines.append("")
+
+        # Relationships
+        relationships = result.get("relationships", {})
+        callers = relationships.get("top_callers", [])
+        callers_count = relationships.get("callers_count", len(callers))
+        callees = relationships.get("top_callees", [])
+        callees_count = relationships.get("callees_count", len(callees))
+
+        if callers:
+            lines.append(f"## Top Callers ({callers_count})")
+            lines.append("| Caller | File | Confidence |")
+            lines.append("|---|---|---|")
+            for c in callers[:10]:
+                c_name = c.get("name", c.get("symbol_id", "?"))
+                c_file = c.get("file_path", "?")
+                c_conf = c.get("confidence", "?")
+                c_conf_str = f"{c_conf:.0%}" if isinstance(c_conf, (int, float)) else str(c_conf)
+                lines.append(f"| `{c_name}` | `{c_file}` | {c_conf_str} |")
+            lines.append("")
+
+        if callees:
+            lines.append(f"## Top Callees ({callees_count})")
+            lines.append("| Callee | File | Confidence |")
+            lines.append("|---|---|---|")
+            for c in callees[:10]:
+                c_name = c.get("name", c.get("symbol_id", "?"))
+                c_file = c.get("file_path", "?")
+                c_conf = c.get("confidence", "?")
+                c_conf_str = f"{c_conf:.0%}" if isinstance(c_conf, (int, float)) else str(c_conf)
+                lines.append(f"| `{c_name}` | `{c_file}` | {c_conf_str} |")
+            lines.append("")
+
+        # Source snippet
+        snippet = result.get("source_snippet", {})
+        if snippet and snippet.get("snippet"):
+            lines.append("## Source Snippet")
+            lines.append("```python")
+            lines.append(snippet["snippet"].strip())
+            lines.append("```")
+            lines.append("")
+
+        # Test coverage
+        test_signal = result.get("test_signal", {})
+        if test_signal:
+            lines.append("## Test Coverage Signal")
+            tc_status = test_signal.get("status", "unknown")
+            tc_count = test_signal.get("tested_by_count", 0)
+            lines.append(f"- Status: {tc_status}")
+            lines.append(f"- Test count: {tc_count}")
+            related_tests = test_signal.get("related_tests", [])
+            if related_tests:
+                for t in related_tests[:5]:
+                    t_name = t.get("name", t.get("symbol_id", "?"))
+                    t_file = t.get("file_path", "?")
+                    lines.append(f"  - `{t_name}` (`{t_file}`)")
+            lines.append("")
+
+    elif target_kind == "file":
+        # File explanation
+        target_file = target.get("file", "?")
+
+        primary_symbols = result.get("primary_symbols", [])
+        symbol_count = result.get("symbol_count", 0)
+        likely_role = result.get("likely_role", "unknown")
+        role_confidence = result.get("likely_role_confidence", "unknown")
+        impl_signals = result.get("implementation_signals", {})
+
+        lines.append("## File")
+        lines.append(f"- Path: `{target_file}`")
+        lines.append(f"- Symbols: {symbol_count}")
+        lines.append(f"- Likely Role: **{likely_role}** (confidence: {role_confidence})")
+        lines.append("")
+
+        if impl_signals:
+            active_signals = {k: v for k, v in impl_signals.items() if v}
+            if active_signals:
+                lines.append("## Implementation Signals")
+                for key, val in active_signals.items():
+                    if isinstance(val, list):
+                        val_str = ", ".join(str(v) for v in val[:10])
+                        lines.append(f"- {key}: {val_str}")
+                    elif isinstance(val, bool):
+                        lines.append(f"- {key}: {'yes' if val else 'no'}")
+                    else:
+                        lines.append(f"- {key}: {val}")
+                lines.append("")
+
+        if primary_symbols:
+            lines.append("## Primary Symbols")
+            lines.append("| Symbol | Type | Lines |")
+            lines.append("|---|---|---|")
+            for ps in primary_symbols[:15]:
+                ps_name = ps.get("name", ps.get("symbol_id", "?"))
+                ps_type = ps.get("type", "?")
+                ps_loc = ps.get("location", {})
+                ps_lines = ""
+                if ps_loc:
+                    start = ps_loc.get("line_start", "")
+                    end = ps_loc.get("line_end", "")
+                    ps_lines = f"L{start}" if start else ""
+                    if end and end != start:
+                        ps_lines += f"-{end}"
+                lines.append(f"| `{ps_name}` | {ps_type} | {ps_lines} |")
+            lines.append("")
+
+        # Test signal
+        test_signal = result.get("test_signal", {})
+        if test_signal:
+            lines.append("## Test Coverage Signal")
+            tc_status = test_signal.get("status", "unknown")
+            tc_count = test_signal.get("tested_by_count", 0)
+            lines.append(f"- Status: {tc_status}")
+            lines.append(f"- Test count: {tc_count}")
+            lines.append("")
+
+    # Warnings
+    warnings_list = result.get("warnings", [])
+    if warnings_list:
+        lines.append("## Warnings")
+        for w in warnings_list:
+            w_msg = w.get("message", str(w)) if isinstance(w, dict) else str(w)
+            lines.append(f"- [!] {w_msg}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "*Generated by CodeGraph workflow explain. "
+        "Evidence-backed explanation using indexed graph metadata.*"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── workflow find ─────────────────────────────────────────────────────────
+
+
+@workflow_app.command(name="find")
+def workflow_find(
+    query: str = typer.Argument(
+        ..., help="Search keyword — symbol name, file path fragment, or docstring keyword",
+    ),
+    types: str | None = typer.Option(
+        None, "--types", "-t",
+        help="Comma-separated node types (e.g. 'function,method,class')",
+    ),
+    paths: str | None = typer.Option(
+        None, "--paths", "-p",
+        help="Comma-separated path glob patterns (e.g. 'src/**,app/api/**')",
+    ),
+    limit: int = typer.Option(
+        20, "--limit", "-l",
+        help="Maximum results to return (max 100)",
+    ),
+    include_tests: bool = typer.Option(
+        True, "--include-tests/--no-tests",
+        help="Include test symbols in results",
+    ),
+    fmt: str = typer.Option(
+        "markdown", "--format",
+        help="Output format: markdown | json",
+    ),
+    output: str | None = typer.Option(
+        None, "--output", "-o",
+        help="Write report to file instead of stdout",
+    ),
+    force_output: bool = typer.Option(
+        False, "--force-output",
+        help="Overwrite existing output file",
+    ),
+    root: str | None = typer.Option(
+        None, "--root", "-r",
+        help="Project root (auto-detected from cwd if omitted)",
+    ),
+) -> None:
+    """Run a deterministic symbol search workflow.
+
+    Search for functions, classes, methods, routes, services, or
+    framework entry points by name, file path, or docstring keyword.
+
+    Examples:
+
+        codegraph workflow find login
+
+        codegraph workflow find MemoryService --types class
+
+        codegraph workflow find auth --paths src/api/** --format json
+    """
+    VALID_FORMATS = {"markdown", "json"}
+
+    if fmt not in VALID_FORMATS:
+        typer.echo(
+            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Parse comma-separated inputs
+    type_list: list[str] | None = None
+    if types:
+        type_list = [t.strip() for t in types.split(",") if t.strip()]
+
+    path_list: list[str] | None = None
+    if paths:
+        path_list = [p.strip() for p in paths.split(",") if p.strip()]
+
+    # Load store
+    try:
+        store, cg_dir = _load_store(root)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    # Run find
+    from codegraph.workflow import run_find
+
+    try:
+        result = run_find(
+            store=store,
+            query=query,
+            types=type_list,
+            paths=path_list,
+            limit=limit,
+            include_tests=include_tests,
+        )
+    except Exception as e:
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": f"Workflow failed: {e}",
+                "workflow": "find",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: Workflow failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    # Format output
+    if fmt == "json":
+        output_text = json.dumps({
+            "ok": True,
+            "workflow": "find",
+            "input": {
+                "query": query,
+                "types": type_list,
+                "paths": path_list,
+            },
+            **result,
+        }, indent=2, ensure_ascii=False)
+    else:
+        output_text = _format_find_markdown(result, type_list, path_list)
+
+    # Write output
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and not force_output:
+            typer.echo(
+                f"Error: Output file '{output}' already exists. "
+                f"Use --force-output to overwrite.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        out_path.write_text(output_text, encoding="utf-8")
+        typer.echo(f"Report written to: {out_path.resolve()}")
+    else:
+        typer.echo(output_text)
+
+
+def _format_find_markdown(
+    result: dict,
+    types: list[str] | None,
+    paths: list[str] | None,
+) -> str:
+    """Format find result as Markdown."""
+    query = result.get("query", "")
+    total = result.get("total", 0)
+    results = result.get("results", [])
+
+    lines: list[str] = []
+    lines.append("# CodeGraph Find Results")
+    lines.append("")
+
+    lines.append("## Query")
+    lines.append(f"- Search: **{query}**")
+    if types:
+        lines.append(f"- Types: {', '.join(types)}")
+    if paths:
+        lines.append(f"- Paths: {', '.join(paths)}")
+    lines.append(f"- Results: {total}")
+    lines.append("")
+
+    if results:
+        lines.append("## Results")
+        lines.append("| # | Symbol | Type | File | Score | Match |")
+        lines.append("|---|---|---|---|---|---|")
+        for i, r in enumerate(results, 1):
+            r_name = r.get("name", r.get("symbol_id", "?"))
+            r_type = r.get("type", "?")
+            r_file = r.get("file_path", "?")
+            r_score = r.get("score", "?")
+            r_match = ", ".join(r.get("match_sources", []))
+            lines.append(f"| {i} | `{r_name}` | {r_type} | `{r_file}` | {r_score:.1f} | {r_match} |")
+    else:
+        lines.append("## Results")
+        lines.append("*(no results found)*")
+        lines.append("")
+        lines.append("> Try broadening the query, removing type/path filters, or checking")
+        lines.append("> `codegraph_repo_status` to confirm the index covers the right project.")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("*Generated by CodeGraph workflow find.*")
     lines.append("")
 
     return "\n".join(lines)

@@ -352,8 +352,31 @@ def compute_coverage_gaps(
 
 
 def _node_to_gap_entry(node: GraphNode, reason: str) -> dict[str, Any]:
-    """Serialize a GraphNode to a coverage gap entry."""
-    return {
+    """Serialize a GraphNode to a coverage gap entry with evidence (Req 3.1)."""
+    # Build evidence items explaining WHY this symbol was classified as a gap
+    evidence: list[dict[str, Any]] = []
+    if reason:
+        evidence.append({
+            "type": "symbol_metadata",
+            "symbol": node.name,
+            "symbol_id": node.id,
+            "file": node.file_path,
+            "line": node.location.line_start if node.location else None,
+            "confidence": "heuristic",
+            "reason": reason,
+        })
+    evidence.append({
+        "type": "edge",
+        "symbol": node.name,
+        "symbol_id": node.id,
+        "file": node.file_path,
+        "line": node.location.line_start if node.location else None,
+        "confidence": "heuristic",
+        "reason": "No confident tested_by edge found — this is a CodeGraph heuristic signal, not runtime line coverage.",
+        "provenance": "heuristic",
+    })
+
+    result: dict[str, Any] = {
         "symbol": node.name,
         "symbol_id": node.id,
         "type": node.type.value if isinstance(node.type, NodeType) else str(node.type),
@@ -361,8 +384,17 @@ def _node_to_gap_entry(node: GraphNode, reason: str) -> dict[str, Any]:
         "line_start": node.location.line_start if node.location else None,
         "line_end": node.location.line_end if node.location else None,
         "reason": reason,
+        "evidence": evidence,
         "suggested_next_tool": "codegraph_get_neighbors" if reason else "",
     }
+    # Include enrichment hints when available
+    if getattr(node, "enrichment_status", "") == "analyzed":
+        if getattr(node, "test_relevance", ""):
+            result["enrichment_test_suggestion"] = node.test_relevance
+        if getattr(node, "edge_cases", []):
+            result["enrichment_risk"] = "Has documented edge cases — higher test priority"
+            result["enrichment_edge_cases"] = node.edge_cases
+    return result
 
 
 def _node_to_test_info(test_node: GraphNode | None, fallback_id: str) -> dict[str, str]:

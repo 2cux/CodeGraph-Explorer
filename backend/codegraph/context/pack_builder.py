@@ -61,12 +61,69 @@ def _find_target_symbols(task_description: str) -> list[str]:
     return re.findall(r"[\w/\\]+\.\w+::[\w.]+", task_description)
 
 
+# ── Named symbol extraction for seed injection ─────────────────────────
+
+# Matches PascalCase identifiers like "MemoryService", "RowToRecord"
+_PASCAL_RE = re.compile(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b')
+# Matches snake_case identifiers with at least one underscore
+_SNAKE_RE = re.compile(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b')
+# Matches UPPER_SNAKE_CASE constants
+_UPPER_SNAKE_RE = re.compile(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b')
+
+# Common domain terms that look like code symbols but aren't
+_SYMBOL_BLACKLIST: frozenset[str] = frozenset({
+    "javascript", "typescript", "python", "java", "golang", "rust",
+    "postgresql", "mongodb", "redis", "docker", "kubernetes",
+    "authentication", "authorization", "microservices", "serverless",
+})
+
+
+def _extract_named_symbols(task: str) -> list[str]:
+    """Extract likely symbol names from a natural-language task description.
+
+    Parses CamelCase, PascalCase, and snake_case identifiers that appear
+    to be code symbols rather than domain terms.
+
+    Returns a deduplicated list of candidate symbol names.
+    """
+    named: list[str] = []
+    seen: set[str] = set()
+
+    for match in _PASCAL_RE.finditer(task):
+        name = match.group(1)
+        if name.lower() not in _SYMBOL_BLACKLIST and name not in seen:
+            seen.add(name)
+            named.append(name)
+
+    for match in _SNAKE_RE.finditer(task):
+        name = match.group(1)
+        if name.lower() not in _SYMBOL_BLACKLIST and name not in seen:
+            seen.add(name)
+            named.append(name)
+
+    for match in _UPPER_SNAKE_RE.finditer(task):
+        name = match.group(1)
+        if name.lower() not in _SYMBOL_BLACKLIST and name not in seen:
+            seen.add(name)
+            named.append(name)
+
+    return named
+
+
 def _search_candidates(
     store: GraphStore,
     keywords: list[str],
     target_symbols: list[str],
+    task_description: str = "",
 ) -> list[GraphNode]:
-    """Collect candidate nodes by searching the store."""
+    """Collect candidate nodes by searching the store.
+
+    Priority order:
+      1. Explicitly referenced symbols (``file.py::Symbol`` patterns)
+      1b. Named seed injection (CamelCase/PascalCase names from task text)
+      2. Keyword-based search
+      3. Fallback: all non-trivial symbols
+    """
     seen: set[str] = set()
     candidates: list[GraphNode] = []
 
@@ -78,6 +135,18 @@ def _search_candidates(
         if node and node.id not in seen:
             seen.add(node.id)
             candidates.append(node)
+
+    # 1b. Named seed injection — parse CamelCase/PascalCase names from task
+    if task_description:
+        named_symbols = _extract_named_symbols(task_description)
+        for name in named_symbols:
+            results = store.search_nodes(name)
+            for node in results:
+                if node.id not in seen and node.type not in _skip_types:
+                    # Only inject if there's a strong name match
+                    if node.name.lower() == name.lower() or node.name.lower().startswith(name.lower()):
+                        seen.add(node.id)
+                        candidates.append(node)
 
     # 2. Keyword-based search
     for kw in keywords:
@@ -412,7 +481,7 @@ def build_context_pack(
     )
 
     # ── Step 3-4: Search + rank entry points ─────────────────────────
-    candidates = _search_candidates(store, keywords or ["_"], all_targets)
+    candidates = _search_candidates(store, keywords or ["_"], all_targets, task_description=task_description)
     ranked = ranking.rank_entry_points(task_description, candidates)
     if not ranked and candidates:
         ranked = [(c, 0.5) for c in candidates[:max_files]]

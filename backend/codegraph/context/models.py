@@ -305,6 +305,13 @@ class SelectedContext(BaseModel):
     resolution: str = ""
     evidence: str = ""
     context_score: float = 0.0
+    necessity: str = "incidental"
+    """'necessary' for queried symbols, flow spine, planned edit files.
+    'incidental' for related references, test suggestions.
+    Necessary items are never cut by token budget (Req 3.6)."""
+    source_declaration: dict[str, Any] | None = None
+    """Provenance metadata for source snippets: live_disk_read, line range,
+    staleness flag, equivalent_to one Read call (Req 3.5)."""
 
 
 # ── Tests ────────────────────────────────────────────────────────────

@@ -8,13 +8,19 @@ All batch writes are automatically chunked to avoid hitting SQLite's
 
 import json
 import difflib
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from codegraph.storage.sqlite_utils import safe_executemany
+from codegraph.utils.path_utils import is_test_path, is_production_path, is_test_intent_query, is_framework_entry_point
 
-SUPPORTED_SCHEMA_VERSION = "1.0.0"
+SUPPORTED_SCHEMA_VERSION = "1.1.0"
+
+# Pre-compiled regex for named seed injection (used in search_symbols hot path)
+_SEED_PASCAL_RE = re.compile(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b')
+_SEED_SNAKE_RE = re.compile(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b')
 
 
 def _row_to_node(row: sqlite3.Row) -> dict:
@@ -31,6 +37,13 @@ def _row_to_node(row: sqlite3.Row) -> dict:
     # Phase 1: normalize language_id — fall back to legacy 'language' column
     if not data.get("language_id"):
         data["language_id"] = data.get("language", "python")
+    # Schema 1.1.0: deserialize enrichment JSON columns
+    for json_col in ("responsibilities", "edge_cases", "enrichment_evidence"):
+        if isinstance(data.get(json_col), str):
+            try:
+                data[json_col] = json.loads(data[json_col])
+            except json.JSONDecodeError:
+                data[json_col] = [] if json_col != "enrichment_evidence" else []
     return data
 
 
@@ -50,16 +63,6 @@ def _row_to_edge(row: sqlite3.Row) -> dict:
         data["metadata"]["provenance"] = data["provenance"]
     return data
 
-
-def _is_test_path(file_path: str) -> bool:
-    normalized = file_path.replace("\\", "/").lower()
-    return (
-        normalized.startswith("tests/")
-        or "/tests/" in normalized
-        or normalized.endswith("_test.py")
-        or "/test_" in normalized
-        or normalized.split("/")[-1].startswith("test_")
-    )
 
 
 def _assign_search_layer(file_path: str) -> str:
@@ -116,6 +119,56 @@ ALTER TABLE nodes ADD COLUMN language_id TEXT DEFAULT 'python';
 MIGRATE_NODES_FRAMEWORK_ID = """
 ALTER TABLE nodes ADD COLUMN framework_id TEXT;
 """
+
+# ── Enrichment column migrations (schema 1.1.0) ──────────────────────
+
+MIGRATE_NODES_ENRICH_SUMMARY = """
+ALTER TABLE nodes ADD COLUMN summary TEXT DEFAULT '';
+"""
+
+MIGRATE_NODES_ENRICH_ROLE = """
+ALTER TABLE nodes ADD COLUMN role TEXT DEFAULT '';
+"""
+
+MIGRATE_NODES_ENRICH_RESPONSIBILITIES = """
+ALTER TABLE nodes ADD COLUMN responsibilities TEXT DEFAULT '[]';
+"""
+
+MIGRATE_NODES_ENRICH_EDGE_CASES = """
+ALTER TABLE nodes ADD COLUMN edge_cases TEXT DEFAULT '[]';
+"""
+
+MIGRATE_NODES_ENRICH_TEST_RELEVANCE = """
+ALTER TABLE nodes ADD COLUMN test_relevance TEXT DEFAULT '';
+"""
+
+MIGRATE_NODES_ENRICH_CONFIDENCE = """
+ALTER TABLE nodes ADD COLUMN enrichment_confidence TEXT DEFAULT '';
+"""
+
+MIGRATE_NODES_ENRICH_EVIDENCE = """
+ALTER TABLE nodes ADD COLUMN enrichment_evidence TEXT DEFAULT '[]';
+"""
+
+MIGRATE_NODES_ENRICH_STATUS = """
+ALTER TABLE nodes ADD COLUMN enrichment_status TEXT DEFAULT '';
+"""
+
+MIGRATE_NODES_ENRICH_AT = """
+ALTER TABLE nodes ADD COLUMN enriched_at TEXT DEFAULT '';
+"""
+
+ENRICH_MIGRATIONS = [
+    ("summary", MIGRATE_NODES_ENRICH_SUMMARY),
+    ("role", MIGRATE_NODES_ENRICH_ROLE),
+    ("responsibilities", MIGRATE_NODES_ENRICH_RESPONSIBILITIES),
+    ("edge_cases", MIGRATE_NODES_ENRICH_EDGE_CASES),
+    ("test_relevance", MIGRATE_NODES_ENRICH_TEST_RELEVANCE),
+    ("enrichment_confidence", MIGRATE_NODES_ENRICH_CONFIDENCE),
+    ("enrichment_evidence", MIGRATE_NODES_ENRICH_EVIDENCE),
+    ("enrichment_status", MIGRATE_NODES_ENRICH_STATUS),
+    ("enriched_at", MIGRATE_NODES_ENRICH_AT),
+]
 
 CREATE_EDGES = """
 CREATE TABLE IF NOT EXISTS edges (
@@ -210,7 +263,7 @@ class SqliteStore:
         c.commit()
 
     def _migrate_schema(self, c: sqlite3.Connection) -> None:
-        """Add columns introduced in Phase 1 multi-language refactoring.
+        """Add columns introduced in later schema versions.
 
         Uses ALTER TABLE ADD COLUMN which is a no-cost metadata operation
         in SQLite when a default is provided.
@@ -229,6 +282,13 @@ class SqliteStore:
                 c.execute(MIGRATE_NODES_FRAMEWORK_ID)
             except sqlite3.DatabaseError:
                 pass
+        # Schema 1.1.0: enrichment columns
+        for col_name, migration_ddl in ENRICH_MIGRATIONS:
+            if col_name not in existing_cols:
+                try:
+                    c.execute(migration_ddl)
+                except sqlite3.DatabaseError:
+                    pass
 
     def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -308,11 +368,15 @@ class SqliteStore:
             """INSERT OR REPLACE INTO nodes
                (id, type, name, qualified_name, display_name, file_path,
                 module, language, language_id, framework_id, location, signature, docstring,
-                code_preview, visibility, tags, metadata)
+                code_preview, visibility, tags, metadata,
+                summary, role, responsibilities, edge_cases, test_relevance,
+                enrichment_confidence, enrichment_evidence, enrichment_status, enriched_at)
                VALUES
                (:id, :type, :name, :qualified_name, :display_name, :file_path,
                 :module, :language, :language_id, :framework_id, :location, :signature, :docstring,
-                :code_preview, :visibility, :tags, :metadata)""",
+                :code_preview, :visibility, :tags, :metadata,
+                :summary, :role, :responsibilities, :edge_cases, :test_relevance,
+                :enrichment_confidence, :enrichment_evidence, :enrichment_status, :enriched_at)""",
             [
                 {
                     "id": n["id"],
@@ -332,6 +396,16 @@ class SqliteStore:
                     "visibility": n.get("visibility", "public"),
                     "tags": n["tags"] if isinstance(n.get("tags"), str) else json.dumps(n.get("tags", []), ensure_ascii=False),
                     "metadata": n["metadata"] if isinstance(n.get("metadata"), str) else json.dumps(n.get("metadata", {}), ensure_ascii=False),
+                    # Enrichment fields (schema 1.1.0)
+                    "summary": n.get("summary", ""),
+                    "role": n.get("role", ""),
+                    "responsibilities": n.get("responsibilities") if isinstance(n.get("responsibilities"), str) else json.dumps(n.get("responsibilities", []), ensure_ascii=False),
+                    "edge_cases": n.get("edge_cases") if isinstance(n.get("edge_cases"), str) else json.dumps(n.get("edge_cases", []), ensure_ascii=False),
+                    "test_relevance": n.get("test_relevance", ""),
+                    "enrichment_confidence": n.get("enrichment_confidence", ""),
+                    "enrichment_evidence": n.get("enrichment_evidence") if isinstance(n.get("enrichment_evidence"), str) else json.dumps(n.get("enrichment_evidence", []), ensure_ascii=False),
+                    "enrichment_status": n.get("enrichment_status", ""),
+                    "enriched_at": n.get("enriched_at", ""),
                 }
                 for n in nodes
             ],
@@ -447,7 +521,7 @@ class SqliteStore:
         scan_limit = max(requested_limit + offset, 100)
         fuzzy_scan_limit = max(scan_limit, 1000)
         merged: dict[str, dict[str, Any]] = {}
-        query_mentions_test = "test" in q.lower()
+        query_mentions_test = is_test_intent_query(q)
         include_test_only = bool(types) and set(types) <= {"test"}
 
         def add_rows(rows: list[sqlite3.Row], score: float, source: str, layer_name: str) -> None:
@@ -469,6 +543,24 @@ class SqliteStore:
         c = self.conn
 
         if q:
+            # 0. Named seed injection — extract CamelCase/PascalCase names from query
+            #    and do exact name lookups BEFORE the normal pipeline
+            _seen_seeds: set[str] = set()
+            for _name in _SEED_PASCAL_RE.findall(q) + _SEED_SNAKE_RE.findall(q):
+                _name_lower = _name.lower()
+                if _name_lower in _seen_seeds:
+                    continue
+                _seen_seeds.add(_name_lower)
+                # Skip short names and common words
+                if len(_name) < 4:
+                    continue
+                _seed_rows = c.execute(
+                    f"SELECT * FROM nodes WHERE {' AND '.join(base_where + ['name = ?'])} LIMIT 3",
+                    [*base_params, _name],
+                ).fetchall()
+                if _seed_rows:
+                    add_rows(_seed_rows, 0.98, "seed_name", "seed_name")
+
             # 1. exact symbol_id
             rows = c.execute(
                 f"SELECT * FROM nodes WHERE {' AND '.join(base_where + ['id = ?'])} LIMIT ?",
@@ -700,7 +792,7 @@ class SqliteStore:
         file_path = node.get("file_path", "")
         if exclude_external and node_type == "external_symbol":
             return False
-        if not include_tests and (node_type == "test" or _is_test_path(file_path)):
+        if not include_tests and (node_type == "test" or is_test_path(file_path)):
             return False
         if layer and _assign_search_layer(file_path) != layer:
             return False
@@ -777,18 +869,37 @@ class SqliteStore:
             exact_rank = 1
         elif "exact_name" in sources:
             exact_rank = 2
-        is_test = item.get("type") == "test" or _is_test_path(item.get("file_path", ""))
+        elif "seed_name" in sources:
+            exact_rank = 3
+        is_test = item.get("type") == "test" or is_test_path(item.get("file_path", ""))
         is_external = item.get("type") == "external_symbol"
         is_init = item.get("name") == "__init__" or item.get("file_path", "").endswith("__init__.py")
+        tags = item.get("tags", []) or []
+        if isinstance(tags, str):
+            try:
+                tags = json.loads(tags)
+            except (json.JSONDecodeError, TypeError):
+                tags = [tags] if tags else []
+        is_fw_entry = is_framework_entry_point(
+            node_type=item.get("type", ""),
+            tags=tags,
+            framework_id=item.get("framework_id"),
+            name=item.get("name", ""),
+            file_path=item.get("file_path", ""),
+        )
+        is_prod = is_production_path(item.get("file_path", "")) and not is_test and not is_external
         path = item.get("file_path", "")
         return (
             exact_rank,
             0 if (query_mentions_test or include_test_only or not is_test) else 1,
             0 if not is_external else 1,
+            0 if is_fw_entry else 1,
+            0 if is_prod else 1,
             -(item.get("confidence", 1.0) or 0.0),
             -(item.get("score", 0.0) or 0.0),
             len(path),
             1 if is_init else 0,
+            1 if is_test else 0,
             item.get("symbol_id", ""),
         )
 
@@ -1081,3 +1192,127 @@ class SqliteStore:
             ).fetchone()
             total += row["cnt"] if row else 0
         return total
+
+    # ── Enrichment operations (schema 1.1.0) ───────────────────────────
+
+    def get_enrichment_status(self) -> dict[str, Any]:
+        """Return enrichment statistics across all nodes.
+
+        Returns counts by enrichment_status, confidence breakdown,
+        and enriched file count.
+        """
+        c = self.conn
+        total = self.node_count()
+        status_counts: dict[str, int] = {}
+        for row in c.execute(
+            "SELECT enrichment_status, COUNT(*) AS cnt FROM nodes GROUP BY enrichment_status"
+        ).fetchall():
+            key = row["enrichment_status"] or "pending"
+            status_counts[key] = row["cnt"]
+
+        enriched = status_counts.get("analyzed", 0)
+        pending = status_counts.get("pending", 0)
+        skipped = status_counts.get("skipped", 0)
+        error = status_counts.get("error", 0)
+
+        # Confidence breakdown for analyzed nodes
+        conf_breakdown: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
+        for row in c.execute(
+            "SELECT enrichment_confidence, COUNT(*) AS cnt FROM nodes "
+            "WHERE enrichment_status = 'analyzed' "
+            "GROUP BY enrichment_confidence"
+        ).fetchall():
+            key = row["enrichment_confidence"] or "medium"
+            if key in conf_breakdown:
+                conf_breakdown[key] = row["cnt"]
+
+        # Count distinct files with at least one enriched node
+        enriched_files_row = c.execute(
+            "SELECT COUNT(DISTINCT file_path) AS cnt FROM nodes "
+            "WHERE enrichment_status = 'analyzed' AND file_path != ''"
+        ).fetchone()
+        enriched_files = enriched_files_row["cnt"] if enriched_files_row else 0
+
+        total_files_row = c.execute(
+            "SELECT COUNT(DISTINCT file_path) AS cnt FROM nodes WHERE file_path != ''"
+        ).fetchone()
+        total_files = total_files_row["cnt"] if total_files_row else 0
+
+        last_enriched = self.get_meta("enrichment_last_import") or ""
+
+        return {
+            "total_nodes": total,
+            "enriched_nodes": enriched,
+            "pending_nodes": pending,
+            "skipped_nodes": skipped,
+            "error_nodes": error,
+            "enriched_files": enriched_files,
+            "total_files": total_files,
+            "confidence_breakdown": conf_breakdown,
+            "last_enriched_at": last_enriched,
+        }
+
+    def clear_enrichment(self) -> int:
+        """Reset all enrichment columns to defaults on all nodes.
+
+        Returns count of nodes cleared.
+        """
+        c = self.conn
+        row = c.execute("SELECT COUNT(*) AS cnt FROM nodes").fetchone()
+        total = row["cnt"] if row else 0
+        c.execute(
+            """UPDATE nodes SET
+               summary = '', role = '', responsibilities = '[]',
+               edge_cases = '[]', test_relevance = '',
+               enrichment_confidence = '', enrichment_evidence = '[]',
+               enrichment_status = '', enriched_at = ''"""
+        )
+        # Remove enrichment meta keys
+        c.execute("DELETE FROM meta WHERE key LIKE 'enrichment_%'")
+        c.commit()
+        return total
+
+    def update_node_enrichment(
+        self,
+        node_id: str,
+        summary: str = "",
+        role: str = "",
+        responsibilities: list[str] | None = None,
+        edge_cases: list[str] | None = None,
+        test_relevance: str = "",
+        enrichment_confidence: str = "",
+        enrichment_evidence: list[dict] | None = None,
+        enrichment_status: str = "analyzed",
+        enriched_at: str = "",
+        commit: bool = True,
+    ) -> None:
+        """Update enrichment fields for a single node.
+
+        Args:
+            commit: If True (default), commit after updating. Set to False
+                    when calling inside a larger transaction.
+        """
+        c = self.conn
+        c.execute(
+            """UPDATE nodes SET
+               summary = ?, role = ?,
+               responsibilities = ?, edge_cases = ?,
+               test_relevance = ?, enrichment_confidence = ?,
+               enrichment_evidence = ?, enrichment_status = ?,
+               enriched_at = ?
+               WHERE id = ?""",
+            [
+                summary,
+                role,
+                json.dumps(responsibilities or [], ensure_ascii=False),
+                json.dumps(edge_cases or [], ensure_ascii=False),
+                test_relevance,
+                enrichment_confidence,
+                json.dumps(enrichment_evidence or [], ensure_ascii=False),
+                enrichment_status,
+                enriched_at,
+                node_id,
+            ],
+        )
+        if commit:
+            c.commit()

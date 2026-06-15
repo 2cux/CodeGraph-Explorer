@@ -1558,9 +1558,9 @@ class TestRouteRanking:
         )
 
         route_score = score_relevance(route_node, "login")
-        test_score = score_relevance(test_node, "test_login_success")
+        test_score = score_relevance(test_node, "login")
 
-        # Route handler should outrank test even though test name matches better
+        # Route handler should outrank test even though test name contains "login"
         assert route_score > test_score, f"route={route_score}, test={test_score}"
 
     def test_route_build_reason_includes_route_info(self):

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from codegraph.api.deps import get_store, get_commit_hash, get_codegraph_dir, get_project_root
+from codegraph.utils.path_utils import is_test_path
 from codegraph.graph.store import GraphStore
 from codegraph.indexer.graph_builder import build_index, build_index_from_paths
 from codegraph.indexer.scanner import scan_python_files, compute_fingerprint
@@ -74,11 +75,6 @@ def _compute_entry_points(store: GraphStore, max_count: int = 6) -> list[EntryPo
         edge_counts[edge.source] += 1
         edge_counts[edge.target] += 1
 
-    def _is_test_path(file_path: str) -> bool:
-        """True if the file is under a test directory or named test_*."""
-        parts = file_path.replace("\\", "/").split("/")
-        return any(p in ("tests", "test", "__tests__") for p in parts)
-
     def _type_priority(t: str) -> int:
         return {"function": 3, "method": 3, "class": 2, "module": 1, "file": 1}.get(t, 0)
 
@@ -88,7 +84,7 @@ def _compute_entry_points(store: GraphStore, max_count: int = 6) -> list[EntryPo
             continue
         if node.name == "__init__":
             continue
-        if _is_test_path(node.file_path):
+        if is_test_path(node.file_path):
             continue
         ec = edge_counts.get(node.id, 0)
         if ec == 0:

@@ -392,3 +392,209 @@ def run_pre_edit_check(
         "impact_errors": impact_errors if impact_errors else [],
         "warnings": warnings_list,
     }
+
+
+def run_test_audit(
+    store: GraphStore,
+    paths: list[str] | None = None,
+    types: list[str] | None = None,
+    include_low_confidence: bool = True,
+    limit: int = 50,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    """Core test audit logic — wrap ``compute_coverage_gaps`` for CLI workflow.
+
+    Args:
+        store: Loaded GraphStore instance.
+        paths: Optional list of path glob patterns to restrict scope.
+        types: Optional list of node type strings.
+        include_low_confidence: Include low-confidence test links.
+        limit: Maximum entries in symbols_without_tests.
+        project_root: Project root path string.
+
+    Returns:
+        Dict with keys: summary, symbols_without_tests, files_without_tests,
+        low_confidence_links, warnings.
+    """
+    from codegraph.graph.coverage_gaps import compute_coverage_gaps
+
+    effective_limit = max(1, min(limit, 100))
+
+    gaps = compute_coverage_gaps(
+        store=store,
+        project_root=project_root,
+        paths=paths,
+        types=types,
+        include_low_confidence=include_low_confidence,
+        limit=effective_limit,
+    )
+
+    return {
+        "summary": gaps.get("summary", {}),
+        "symbols_without_tests": gaps.get("symbols_without_tests", [])[:effective_limit],
+        "files_without_tests": gaps.get("files_without_tests", [])[:effective_limit],
+        "low_confidence_links": gaps.get("low_confidence_links", [])[:effective_limit] if include_low_confidence else [],
+        "warnings": gaps.get("warnings", []),
+    }
+
+
+def run_explain(
+    store: GraphStore,
+    symbol: str | None = None,
+    file: str | None = None,
+    include_snippet: bool = True,
+    include_tests: bool = True,
+    include_relationships: bool = True,
+    max_snippet_lines: int = 40,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    """Core explain logic — wrap ``explain_symbol`` / ``explain_file`` for CLI workflow.
+
+    Exactly one of ``symbol`` or ``file`` must be provided.
+
+    Args:
+        store: Loaded GraphStore instance.
+        symbol: Symbol name or ID to explain.
+        file: File path relative to project root to explain.
+        include_snippet: Include source code snippet.
+        include_tests: Include test coverage signal.
+        include_relationships: Include top callers/callees.
+        max_snippet_lines: Maximum snippet lines.
+        project_root: Project root for resolving file paths and reading source.
+
+    Returns:
+        Dict with the explanation result.
+    """
+    from codegraph.graph.explain import explain_symbol, explain_file
+
+    if symbol and file:
+        return {
+            "ok": False,
+            "error": "Provide exactly one of --symbol or --file, not both.",
+        }
+    if not symbol and not file:
+        return {
+            "ok": False,
+            "error": "Provide exactly one of --symbol or --file.",
+        }
+
+    if file:
+        result = explain_file(
+            store=store,
+            file_path=file,
+            include_tests=include_tests,
+            project_root=project_root,
+        )
+        result["ok"] = True
+        result["target_kind"] = "file"
+        return result
+
+    # Resolve symbol
+    node, is_ambiguous = _resolve_symbol(store, symbol)
+    if is_ambiguous:
+        return {
+            "ok": False,
+            "error": (
+                f"Symbol '{symbol}' is ambiguous — multiple candidates found. "
+                f"Use a fully qualified symbol ID (file.py::symbol) to disambiguate."
+            ),
+            "reason_code": "ambiguous_symbol",
+        }
+    if node is None:
+        return {
+            "ok": False,
+            "error": f"Symbol '{symbol}' not found in index.",
+            "reason_code": "symbol_not_found",
+        }
+
+    # Read source snippet from disk if requested
+    source_snippet: dict[str, Any] | None = None
+    if include_snippet and project_root and node.file_path:
+        from pathlib import Path
+        source_path = Path(project_root) / node.file_path
+        if source_path.exists():
+            try:
+                lines = source_path.read_text(encoding="utf-8").splitlines()
+                if node.location:
+                    start = max(0, node.location.line_start - 1)
+                    end = min(len(lines), start + max_snippet_lines)
+                    snippet_lines = lines[start:end]
+                    source_snippet = {
+                        "included": True,
+                        "language_id": node.language_id or "unknown",
+                        "line_start": node.location.line_start,
+                        "line_end": node.location.line_end,
+                        "total_lines": min(len(snippet_lines), max_snippet_lines),
+                        "lines": snippet_lines,
+                    }
+            except (OSError, UnicodeDecodeError):
+                source_snippet = {"included": False, "reason": "file_read_error"}
+
+    result = explain_symbol(
+        store=store,
+        node=node,
+        include_snippet=include_snippet,
+        include_tests=include_tests,
+        include_relationships=include_relationships,
+        max_snippet_lines=max_snippet_lines,
+        project_root=project_root,
+        source_snippet=source_snippet,
+    )
+    result["ok"] = True
+    result["target_kind"] = "symbol"
+    return result
+
+
+def run_find(
+    store: GraphStore,
+    query: str,
+    types: list[str] | None = None,
+    paths: list[str] | None = None,
+    limit: int = 20,
+    include_tests: bool = True,
+) -> dict[str, Any]:
+    """Core find logic — wrap ``search_symbols`` for CLI workflow.
+
+    Args:
+        store: Loaded GraphStore instance.
+        query: Search keyword — symbol name, file path fragment, or docstring keyword.
+        types: Optional list of node type strings to filter.
+        paths: Optional list of path glob patterns to restrict scope.
+        limit: Maximum results to return.
+        include_tests: Whether to include test symbols.
+
+    Returns:
+        Dict with keys: query, results, total.
+    """
+    import fnmatch
+    from codegraph.graph.query import search_symbols
+
+    effective_limit = max(1, min(limit, 100))
+
+    result = search_symbols(
+        store=store,
+        query=query,
+        types=types,
+        include_tests=include_tests,
+        exclude_external=True,
+        min_score=0.2,
+        limit=effective_limit,
+    )
+
+    items = result.get("results", [])
+    total = result.get("total", len(items))
+
+    # Apply path glob filtering (post-query, same as MCP tool)
+    if paths:
+        def _matches_any_glob(file_path: str) -> bool:
+            normalized = file_path.replace("\\", "/")
+            return any(fnmatch.fnmatch(normalized, p) for p in paths)
+
+        items = [item for item in items if _matches_any_glob(item.get("file_path", ""))]
+        total = len(items)
+
+    return {
+        "query": query,
+        "results": items[:effective_limit],
+        "total": total,
+    }
