@@ -21,9 +21,9 @@ def register_builtin_modules() -> None:
     from codegraph.harness.enrich_validate import EnrichValidateModule
     from codegraph.harness.mcp_execute import McpExecuteModule
     from codegraph.harness.modules.workflow_impact import WorkflowImpactModule
+    from codegraph.harness.modules.workflow_test_audit import WorkflowTestAuditModule
     from codegraph.harness.workflow_explain import WorkflowExplainModule
     from codegraph.harness.workflow_find import WorkflowFindModule
-    from codegraph.harness.workflow_test_audit import WorkflowTestAuditModule
 
     for module in (
         WorkflowImpactModule,

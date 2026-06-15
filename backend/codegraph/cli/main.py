@@ -4204,75 +4204,66 @@ def workflow_test_audit(
     """
     VALID_FORMATS = {"markdown", "json"}
 
-    if fmt not in VALID_FORMATS:
-        typer.echo(
-            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    # Parse comma-separated inputs
-    path_list: list[str] | None = None
-    if paths:
-        path_list = [p.strip() for p in paths.split(",") if p.strip()]
-
-    type_list: list[str] | None = None
-    if types:
-        type_list = [t.strip() for t in types.split(",") if t.strip()]
-
-    # Load store
-    try:
-        store, cg_dir = _load_store(root)
-    except typer.Exit:
-        raise
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-    project_root = str(cg_dir.parent)
-
-    # Run test audit
-    from codegraph.workflow import run_test_audit
-
-    try:
-        result = run_test_audit(
-            store=store,
-            paths=path_list,
-            types=type_list,
-            include_low_confidence=include_low_confidence,
-            limit=limit,
-            project_root=project_root,
-        )
-    except Exception as e:
+    def _exit_error(msg: str) -> None:
         if fmt == "json":
-            typer.echo(json.dumps({
-                "ok": False,
-                "error": f"Workflow failed: {e}",
-                "workflow": "test-audit",
-            }, indent=2, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": msg,
+                        "workflow": "test-audit",
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
         else:
-            typer.echo(f"Error: Workflow failed: {e}", err=True)
+            typer.echo(f"Error: {msg}", err=True)
         raise typer.Exit(1)
 
-    # Format output
-    if fmt == "json":
-        output_text = _format_test_audit_json(result, path_list, type_list)
-    else:
-        output_text = _format_test_audit_markdown(result, path_list, type_list, project_root)
+    if fmt not in VALID_FORMATS:
+        _exit_error(f"Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}")
 
-    # Write output
+    path_list = [p.strip() for p in paths.split(",") if p.strip()] if paths else []
+    type_list = [t.strip() for t in types.split(",") if t.strip()] if types else []
+
+    from codegraph.harness import HarnessRunner
+    from codegraph.workflow_test_audit_presenter import (
+        build_workflow_test_audit_cli_json,
+        build_workflow_test_audit_markdown,
+    )
+
+    run_result = HarnessRunner().run(
+        "workflow.test_audit",
+        {
+            "paths": path_list,
+            "types": type_list,
+            "include_low_confidence": include_low_confidence,
+            "limit": limit,
+        },
+        project_root=Path(root).resolve() if root else None,
+    )
+
+    if run_result.status.value != "succeeded" or not isinstance(run_result.output, dict):
+        _exit_error(_extract_harness_error_message(run_result.error))
+
+    result = run_result.output
+    output_text = (
+        build_workflow_test_audit_cli_json(result)
+        if fmt == "json"
+        else build_workflow_test_audit_markdown(result)
+    )
+
     if output:
         out_path = Path(output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if out_path.exists() and not force_output:
-            typer.echo(
-                f"Error: Output file '{output}' already exists. "
-                f"Use --force-output to overwrite.",
-                err=True,
+            _exit_error(
+                f"Output file '{output}' already exists. Use --force-output to overwrite."
             )
-            raise typer.Exit(1)
         out_path.write_text(output_text, encoding="utf-8")
-        typer.echo(f"Report written to: {out_path.resolve()}")
+        if fmt != "json":
+            typer.echo(f"Report written to: {out_path.resolve()}")
     else:
         typer.echo(output_text)
 

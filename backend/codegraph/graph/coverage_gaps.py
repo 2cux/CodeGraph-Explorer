@@ -72,6 +72,96 @@ def compute_coverage_gaps(
     """
     import fnmatch
 
+    all_nodes = store.all_nodes()
+    indexed_file_paths = sorted(
+        {
+            node.file_path.replace("\\", "/")
+            for node in all_nodes
+            if getattr(node, "file_path", None)
+        }
+    )
+    resolved_root = Path(project_root).resolve() if project_root else None
+    requested_paths = [str(path).strip() for path in (paths or []) if str(path).strip()]
+    path_warnings: list[str] = []
+    resolved_path_filters: list[str] = []
+
+    def _relative_posix(path: Path) -> str:
+        resolved_path = path.resolve()
+        if resolved_root is None:
+            return resolved_path.as_posix()
+        try:
+            return resolved_path.relative_to(resolved_root).as_posix()
+        except ValueError:
+            return resolved_path.as_posix()
+
+    def _is_within_project_root(path: Path) -> bool:
+        if resolved_root is None:
+            return True
+        try:
+            path.resolve().relative_to(resolved_root)
+            return True
+        except ValueError:
+            return False
+
+    def _expand_requested_path(raw_path: str) -> list[str]:
+        raw_candidate = Path(raw_path)
+        lookup_path = raw_candidate if raw_candidate.is_absolute() else (
+            resolved_root / raw_candidate if resolved_root is not None else raw_candidate
+        )
+        normalized_raw = raw_path.replace("\\", "/")
+
+        if resolved_root is not None and not _is_within_project_root(lookup_path):
+            path_warnings.append(
+                f"Path scope '{raw_path}' escapes the project root and was ignored."
+            )
+            return []
+
+        if lookup_path.exists():
+            if lookup_path.is_file():
+                return [_relative_posix(lookup_path)]
+            if lookup_path.is_dir():
+                return sorted(
+                    {
+                        file_path
+                        for file_path in indexed_file_paths
+                        if file_path == _relative_posix(lookup_path)
+                        or file_path.startswith(f"{_relative_posix(lookup_path).rstrip('/')}/")
+                    }
+                )
+
+        if any(char in normalized_raw for char in "*?["):
+            pattern = normalized_raw
+            if resolved_root is not None and raw_candidate.is_absolute():
+                pattern = _relative_posix(lookup_path)
+            matches = sorted(
+                {
+                    file_path
+                    for file_path in indexed_file_paths
+                    if fnmatch.fnmatch(file_path, pattern)
+                }
+            )
+            if matches:
+                return matches
+            path_warnings.append(
+                f"Path scope '{raw_path}' did not match any indexed files under the project root."
+            )
+            return []
+
+        if resolved_root is None:
+            return [normalized_raw]
+        path_warnings.append(
+            f"Path scope '{raw_path}' does not exist under the project root."
+        )
+        return []
+
+    if requested_paths:
+        seen_filters: set[str] = set()
+        for requested_path in requested_paths:
+            for matched_path in _expand_requested_path(requested_path):
+                if matched_path not in seen_filters:
+                    resolved_path_filters.append(matched_path)
+                    seen_filters.add(matched_path)
+
     # ── Determine active production types ─────────────────────────────────
     if types:
         active_types: set[NodeType] = set()
@@ -95,9 +185,6 @@ def compute_coverage_gaps(
             return True  # no filter = match all
         return any(_matches_path_glob(file_path, p) for p in patterns)
 
-    # ── Collect all nodes ─────────────────────────────────────────────────
-    all_nodes = store.all_nodes()
-
     # ── Filter to production symbols ──────────────────────────────────────
     prod_nodes: list[GraphNode] = []
     for n in all_nodes:
@@ -108,7 +195,9 @@ def compute_coverage_gaps(
         if is_test_file_path(n.file_path):
             continue
         # Must match path glob filter (if provided)
-        if not _matches_any_glob(n.file_path, paths or []):
+        if requested_paths and not resolved_path_filters:
+            continue
+        if not _matches_any_glob(n.file_path, resolved_path_filters or []):
             continue
         prod_nodes.append(n)
 
@@ -290,7 +379,7 @@ def compute_coverage_gaps(
     message = " ".join(message_parts)
 
     # ── Warnings ──────────────────────────────────────────────────────────
-    warn_list: list[str] = []
+    warn_list: list[str] = list(path_warnings)
     if total_prod == 0:
         warn_list.append(
             "No production symbols found in the index. "
@@ -328,6 +417,8 @@ def compute_coverage_gaps(
             ),
         })
 
+    uncovered_symbols = symbols_none + symbols_low + symbols_unknown
+
     # ── Build result ──────────────────────────────────────────────────────
     return {
         "ok": True,
@@ -343,7 +434,12 @@ def compute_coverage_gaps(
             "confidence": summary_confidence,
             "message": message,
         },
-        "symbols_without_tests": symbols_none[:limit],
+        "path_resolution": {
+            "requested_paths": requested_paths,
+            "resolved_file_count": len(resolved_path_filters),
+            "resolved_files_preview": resolved_path_filters[:50],
+        },
+        "symbols_without_tests": uncovered_symbols[:limit],
         "files_without_tests": files_without_tests[:_DEFAULT_FILE_LIMIT],
         "low_confidence_links": low_confidence_links[:_DEFAULT_LINK_LIMIT] if include_low_confidence else [],
         "warnings": warn_list,

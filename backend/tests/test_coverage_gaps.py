@@ -166,6 +166,112 @@ class TestComputeCoverageGaps:
         assert result["summary"]["production_symbols_checked"] == 1
         assert result["symbols_without_tests"][0]["file"] == "src/main.py"
 
+    def test_paths_glob_expands_inside_python(self, tmp_path):
+        """Quoted or unexpanded globs should resolve inside Python."""
+        target = tmp_path / "backend" / "codegraph" / "graph" / "coverage_gaps.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("# stub\n", encoding="utf-8")
+
+        nodes = [
+            _make_node(
+                "backend/codegraph/graph/coverage_gaps.py::audit",
+                NodeType.function,
+                "backend/codegraph/graph/coverage_gaps.py",
+            ),
+            _make_node(
+                "backend/codegraph/cli/main.py::entry",
+                NodeType.function,
+                "backend/codegraph/cli/main.py",
+            ),
+        ]
+        store = _build_store(nodes, [])
+
+        result = compute_coverage_gaps(
+            store,
+            project_root=tmp_path,
+            paths=["backend/codegraph/**"],
+        )
+
+        assert result["summary"]["production_symbols_checked"] == 2
+        assert result["path_resolution"]["resolved_file_count"] == 2
+        assert "backend/codegraph/graph/coverage_gaps.py" in result["path_resolution"]["resolved_files_preview"]
+        assert "backend/codegraph/cli/main.py" in result["path_resolution"]["resolved_files_preview"]
+
+    def test_exact_file_path_scope_is_supported(self, tmp_path):
+        """An exact file path should resolve without shell expansion."""
+        target = tmp_path / "backend" / "codegraph" / "graph" / "coverage_gaps.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("# stub\n", encoding="utf-8")
+
+        nodes = [
+            _make_node(
+                "backend/codegraph/graph/coverage_gaps.py::audit",
+                NodeType.function,
+                "backend/codegraph/graph/coverage_gaps.py",
+            ),
+            _make_node(
+                "backend/codegraph/cli/main.py::entry",
+                NodeType.function,
+                "backend/codegraph/cli/main.py",
+            ),
+        ]
+        store = _build_store(nodes, [])
+
+        result = compute_coverage_gaps(
+            store,
+            project_root=tmp_path,
+            paths=["backend/codegraph/graph/coverage_gaps.py"],
+        )
+
+        assert result["summary"]["production_symbols_checked"] == 1
+        assert result["symbols_without_tests"][0]["file"] == "backend/codegraph/graph/coverage_gaps.py"
+
+    def test_missing_path_warns_without_crashing_scope(self, tmp_path):
+        """A missing path should warn clearly but not break valid path filters."""
+        target = tmp_path / "backend" / "codegraph" / "graph" / "coverage_gaps.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("# stub\n", encoding="utf-8")
+
+        nodes = [
+            _make_node(
+                "backend/codegraph/graph/coverage_gaps.py::audit",
+                NodeType.function,
+                "backend/codegraph/graph/coverage_gaps.py",
+            ),
+        ]
+        store = _build_store(nodes, [])
+
+        result = compute_coverage_gaps(
+            store,
+            project_root=tmp_path,
+            paths=[
+                "backend/codegraph/missing.py",
+                "backend/codegraph/graph/coverage_gaps.py",
+            ],
+        )
+
+        assert result["summary"]["production_symbols_checked"] == 1
+        assert any("missing.py" in warning for warning in result["warnings"])
+
+    def test_path_outside_project_root_warns_and_is_ignored(self, tmp_path):
+        """Path scopes must not expand outside the project root."""
+        outside_file = tmp_path.parent / "outside.py"
+        outside_file.write_text("# outside\n", encoding="utf-8")
+
+        nodes = [
+            _make_node("src/main.py::login", NodeType.function, "src/main.py"),
+        ]
+        store = _build_store(nodes, [])
+
+        result = compute_coverage_gaps(
+            store,
+            project_root=tmp_path,
+            paths=[str(outside_file)],
+        )
+
+        assert result["summary"]["production_symbols_checked"] == 0
+        assert any("escapes the project root" in warning for warning in result["warnings"])
+
     def test_types_filter_restricts_symbol_types(self):
         """types parameter limits which node types are included."""
         nodes = [
@@ -216,6 +322,8 @@ class TestComputeCoverageGaps:
         # Symbol with only low-confidence is still in "without tests" category
         # for the purpose of symbols_without_tests list
         assert result["summary"]["symbols_without_test_signal"] == 0
+        assert len(result["symbols_without_tests"]) == 1
+        assert result["symbols_without_tests"][0]["symbol"] == "login"
 
     def test_missing_confidence_is_unknown(self):
         """Edges with exactly 0 confidence go to unknown_confidence bucket."""
@@ -237,6 +345,8 @@ class TestComputeCoverageGaps:
         assert result["summary"]["symbols_with_unknown_confidence_tests"] == 1
         assert result["summary"]["symbols_with_high_confidence_tests"] == 0
         assert result["summary"]["symbols_with_low_confidence_tests"] == 0
+        assert len(result["symbols_without_tests"]) == 1
+        assert result["symbols_without_tests"][0]["symbol"] == "login"
 
     def test_summary_counts(self):
         """Summary has correct aggregate counts."""

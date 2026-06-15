@@ -431,6 +431,7 @@ def run_test_audit(
 
     return {
         "summary": gaps.get("summary", {}),
+        "path_resolution": gaps.get("path_resolution", {}),
         "symbols_without_tests": gaps.get("symbols_without_tests", [])[:effective_limit],
         "files_without_tests": gaps.get("files_without_tests", [])[:effective_limit],
         "low_confidence_links": gaps.get("low_confidence_links", [])[:effective_limit] if include_low_confidence else [],
