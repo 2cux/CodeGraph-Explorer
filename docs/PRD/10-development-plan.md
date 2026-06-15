@@ -91,6 +91,33 @@
 
 ---
 
+## Phase 7：Harness 统一执行框架
+
+实现：
+
+1. `backend/codegraph/harness/` 完整目录结构；
+2. Pydantic 模型（Run, RunState, RunConfig, Checkpoint, Artifact, RunEvent）；
+3. HarnessRunner 核心执行引擎（生命周期：create → start → execute → checkpoint → collect → complete/fail → report）；
+4. RunContext 运行时上下文（传递给模块）；
+5. RunStore 持久化（`.codegraph/runs/<run-id>/` 原子写入）；
+6. EventBus 事件系统（on_start, on_complete, on_error, on_checkpoint）；
+7. CheckpointManager（v1：只记录，不阻塞）；
+8. ArtifactManager 产物管理；
+9. ModuleRegistry 模块注册表 + ModuleManifest；
+10. 4 个 active workflow 模块（委托给 `workflow.py` 已有函数）：
+    - `workflow_impact` → `workflow.run_pre_edit_check()`
+    - `workflow_test_audit` → `workflow.run_test_audit()`
+    - `workflow_explain` → `workflow.run_explain()`
+    - `workflow_find` → `workflow.run_find()`
+11. 7 个 placeholder 模块（manifest only，execute() 抛出 NotImplementedError）；
+12. CLI 命令：`codegraph harness list|info|run|status|runs|docs|prune`；
+13. DocsGenerator（从 run 自动生成 report.md）；
+14. pytest 测试。
+
+**Phase 7 详细规格见：[11-harness-framework.md](11-harness-framework.md)**
+
+---
+
 # 23. README 必须包含的演示命令
 
 ```bash

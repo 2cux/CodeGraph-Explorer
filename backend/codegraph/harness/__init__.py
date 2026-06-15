@@ -24,6 +24,7 @@ from codegraph.harness.artifacts import (
     ArtifactManager,
 )
 from codegraph.harness.checkpoints import CheckpointManager
+from codegraph.harness.context import HarnessRunContext
 from codegraph.harness.events import (
     EventBus,
     emit_artifact_written,
@@ -33,6 +34,8 @@ from codegraph.harness.events import (
     emit_module_started,
     emit_run_created,
 )
+from codegraph.harness.registry import HarnessModule, get_module, list_modules, register_module
+from codegraph.harness.runner import HarnessRunner
 
 __all__ = [
     # Models
@@ -51,6 +54,12 @@ __all__ = [
     "ArtifactManager",
     "CheckpointManager",
     "EventBus",
+    "HarnessRunContext",
+    "HarnessRunner",
+    "HarnessModule",
+    "register_module",
+    "get_module",
+    "list_modules",
     # Event emitters
     "emit_run_created",
     "emit_module_started",

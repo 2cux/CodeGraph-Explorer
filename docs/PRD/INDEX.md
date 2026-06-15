@@ -19,6 +19,7 @@
 | 8 | [08-indexing-and-impact.md](08-indexing-and-impact.md) | §18–19 | 代码索引逻辑 + Impact 分析逻辑（1-hop only） | **实现索引器和影响分析时必读** |
 | 9 | [09-rules-and-acceptance.md](09-rules-and-acceptance.md) | §20–21 | MCP 工具质量规则 + Evidence Pack 边界 + 验收标准 | **确认实现完整性时必读** |
 | 10 | [10-development-plan.md](10-development-plan.md) | §22–25 | 6 个 Phase 开发顺序 + 最终交付物 + 产品定义 | **制定开发计划时必读** |
+| 11 | [11-harness-framework.md](11-harness-framework.md) | §26 | Harness 统一执行框架 — Run 生命周期、模块注册、产物管理、CLI、checkpoint、MCP 包装 | **实现 Harness 框架时必读** |
 
 ---
 
@@ -36,6 +37,7 @@
 | Phase 4: CLI | [03-commands.md](03-commands.md) |
 | Phase 5: Dashboard | [07-api-and-dashboard.md](07-api-and-dashboard.md) — Dashboard 已移出 MVP 范围 |
 | Phase 6: Evidence Pack | [05-evidence-pack-schema.md](05-evidence-pack-schema.md), [06-evidence-pack-generation.md](06-evidence-pack-generation.md) |
+| Phase 7: Harness 框架 | [11-harness-framework.md](11-harness-framework.md) |
 
 ### 如果你在做质量验证
 → [09-rules-and-acceptance.md](09-rules-and-acceptance.md)
