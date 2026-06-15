@@ -4,7 +4,12 @@ from pathlib import Path
 
 from codegraph.harness.bootstrap import register_builtin_modules
 from codegraph.harness.manifest import list_builtin_manifests, manifest_for
-from codegraph.harness.registry import get_module, list_modules
+from codegraph.harness.module_utils import coerce_bool
+from codegraph.harness.registry import (
+    get_module,
+    list_modules,
+    reset_builtin_modules_registered,
+)
 from codegraph.harness.runner import HarnessRunner
 
 
@@ -33,6 +38,7 @@ def test_builtin_manifest_ids_and_reserved_flags() -> None:
 
 def test_builtin_modules_are_registered(monkeypatch) -> None:
     monkeypatch.setattr("codegraph.harness.registry._MODULES", {}, raising=False)
+    reset_builtin_modules_registered()
 
     register_builtin_modules()
 
@@ -55,6 +61,7 @@ def test_builtin_modules_are_registered(monkeypatch) -> None:
 
 def test_reserved_module_runs_with_reserved_payload(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("codegraph.harness.registry._MODULES", {}, raising=False)
+    reset_builtin_modules_registered()
     register_builtin_modules()
 
     result = HarnessRunner().run(
@@ -76,3 +83,19 @@ def test_doctor_run_manifest_is_stable() -> None:
     manifest = manifest_for("doctor.run")
     assert manifest.is_stable is True
     assert manifest.category == "doctor"
+
+
+def test_registry_lazily_registers_builtin_modules(monkeypatch) -> None:
+    monkeypatch.setattr("codegraph.harness.registry._MODULES", {}, raising=False)
+    reset_builtin_modules_registered()
+
+    module = get_module("doctor.run")
+
+    assert module is not None
+    assert module.manifest.id == "doctor.run"
+
+
+def test_coerce_bool_parses_string_false() -> None:
+    assert coerce_bool("false", default=True) is False
+    assert coerce_bool("0", default=True) is False
+    assert coerce_bool("true", default=False) is True

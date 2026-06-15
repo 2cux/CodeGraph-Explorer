@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from codegraph.cli.main import app
 from codegraph.harness.manifest import manifest_for
-from codegraph.harness.module_utils import json_report
+from codegraph.harness.module_utils import coerce_bool, json_report
 
 
 class DoctorRunModule:
@@ -17,7 +17,7 @@ class DoctorRunModule:
     manifest = manifest_for("doctor.run")
 
     def run(self, ctx, input_data: dict[str, Any]) -> dict[str, Any]:
-        repair = bool(input_data.get("repair", False))
+        repair = coerce_bool(input_data.get("repair"), default=False)
         command = ["doctor", "--root", str(ctx.project_root)]
         if repair:
             command.append("--repair")

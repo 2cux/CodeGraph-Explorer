@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from codegraph.harness.manifest import manifest_for
-from codegraph.harness.module_utils import coerce_str_list, json_report, load_graph_store
+from codegraph.harness.module_utils import (
+    coerce_bool,
+    coerce_str_list,
+    json_report,
+    load_graph_store,
+)
 from codegraph.workflow import run_find
 
 
@@ -32,7 +37,7 @@ class WorkflowFindModule:
             types=types,
             paths=paths,
             limit=int(input_data.get("limit", 20)),
-            include_tests=bool(input_data.get("include_tests", True)),
+            include_tests=coerce_bool(input_data.get("include_tests"), default=True),
         )
         ctx.artifact_json("report.json", result)
         ctx.artifact_text("report.md", json_report("Workflow Find", result))

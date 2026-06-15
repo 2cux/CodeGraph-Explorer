@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from codegraph.harness.manifest import manifest_for
-from codegraph.harness.module_utils import json_report, load_graph_store
+from codegraph.harness.module_utils import coerce_bool, json_report, load_graph_store
 from codegraph.workflow import run_explain
 
 
@@ -29,9 +29,12 @@ class WorkflowExplainModule:
             store=store,
             symbol=input_data.get("symbol"),
             file=input_data.get("file"),
-            include_snippet=bool(input_data.get("include_snippet", True)),
-            include_tests=bool(input_data.get("include_tests", True)),
-            include_relationships=bool(input_data.get("include_relationships", True)),
+            include_snippet=coerce_bool(input_data.get("include_snippet"), default=True),
+            include_tests=coerce_bool(input_data.get("include_tests"), default=True),
+            include_relationships=coerce_bool(
+                input_data.get("include_relationships"),
+                default=True,
+            ),
             max_snippet_lines=int(input_data.get("max_snippet_lines", 40)),
             project_root=str(ctx.project_root),
         )

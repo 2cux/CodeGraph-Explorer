@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from codegraph.harness.manifest import manifest_for
-from codegraph.harness.module_utils import coerce_str_list, load_graph_store
+from codegraph.harness.module_utils import coerce_bool, coerce_str_list, load_graph_store
 from codegraph.indexer.status import get_index_status
 from codegraph.workflow import run_pre_edit_check
 from codegraph.workflow_impact_presenter import (
@@ -25,7 +25,7 @@ def run_workflow_impact(project_root, input_data: dict[str, Any]) -> dict[str, A
         symbols=symbols,
         change_type=str(input_data.get("change_type", "unknown")),
         description=input_data.get("description"),
-        include_tests=bool(input_data.get("include_tests", True)),
+        include_tests=coerce_bool(input_data.get("include_tests"), default=True),
         limit=int(input_data.get("limit", 50)),
     )
     index_status = get_index_status(project_root_str)

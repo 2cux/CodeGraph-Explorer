@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from codegraph.harness.manifest import manifest_for
-from codegraph.harness.module_utils import coerce_str_list, json_report, load_graph_store
+from codegraph.harness.module_utils import (
+    coerce_bool,
+    coerce_str_list,
+    json_report,
+    load_graph_store,
+)
 from codegraph.workflow import run_test_audit
 
 
@@ -27,7 +32,10 @@ class WorkflowTestAuditModule:
             store=store,
             paths=paths,
             types=types,
-            include_low_confidence=bool(input_data.get("include_low_confidence", True)),
+            include_low_confidence=coerce_bool(
+                input_data.get("include_low_confidence"),
+                default=True,
+            ),
             limit=int(input_data.get("limit", 50)),
             project_root=str(ctx.project_root),
         )

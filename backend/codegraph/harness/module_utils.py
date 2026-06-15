@@ -24,6 +24,13 @@ def coerce_str_list(value: Any) -> list[str]:
     raise TypeError(f"Expected list-like or comma-separated string, got {type(value).__name__}")
 
 
+def coerce_bool(value: Any, *, default: bool) -> bool:
+    """Normalize bool-like input values using Pydantic coercion."""
+    if value is None:
+        return default
+    return TypeAdapter(bool).validate_python(value)
+
+
 def find_codegraph_dir(project_root: Path) -> Path:
     """Find the active ``.codegraph`` directory from a project root candidate."""
     resolved_root = project_root.resolve()
