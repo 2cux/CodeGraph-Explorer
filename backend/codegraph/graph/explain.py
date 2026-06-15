@@ -914,7 +914,35 @@ def _infer_file_role(
         "spec": ("Test code", 0.9),
         "__tests__": ("Test code", 0.9),
         "migrations": ("Database migration", 0.8),
+        ".github/workflows": ("CI / automation workflow", 0.9),
+        "docker": ("Container / deployment configuration", 0.9),
+        "terraform": ("Infrastructure as code", 0.9),
+        "docs": ("Documentation", 0.8),
     }
+
+    file_name_roles = {
+        "dockerfile": ("Container / deployment configuration", "high"),
+        "docker-compose.yml": ("Container orchestration configuration", "high"),
+        "docker-compose.yaml": ("Container orchestration configuration", "high"),
+        "package.json": ("JavaScript package and script configuration", "high"),
+        "pyproject.toml": ("Python package and tool configuration", "high"),
+        "requirements.txt": ("Python dependency manifest", "medium"),
+        ".env.example": ("Environment variable configuration example", "high"),
+        "tsconfig.json": ("TypeScript compiler configuration", "high"),
+    }
+    base_name = normalized.rsplit("/", 1)[-1]
+    if normalized.startswith(".github/workflows/"):
+        return ("CI / automation workflow", "high")
+    if base_name in file_name_roles:
+        return file_name_roles[base_name]
+    if base_name.startswith("next.config."):
+        return ("Next.js application configuration", "high")
+    if base_name.startswith("vite.config."):
+        return ("Vite build configuration", "high")
+    if normalized.endswith(".graphql") or normalized.endswith(".gql"):
+        return ("GraphQL schema definition", "high")
+    if normalized.endswith(".tf"):
+        return ("Infrastructure as code", "high")
 
     for path_segment, (role, conf) in path_roles.items():
         if f"/{path_segment}/" in f"/{normalized}/" or normalized.startswith(f"{path_segment}/"):

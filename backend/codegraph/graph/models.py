@@ -37,6 +37,12 @@ class EdgeType(str, Enum):
     tested_by = "tested_by"
     routes_to = "routes_to"
     depends_on = "depends_on"
+    configures = "configures"
+    documents = "documents"
+    deploys = "deploys"
+    defines_schema = "defines_schema"
+    migrates = "migrates"
+    runs_script = "runs_script"
 
 
 class DropReason(str, Enum):
@@ -156,6 +162,16 @@ class Resolution(str, Enum):
     nestjs_injection_resolved = "nestjs_injection_resolved"
     jsx_component_resolved = "jsx_component_resolved"
     inline_handler = "inline_handler"
+    event_emitter_heuristic = "event_emitter_heuristic"
+    callback_invocation_heuristic = "callback_invocation_heuristic"
+    react_event_handler_heuristic = "react_event_handler_heuristic"
+    middleware_chain_heuristic = "middleware_chain_heuristic"
+    non_code_configuration = "non_code_configuration"
+    non_code_documentation = "non_code_documentation"
+    non_code_deployment = "non_code_deployment"
+    non_code_schema = "non_code_schema"
+    non_code_migration = "non_code_migration"
+    non_code_script = "non_code_script"
 
     # ── Test discovery ──────────────────────────────────────────────
     direct_test_call = "direct_test_call"

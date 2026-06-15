@@ -49,6 +49,16 @@ _CONFIRMED_RESOLUTIONS: set[Resolution] = {
     Resolution.nestjs_controller_route,
     Resolution.nestjs_injection_resolved,
     Resolution.jsx_component_resolved,
+    Resolution.event_emitter_heuristic,
+    Resolution.callback_invocation_heuristic,
+    Resolution.react_event_handler_heuristic,
+    Resolution.middleware_chain_heuristic,
+    Resolution.non_code_configuration,
+    Resolution.non_code_documentation,
+    Resolution.non_code_deployment,
+    Resolution.non_code_schema,
+    Resolution.non_code_migration,
+    Resolution.non_code_script,
     # Java confirmed resolutions
     Resolution.imported_class_exact,
     Resolution.package_local_exact,
@@ -193,6 +203,14 @@ _STATE_MUTATION_KEYWORDS = [
 ]
 
 _IMPACT_EDGE_TYPES = {EdgeType.calls, EdgeType.routes_to, EdgeType.depends_on}
+_IMPACT_EDGE_TYPES.update({
+    EdgeType.configures,
+    EdgeType.documents,
+    EdgeType.deploys,
+    EdgeType.defines_schema,
+    EdgeType.migrates,
+    EdgeType.runs_script,
+})
 
 
 def transitive_callers(

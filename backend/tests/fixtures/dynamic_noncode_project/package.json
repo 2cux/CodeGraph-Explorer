@@ -1,0 +1,12 @@
+{
+  "name": "dynamic-noncode-project",
+  "scripts": {
+    "dev": "vite",
+    "start": "node src/app.ts"
+  },
+  "dependencies": {
+    "express": "^4.0.0",
+    "events": "^3.0.0",
+    "react": "^18.0.0"
+  }
+}

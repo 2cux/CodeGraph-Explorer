@@ -77,6 +77,16 @@ RESOLUTION_CONFIDENCE: dict[Resolution, float] = {
     Resolution.nestjs_injection_resolved: 0.88,
     Resolution.jsx_component_resolved: 0.88,
     Resolution.inline_handler: 0.35,
+    Resolution.event_emitter_heuristic: 0.70,
+    Resolution.callback_invocation_heuristic: 0.65,
+    Resolution.react_event_handler_heuristic: 0.70,
+    Resolution.middleware_chain_heuristic: 0.72,
+    Resolution.non_code_configuration: 0.65,
+    Resolution.non_code_documentation: 0.60,
+    Resolution.non_code_deployment: 0.70,
+    Resolution.non_code_schema: 0.72,
+    Resolution.non_code_migration: 0.72,
+    Resolution.non_code_script: 0.68,
 
     # ── Test discovery ──────────────────────────────────────────────
     Resolution.direct_test_call: 0.90,

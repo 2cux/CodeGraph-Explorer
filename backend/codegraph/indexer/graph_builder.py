@@ -12,6 +12,7 @@ from codegraph.indexer.scanner import scan_python_files, scan_supported_files, r
 from codegraph.indexer.parser_python import parse_file
 from codegraph.indexer.symbol_extractor import extract_symbols
 from codegraph.indexer.call_extractor import extract_calls
+from codegraph.indexer.heuristics import build_dynamic_heuristic_edges, build_non_code_graph
 
 
 # ── Indexer-level diagnostic accumulators ──────────────────────────────
@@ -76,6 +77,11 @@ def build_index(root: Path) -> tuple[list[GraphNode], list[GraphEdge]]:
     """
     # ── Multi-language extraction + cross-file resolution ──────────────
     nodes, edges = build_index_v2(root)
+
+    extra_nodes, extra_edges = build_non_code_graph(root, nodes)
+    nodes.extend(extra_nodes)
+    edges.extend(extra_edges)
+    edges.extend(build_dynamic_heuristic_edges(root, nodes))
 
     if not nodes:
         return [], []
