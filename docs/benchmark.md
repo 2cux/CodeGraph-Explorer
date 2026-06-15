@@ -15,6 +15,13 @@ python -m tests.agent_benchmark.runner --mode codegraph --response-mode standard
 python -m tests.agent_benchmark.report
 ```
 
+For real agent adoption A/B, use the dedicated recorder instead of the synthetic runner:
+
+```bash
+python -m tests.agent_benchmark.adoption --write-template --run-id 2026-06-15 --project your-project --agent codex
+python -m tests.agent_benchmark.adoption
+```
+
 ## Benchmark Gate
 
 The regression gate runs all checks and reports pass/fail:
@@ -28,6 +35,10 @@ make benchmark-gate
 This runs the full pipeline and checks against configured thresholds.
 
 ## What the Benchmark Measures
+
+The synthetic benchmark measures tool and token efficiency on bundled fixtures.
+Real agent adoption should be tracked separately with the A/B flow in
+`docs/agent-adoption-real-ab.md`.
 
 ### Recall
 - **Symbol recall**: How often the right symbol is found via search

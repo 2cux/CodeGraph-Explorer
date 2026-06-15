@@ -35,6 +35,12 @@ benchmark:
 benchmark-gate:
 	python -m tests.agent_benchmark.gate
 
+adoption-template:
+	python -m tests.agent_benchmark.adoption --write-template
+
+adoption-report:
+	python -m tests.agent_benchmark.adoption
+
 test:
 	pytest backend/tests/
 

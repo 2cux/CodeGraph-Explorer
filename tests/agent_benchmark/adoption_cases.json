@@ -1,0 +1,44 @@
+[
+  {
+    "task_id": "bug_locate_code_paths",
+    "task_type": "bug_locate",
+    "title": "找 bug",
+    "prompt": "Use CodeGraph to locate likely code paths for this bug before broad file scanning.",
+    "goal": "Use CodeGraph to locate likely code paths"
+  },
+  {
+    "task_id": "shared_type_refactor",
+    "task_type": "shared_type_refactor",
+    "title": "改接口",
+    "prompt": "Use CodeGraph before refactoring a shared type or interface.",
+    "goal": "Use CodeGraph before refactoring shared type"
+  },
+  {
+    "task_id": "coverage_audit",
+    "task_type": "coverage_audit",
+    "title": "查覆盖",
+    "prompt": "Find production symbols lacking tests with CodeGraph before opening test files.",
+    "goal": "Find production symbols lacking tests"
+  },
+  {
+    "task_id": "explain_module",
+    "task_type": "explain_module",
+    "title": "解释模块",
+    "prompt": "Explain a symbol or file with CodeGraph before reading the source.",
+    "goal": "Explain symbol/file before reading source"
+  },
+  {
+    "task_id": "trace_flow",
+    "task_type": "trace_flow",
+    "title": "找 flow",
+    "prompt": "Use CodeGraph to trace how X reaches Y before grep/read fallback.",
+    "goal": "How does X reach Y"
+  },
+  {
+    "task_id": "route_service_impact",
+    "task_type": "route_service_impact",
+    "title": "改 route/service",
+    "prompt": "Check route/service impact with CodeGraph before editing.",
+    "goal": "Check impact before editing route/service"
+  }
+]
