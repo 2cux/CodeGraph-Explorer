@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import shutil
 import traceback
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,7 @@ class HarnessRunner:
     """Unified execution engine for harness modules."""
 
     def __init__(self, store: RunStore | None = None) -> None:
-        self._store = store or RunStore()
+        self._store = store
 
     def run(
         self,
@@ -44,6 +43,7 @@ class HarnessRunner:
     ) -> HarnessRunResult:
         """Execute a registered harness module and persist run state."""
         resolved_root = self._resolve_project_root(project_root)
+        store = self._resolve_store(resolved_root)
         module = get_module(module_id)
         if module is None:
             raise ValueError(f"Unknown harness module: {module_id}")
@@ -52,30 +52,23 @@ class HarnessRunner:
         effective_run_id = run_id or self._generate_run_id(module_id)
         validate_run_id(effective_run_id)
 
-        run_dir = self._runs_base_dir(resolved_root) / effective_run_id
-        if run_dir.exists():
-            raise FileExistsError(f"Harness run already exists: {effective_run_id}")
-
-        state = self._create_run_state(
-            run_id=effective_run_id,
+        state = store.create_run(
             module_id=module_id,
-            project_root=resolved_root,
+            input_params=input_data,
+            project_root=str(resolved_root),
+            run_id=effective_run_id,
         )
+        run_dir = store.base_dir / state.run_id
         ctx: HarnessRunContext | None = None
 
         try:
-            self._initialize_run_files(
-                run_dir=run_dir,
-                manifest=manifest,
-                input_data=input_data,
-                state=state,
-            )
+            self._initialize_run_files(run_dir=run_dir, manifest=manifest)
             ctx = self._create_context(run_dir, resolved_root, state)
             ctx.event("run.created", {"run_id": effective_run_id, "module_id": module_id})
 
             state.status = RunStatus.RUNNING
             state.started_at = timestamp_utc()
-            self._write_state(run_dir, state)
+            store.update_run(state)
             ctx.event("module.started", {"module_id": module_id})
 
             output = module.run(ctx, input_data)
@@ -86,46 +79,52 @@ class HarnessRunner:
                     f"Module {module_id} returned {type(output).__name__}, expected dict"
                 )
 
-            atomic_write_json(run_dir / "output.json", output)
+            store.write_output(state.run_id, output)
             state.output_path = "output.json"
             state.status = RunStatus.SUCCEEDED
             state.finished_at = timestamp_utc()
             state.error = None
-            self._write_state(run_dir, state)
+            store.update_run(state)
             ctx.event("module.finished", {"module_id": module_id})
             return self._build_result(state=state, output=output, ctx=ctx)
         except Exception as exc:
             error_text = traceback.format_exc()
             partial_output = self._extract_partial_output(exc)
+            error_details = self._build_error_details(
+                exc,
+                traceback_text=error_text,
+                module_id=module_id,
+                run_id=state.run_id,
+            )
             if partial_output is not None:
-                atomic_write_json(run_dir / "output.json", partial_output)
+                store.write_output(state.run_id, partial_output)
                 state.output_path = "output.json"
             state.status = RunStatus.FAILED
             state.finished_at = timestamp_utc()
             state.error = error_text
-            self._write_state(run_dir, state)
+            store.update_run(state)
             if ctx is not None:
-                ctx.log_error(str(exc))
-                ctx.event(
-                    "module.failed",
-                    {
-                        "module_id": module_id,
-                        "error": str(exc),
-                        "traceback": error_text,
-                    },
+                ctx.log_error(error_details["message"])
+                ctx.event("module.failed", error_details)
+                return self._build_result(
+                    state=state,
+                    output=partial_output,
+                    ctx=ctx,
+                    error=error_details["public_message"],
+                    error_details=error_details,
                 )
-                return self._build_result(state=state, output=partial_output, ctx=ctx)
             return HarnessRunResult(
                 run_id=state.run_id,
                 module_id=state.module_id,
                 status=state.status,
                 output=partial_output,
-                error=state.error,
+                error=error_details["public_message"],
+                error_details=error_details,
                 artifacts=[],
             )
         finally:
             if not persist and run_dir.exists():
-                shutil.rmtree(run_dir)
+                store.delete_run(state.run_id)
 
     def _resolve_project_root(self, project_root: Path | None) -> Path:
         """Resolve the project root for a run."""
@@ -136,11 +135,20 @@ class HarnessRunner:
             return Path(env_root).resolve()
         return Path.cwd().resolve()
 
-    def _runs_base_dir(self, project_root: Path) -> Path:
-        """Return ``<project_root>/.codegraph/runs`` for the active run."""
-        runs_dir = project_root / ".codegraph" / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        return runs_dir
+    def _resolve_store(self, project_root: Path) -> RunStore:
+        """Return the store to use for this run.
+
+        If a custom store was injected, it must point at the same project root
+        as the explicit ``project_root`` argument to avoid split persistence.
+        """
+        if self._store is None:
+            return RunStore(project_root=project_root)
+        expected_base_dir = (project_root / ".codegraph" / "runs").resolve()
+        if self._store.base_dir.resolve() != expected_base_dir:
+            raise ValueError(
+                "Injected RunStore base_dir does not match the resolved project root"
+            )
+        return self._store
 
     def _load_manifest(
         self,
@@ -166,29 +174,6 @@ class HarnessRunner:
         module_slug = module_id.replace(".", "-").replace("_", "-")
         return f"{module_slug}-{timestamp_compact()}-{secrets.token_hex(2)}"
 
-    def _create_run_state(
-        self,
-        *,
-        run_id: str,
-        module_id: str,
-        project_root: Path,
-    ) -> HarnessRunState:
-        """Build the initial run state."""
-        return HarnessRunState(
-            run_id=run_id,
-            module_id=module_id,
-            status=RunStatus.CREATED,
-            project_root=str(project_root),
-            started_at=None,
-            finished_at=None,
-            input_path="input.json",
-            output_path=None,
-            artifacts_dir="artifacts/",
-            logs_dir="logs/",
-            checkpoints_path="checkpoints.jsonl",
-            error=None,
-        )
-
     def _create_context(
         self,
         run_dir: Path,
@@ -209,20 +194,9 @@ class HarnessRunner:
         *,
         run_dir: Path,
         manifest: HarnessModuleManifest,
-        input_data: dict[str, Any],
-        state: HarnessRunState,
     ) -> None:
-        """Create the run directory and write initial persisted files."""
-        run_dir.mkdir(parents=True, exist_ok=False)
-        (run_dir / "logs").mkdir(parents=True, exist_ok=True)
-        (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+        """Write files that are not handled by ``RunStore`` itself."""
         atomic_write_json(run_dir / "manifest.json", manifest.model_dump(mode="json"))
-        atomic_write_json(run_dir / "input.json", input_data)
-        self._write_state(run_dir, state)
-
-    def _write_state(self, run_dir: Path, state: HarnessRunState) -> None:
-        """Persist ``state.json`` for the run."""
-        atomic_write_json(run_dir / "state.json", state.model_dump(mode="json"))
 
     def _extract_partial_output(
         self,
@@ -232,12 +206,34 @@ class HarnessRunner:
         partial = getattr(exc, "partial_output", None)
         return partial if isinstance(partial, dict) else None
 
+    def _build_error_details(
+        self,
+        exc: Exception,
+        *,
+        traceback_text: str,
+        module_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Build the public structured error payload for callers."""
+        message = str(exc).strip() or exc.__class__.__name__
+        return {
+            "code": "module_execution_failed",
+            "type": exc.__class__.__name__,
+            "message": message,
+            "public_message": f"{exc.__class__.__name__}: {message}",
+            "module_id": module_id,
+            "run_id": run_id,
+            "traceback": traceback_text,
+        }
+
     def _build_result(
         self,
         *,
         state: HarnessRunState,
         output: dict[str, Any] | None,
         ctx: HarnessRunContext,
+        error: str | None = None,
+        error_details: dict[str, Any] | None = None,
     ) -> HarnessRunResult:
         """Create the compact result returned to callers."""
         artifacts = [artifact.name for artifact in ctx.artifacts.list_artifacts()]
@@ -246,6 +242,7 @@ class HarnessRunner:
             module_id=state.module_id,
             status=state.status,
             output=output,
-            error=state.error,
+            error=error,
+            error_details=error_details,
             artifacts=artifacts,
         )

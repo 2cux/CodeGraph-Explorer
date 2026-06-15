@@ -6,6 +6,7 @@ from pathlib import Path
 from codegraph.harness.models import HarnessModuleManifest, RunStatus
 from codegraph.harness.registry import get_module, list_modules, register_module
 from codegraph.harness.runner import HarnessRunner
+from codegraph.harness.store import RunStore
 
 
 class _SuccessModule:
@@ -128,7 +129,10 @@ def test_harness_runner_failure_writes_error_and_partial_output(
     assert result.status == RunStatus.FAILED
     assert result.output == {"before": {"value": 7}}
     assert "boom" in (result.error or "")
-    assert "Traceback" in (result.error or "")
+    assert result.error == "_FailureError: boom"
+    assert result.error_details is not None
+    assert result.error_details["message"] == "boom"
+    assert "Traceback" in result.error_details["traceback"]
 
     state = _load_json(run_dir / "state.json")
     assert state["status"] == "failed"
@@ -163,3 +167,19 @@ def test_harness_runner_non_persistent_cleanup(tmp_path: Path, monkeypatch) -> N
 
     assert result.status == RunStatus.SUCCEEDED
     assert not (tmp_path / ".codegraph" / "runs" / "test-ephemeral-run").exists()
+
+
+def test_harness_runner_uses_injected_store(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("codegraph.harness.registry._MODULES", {}, raising=False)
+    register_module(_SuccessModule())
+
+    store = RunStore(project_root=tmp_path)
+    result = HarnessRunner(store=store).run(
+        "test.success",
+        {"value": 3},
+        project_root=tmp_path,
+        run_id="test-injected-store-run",
+    )
+
+    assert result.status == RunStatus.SUCCEEDED
+    assert (store.base_dir / "test-injected-store-run" / "state.json").exists()

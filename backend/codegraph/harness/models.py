@@ -147,6 +147,10 @@ class HarnessRunResult(BaseModel):
     error: str | None = Field(
         default=None, description="Error message if run failed"
     )
+    error_details: dict[str, Any] | None = Field(
+        default=None,
+        description="Structured error details for callers that need stable fields",
+    )
     artifacts: list[str] = Field(
         default_factory=list, description="List of artifact file names produced"
     )

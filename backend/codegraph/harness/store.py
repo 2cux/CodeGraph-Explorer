@@ -86,8 +86,13 @@ class RunStore:
         store.update_run_status(run.run_id, RunStatus.SUCCEEDED)
     """
 
-    def __init__(self) -> None:
-        cg_dir = _resolve_codegraph_dir()
+    def __init__(self, project_root: str | Path | None = None) -> None:
+        if project_root is None:
+            cg_dir = _resolve_codegraph_dir()
+        else:
+            root = Path(project_root).resolve()
+            cg_dir = root / ".codegraph"
+            cg_dir.mkdir(parents=True, exist_ok=True)
         self._base_dir = cg_dir / "runs"
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +122,7 @@ class RunStore:
         module_id: str,
         input_params: dict[str, Any] | None = None,
         project_root: str | None = None,
+        run_id: str | None = None,
     ) -> HarnessRunState:
         """Create a new run directory and return its initial state.
 
@@ -128,7 +134,7 @@ class RunStore:
         Returns:
             The freshly created ``HarnessRunState``.
         """
-        run_id = _generate_run_id(module_id)
+        run_id = run_id or _generate_run_id(module_id)
         root = project_root or str(_resolve_project_root())
         run_dir = self._run_path(run_id)
 
