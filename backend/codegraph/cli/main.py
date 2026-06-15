@@ -4468,68 +4468,66 @@ def workflow_explain(
         typer.echo("Error: Provide exactly one of --symbol or --file, not both.", err=True)
         raise typer.Exit(1)
 
-    # Load store
-    try:
-        store, cg_dir = _load_store(root)
-    except typer.Exit:
-        raise
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+    from codegraph.harness import HarnessRunner
+    from codegraph.workflow_explain_presenter import (
+        build_workflow_explain_cli_json,
+        build_workflow_explain_markdown,
+    )
 
-    project_root = str(cg_dir.parent)
+    run_result = HarnessRunner().run(
+        "workflow.explain",
+        {
+            "symbol": symbol,
+            "file": file,
+            "include_neighbors": include_relationships,
+            "include_snippets": include_snippet,
+            "format": fmt,
+            "max_snippet_lines": max_snippet_lines,
+            "include_tests": include_tests,
+        },
+        project_root=Path(root).resolve() if root else None,
+    )
 
-    # Run explain
-    from codegraph.workflow import run_explain
-
-    try:
-        result = run_explain(
-            store=store,
-            symbol=symbol,
-            file=file,
-            include_snippet=include_snippet,
-            include_tests=include_tests,
-            include_relationships=include_relationships,
-            max_snippet_lines=max_snippet_lines,
-            project_root=project_root,
-        )
-    except Exception as e:
+    if run_result.status.value != "succeeded" or not isinstance(run_result.output, dict):
+        error_message = _extract_harness_error_message(run_result.error)
         if fmt == "json":
             typer.echo(json.dumps({
                 "ok": False,
-                "error": f"Workflow failed: {e}",
+                "error": error_message,
                 "workflow": "explain",
             }, indent=2, ensure_ascii=False))
         else:
-            typer.echo(f"Error: Workflow failed: {e}", err=True)
+            typer.echo(f"Error: {error_message}", err=True)
         raise typer.Exit(1)
 
-    if not result.get("ok"):
-        if fmt == "json":
-            typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
-        else:
-            typer.echo(f"Error: {result.get('error', 'Unknown error')}", err=True)
-        raise typer.Exit(1)
-
-    # Format output
-    if fmt == "json":
-        output_text = json.dumps(result, indent=2, ensure_ascii=False)
-    else:
-        output_text = _format_explain_markdown(result, project_root)
+    result = run_result.output
+    output_text = (
+        build_workflow_explain_cli_json(result)
+        if fmt == "json"
+        else build_workflow_explain_markdown(result)
+    )
 
     # Write output
     if output:
         out_path = Path(output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if out_path.exists() and not force_output:
-            typer.echo(
-                f"Error: Output file '{output}' already exists. "
-                f"Use --force-output to overwrite.",
-                err=True,
+            message = (
+                f"Output file '{output}' already exists. "
+                f"Use --force-output to overwrite."
             )
+            if fmt == "json":
+                typer.echo(json.dumps({
+                    "ok": False,
+                    "error": message,
+                    "workflow": "explain",
+                }, indent=2, ensure_ascii=False))
+            else:
+                typer.echo(f"Error: {message}", err=True)
             raise typer.Exit(1)
         out_path.write_text(output_text, encoding="utf-8")
-        typer.echo(f"Report written to: {out_path.resolve()}")
+        if fmt != "json":
+            typer.echo(f"Report written to: {out_path.resolve()}")
     else:
         typer.echo(output_text)
 

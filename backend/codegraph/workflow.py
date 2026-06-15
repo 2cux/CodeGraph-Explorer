@@ -16,6 +16,7 @@ from typing import Any
 from codegraph.graph.models import GraphNode, NodeType
 from codegraph.graph.store import GraphStore
 from codegraph.graph import impact as graph_impact
+from codegraph.indexer.scanner import _is_safe_path
 
 
 def _assign_layer(file_path: str) -> str:
@@ -509,27 +510,12 @@ def run_explain(
         }
 
     # Read source snippet from disk if requested
-    source_snippet: dict[str, Any] | None = None
-    if include_snippet and project_root and node.file_path:
-        from pathlib import Path
-        source_path = Path(project_root) / node.file_path
-        if source_path.exists():
-            try:
-                lines = source_path.read_text(encoding="utf-8").splitlines()
-                if node.location:
-                    start = max(0, node.location.line_start - 1)
-                    end = min(len(lines), start + max_snippet_lines)
-                    snippet_lines = lines[start:end]
-                    source_snippet = {
-                        "included": True,
-                        "language_id": node.language_id or "unknown",
-                        "line_start": node.location.line_start,
-                        "line_end": node.location.line_end,
-                        "total_lines": min(len(snippet_lines), max_snippet_lines),
-                        "lines": snippet_lines,
-                    }
-            except (OSError, UnicodeDecodeError):
-                source_snippet = {"included": False, "reason": "file_read_error"}
+    source_snippet = _read_workflow_explain_source_snippet(
+        project_root=project_root,
+        node=node,
+        max_snippet_lines=max_snippet_lines,
+        include_snippet=include_snippet,
+    )
 
     result = explain_symbol(
         store=store,
@@ -544,6 +530,50 @@ def run_explain(
     result["ok"] = True
     result["target_kind"] = "symbol"
     return result
+
+
+def _read_workflow_explain_source_snippet(
+    *,
+    project_root: str | None,
+    node: GraphNode,
+    max_snippet_lines: int,
+    include_snippet: bool,
+) -> dict[str, Any] | None:
+    """Read a bounded source snippet using the same root-safety semantics as MCP."""
+    if not include_snippet or not project_root or not node.file_path or not node.location:
+        return None
+
+    from pathlib import Path
+
+    root_path = Path(project_root)
+    source_path = root_path / node.file_path
+    if not source_path.exists():
+        return {"included": False, "reason": "file_not_found"}
+
+    is_safe, _warning = _is_safe_path(source_path, root_path)
+    if not is_safe:
+        return {"included": False, "reason": "unsafe_path"}
+
+    try:
+        lines = source_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {"included": False, "reason": "file_read_error"}
+
+    start = max(0, node.location.line_start - 1)
+    raw_end = max(node.location.line_end, node.location.line_start)
+    end = min(len(lines), max(start + 1, raw_end))
+    snippet_end = min(end, start + max_snippet_lines)
+    snippet_lines = lines[start:snippet_end]
+    return {
+        "included": True,
+        "content": "\n".join(snippet_lines),
+        "truncated": end > snippet_end,
+        "lines": len(snippet_lines),
+        "source_line_start": node.location.line_start,
+        "source_line_end": (
+            node.location.line_start + max(len(snippet_lines) - 1, 0)
+        ),
+    }
 
 
 def run_find(
