@@ -3759,6 +3759,59 @@ def workflow_impact(
     if not planned_file_list and not planned_symbol_names:
         _exit_error("At least one of --files or --symbols must be provided.")
 
+    from codegraph.harness import HarnessRunner
+    from codegraph.workflow_impact_presenter import (
+        build_workflow_impact_cli_json,
+        build_workflow_impact_markdown,
+    )
+
+    run_result = HarnessRunner().run(
+        "workflow.impact",
+        {
+            "files": planned_file_list,
+            "symbols": planned_symbol_names,
+            "change_type": change_type,
+            "description": description,
+            "include_tests": include_tests,
+            "limit": limit,
+        },
+        project_root=Path(root).resolve() if root else None,
+    )
+
+    if run_result.status.value != "succeeded" or not isinstance(run_result.output, dict):
+        error_message = _extract_harness_error_message(run_result.error)
+        if fmt == "json":
+            typer.echo(json.dumps({
+                "ok": False,
+                "error": error_message,
+                "workflow": "impact",
+            }, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Error: {error_message}", err=True)
+        raise typer.Exit(1)
+
+    result = run_result.output
+    output_text = (
+        build_workflow_impact_cli_json(result)
+        if fmt == "json"
+        else build_workflow_impact_markdown(result)
+    )
+
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and not force_output:
+            _exit_error(
+                f"Output file '{output}' already exists. "
+                f"Use --force-output to overwrite."
+            )
+        out_path.write_text(output_text, encoding="utf-8")
+        if fmt != "json":
+            typer.echo(f"Report written to: {out_path.resolve()}")
+    else:
+        typer.echo(output_text)
+    return
+
     # ── Load store ──────────────────────────────────────────────────────
     try:
         store, cg_dir = _load_store(root)
@@ -3841,6 +3894,16 @@ def workflow_impact(
         typer.echo(f"Report written to: {out_path.resolve()}")
     else:
         typer.echo(output_text)
+
+
+def _extract_harness_error_message(error: str | None) -> str:
+    """Extract a concise message from a harness traceback string."""
+    if not error:
+        return "Workflow failed."
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    if not lines:
+        return "Workflow failed."
+    return lines[-1]
 
 
 def _format_workflow_json(
