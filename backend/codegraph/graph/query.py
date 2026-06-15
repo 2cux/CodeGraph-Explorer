@@ -3,6 +3,7 @@
 from codegraph.graph.store import GraphStore
 from codegraph.graph.models import GraphNode, GraphEdge, EdgeType, Resolution
 from codegraph.graph.impact import classify_edge_resolution
+from codegraph.utils.path_utils import is_test_path
 
 
 # ── Callers / Callees ──────────────────────────────────────────────────
@@ -126,7 +127,7 @@ def search_symbols(
             continue
         if exclude_external and node.type.value == "external_symbol":
             continue
-        if not include_tests and (node.type.value == "test" or _is_test_path(node.file_path)):
+        if not include_tests and (node.type.value == "test" or is_test_path(node.file_path)):
             continue
         if layer and _assign_search_layer(node.file_path) != layer:
             continue
@@ -188,15 +189,6 @@ def search_symbols(
 
     return {"results": paginated, "total": total, "ambiguous": False}
 
-
-def _is_test_path(file_path: str) -> bool:
-    normalized = file_path.replace("\\", "/").lower()
-    return (
-        normalized.startswith("tests/")
-        or "/tests/" in normalized
-        or normalized.endswith("_test.py")
-        or normalized.split("/")[-1].startswith("test_")
-    )
 
 
 def _assign_search_layer(file_path: str) -> str:
