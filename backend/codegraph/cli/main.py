@@ -4778,134 +4778,72 @@ def workflow_find(
     """
     VALID_FORMATS = {"markdown", "json"}
 
-    if fmt not in VALID_FORMATS:
-        typer.echo(
-            f"Error: Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    # Parse comma-separated inputs
-    type_list: list[str] | None = None
-    if types:
-        type_list = [t.strip() for t in types.split(",") if t.strip()]
-
-    path_list: list[str] | None = None
-    if paths:
-        path_list = [p.strip() for p in paths.split(",") if p.strip()]
-
-    # Load store
-    try:
-        store, cg_dir = _load_store(root)
-    except typer.Exit:
-        raise
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-    # Run find
-    from codegraph.workflow import run_find
-
-    try:
-        result = run_find(
-            store=store,
-            query=query,
-            types=type_list,
-            paths=path_list,
-            limit=limit,
-            include_tests=include_tests,
-        )
-    except Exception as e:
+    def _exit_error(message: str) -> None:
         if fmt == "json":
-            typer.echo(json.dumps({
-                "ok": False,
-                "error": f"Workflow failed: {e}",
-                "workflow": "find",
-            }, indent=2, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": message,
+                        "workflow": "find",
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
         else:
-            typer.echo(f"Error: Workflow failed: {e}", err=True)
+            typer.echo(f"Error: {message}", err=True)
         raise typer.Exit(1)
 
-    # Format output
-    if fmt == "json":
-        output_text = json.dumps({
-            "ok": True,
-            "workflow": "find",
-            "input": {
-                "query": query,
-                "types": type_list,
-                "paths": path_list,
-            },
-            **result,
-        }, indent=2, ensure_ascii=False)
-    else:
-        output_text = _format_find_markdown(result, type_list, path_list)
+    if fmt not in VALID_FORMATS:
+        _exit_error(f"Invalid format '{fmt}'. Valid: {', '.join(sorted(VALID_FORMATS))}")
 
-    # Write output
+    type_list = [t.strip() for t in types.split(",") if t.strip()] if types else []
+    path_list = [p.strip() for p in paths.split(",") if p.strip()] if paths else []
+
+    from codegraph.harness import HarnessRunner
+    from codegraph.workflow_find_presenter import (
+        build_workflow_find_cli_json,
+        build_workflow_find_markdown,
+    )
+
+    run_result = HarnessRunner().run(
+        "workflow.find",
+        {
+            "query": query,
+            "types": type_list,
+            "paths": path_list,
+            "limit": limit,
+            "include_details": True,
+            "include_snippets": False,
+            "format": fmt,
+            "include_tests": include_tests,
+        },
+        project_root=Path(root).resolve() if root else None,
+    )
+
+    if run_result.status.value != "succeeded" or not isinstance(run_result.output, dict):
+        _exit_error(_extract_harness_error_message(run_result.error))
+
+    result = run_result.output
+    output_text = (
+        build_workflow_find_cli_json(result)
+        if fmt == "json"
+        else build_workflow_find_markdown(result)
+    )
+
     if output:
         out_path = Path(output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if out_path.exists() and not force_output:
-            typer.echo(
-                f"Error: Output file '{output}' already exists. "
-                f"Use --force-output to overwrite.",
-                err=True,
+            _exit_error(
+                f"Output file '{output}' already exists. Use --force-output to overwrite."
             )
-            raise typer.Exit(1)
         out_path.write_text(output_text, encoding="utf-8")
-        typer.echo(f"Report written to: {out_path.resolve()}")
+        if fmt != "json":
+            typer.echo(f"Report written to: {out_path.resolve()}")
     else:
         typer.echo(output_text)
-
-
-def _format_find_markdown(
-    result: dict,
-    types: list[str] | None,
-    paths: list[str] | None,
-) -> str:
-    """Format find result as Markdown."""
-    query = result.get("query", "")
-    total = result.get("total", 0)
-    results = result.get("results", [])
-
-    lines: list[str] = []
-    lines.append("# CodeGraph Find Results")
-    lines.append("")
-
-    lines.append("## Query")
-    lines.append(f"- Search: **{query}**")
-    if types:
-        lines.append(f"- Types: {', '.join(types)}")
-    if paths:
-        lines.append(f"- Paths: {', '.join(paths)}")
-    lines.append(f"- Results: {total}")
-    lines.append("")
-
-    if results:
-        lines.append("## Results")
-        lines.append("| # | Symbol | Type | File | Score | Match |")
-        lines.append("|---|---|---|---|---|---|")
-        for i, r in enumerate(results, 1):
-            r_name = r.get("name", r.get("symbol_id", "?"))
-            r_type = r.get("type", "?")
-            r_file = r.get("file_path", "?")
-            r_score = r.get("score", "?")
-            r_match = ", ".join(r.get("match_sources", []))
-            lines.append(f"| {i} | `{r_name}` | {r_type} | `{r_file}` | {r_score:.1f} | {r_match} |")
-    else:
-        lines.append("## Results")
-        lines.append("*(no results found)*")
-        lines.append("")
-        lines.append("> Try broadening the query, removing type/path filters, or checking")
-        lines.append("> `codegraph_repo_status` to confirm the index covers the right project.")
-    lines.append("")
-
-    lines.append("---")
-    lines.append("")
-    lines.append("*Generated by CodeGraph workflow find.*")
-    lines.append("")
-
-    return "\n".join(lines)
 
 
 if __name__ == "__main__":
