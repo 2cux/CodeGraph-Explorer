@@ -17,6 +17,7 @@ from codegraph.graph.models import (
 from codegraph.graph.store import GraphStore
 from codegraph.graph import query as graph_query
 from codegraph.graph import impact as graph_impact
+from codegraph.harness.cli import harness_app
 from codegraph.hooks.manager import HookManager
 from codegraph.hooks.logger import get_hook_logger
 from codegraph.indexer.graph_builder import build_index, build_index_from_paths
@@ -38,6 +39,7 @@ app = typer.Typer(
     name="codegraph",
     help="CodeGraph Explorer - AI Agent-first code context tool",
 )
+app.add_typer(harness_app, name="harness")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

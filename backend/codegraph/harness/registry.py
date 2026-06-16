@@ -83,13 +83,21 @@ def _coerce_manifest(module: HarnessModule) -> HarnessModuleManifest:
 
 def _ensure_builtin_modules_registered(module_id: str | None = None) -> None:
     """Register builtin modules lazily only when a builtin is requested."""
-    if _BUILTIN_MODULES_REGISTERED:
-        return
     if module_id is not None:
         try:
             manifest_for(module_id)
         except KeyError:
             return
+        if module_id in _MODULES:
+            return
+        if _BUILTIN_MODULES_REGISTERED:
+            reset_builtin_modules_registered()
+    elif _BUILTIN_MODULES_REGISTERED and _MODULES:
+        return
+    elif _BUILTIN_MODULES_REGISTERED and not _MODULES:
+        reset_builtin_modules_registered()
+    elif _BUILTIN_MODULES_REGISTERED:
+        return
     from codegraph.harness.bootstrap import register_builtin_modules
 
     register_builtin_modules()
