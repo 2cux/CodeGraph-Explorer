@@ -192,9 +192,17 @@ codegraph workflow find login
 
 ## Harness
 
-CodeGraph Harness 是内部执行框架，用于统一 workflow、run 状态、日志和报告产物。
+CodeGraph Harness 是内部 workflow 执行框架，让复杂代码分析任务变得**稳定、可追踪、可复现**。
 
-实现位于 `backend/codegraph/harness/`，模块清单与输入输出契约见 [docs/harness-modules.md](docs/harness-modules.md)。
+每个 Harness run 自动记录：
+
+- **结构化 input/output** — 输入参数和输出结果以 JSON 持久化
+- **执行状态** — created → running → succeeded/failed，完整生命周期追踪
+- **事件日志** — 关键步骤的 timestamped events
+- **报告产物 (artifacts)** — JSON 报告和 Markdown 报告自动生成并落盘
+- **失败诊断** — 异常时的完整 traceback 和 error context
+
+Harness 使 workflow（impact、test-audit、explain、find）从一次性调用变成可审计的执行单元。CLI `codegraph workflow` 和 MCP `codegraph_harness_run` 共享同一执行引擎，保证输出一致性。
 
 ## Optional pre-commit impact hook
 
@@ -241,24 +249,52 @@ codegraph configure git-hook --pre-commit-impact --force
 | `codegraph_coverage_gaps` | 查找缺少测试信号的 production symbols / files |
 | `codegraph_build_context_pack` | 构建 scan / deepen / impact 模式上下文包 |
 
-## Validation
+## Verification
 
-Recent real-agent A/B regression showed:
+### MCP Profile A/B — Fresh Claude Code Session
 
-- With CodeGraph workflow: 6/6 tasks started with CodeGraph.
-- With CodeGraph workflow: 0 broad Read/Grep/Glob before CodeGraph.
-- Without CodeGraph: 6/6 tasks started with broad `rg`.
-- Average CodeGraph calls in workflow mode: about 2 per task.
-- One trace/flow case still required targeted `rg`, which is tracked as a sufficiency improvement.
+在未见过 CodeGraph 代码的 fresh session 中，`agent` profile（6 个高层工具）的表现：
 
-Known follow-ups:
+| 指标 | 结果 |
+|---|---|
+| MCP Start Rate | 100% — Agent 始终优先使用 CodeGraph |
+| Wrong Entry Rate | 0% — 每次都选对了高层工具 |
+| Broad Search Before MCP | 0% — 从未先用 rg/grep/glob 再补 CodeGraph |
+| Task Success | 100% — 全部 6 类任务完成 |
 
-- Improve PowerShell wildcard handling for workflow paths.
-- Improve trace / flow sufficiency.
-- Improve `next_recommended_tools` follow-through.
-- Improve dropped-edge diagnostics and index health reporting.
+对比 `without_codegraph` baseline：6/6 任务以 broad `rg` 起步。CodeGraph 将 broad search 从 100% 降到了 0%。
 
-这些结果说明 CodeGraph 更擅长把 broad grep 变成 targeted fallback，而不是宣称所有场景都不再需要读源码。
+> **Scope:** 以上数据来自 fresh Claude Code session。Codex / Cursor 的跨 Agent 验证尚未完成。
+
+### MCP Architecture — Direct Fast Path + Harness Workflow Path
+
+CodeGraph 的 MCP 架构区分两条调用路径：
+
+| 路径 | 用途 | 典型延迟 (p95) |
+|---|---|---|
+| **Direct MCP fast path** | 高频 Agent 调用 — find, explain, pre_edit_check | ~185ms（`codegraph_find` ~132ms） |
+| **Harness workflow path** | 报告生成、artifacts、审计、调试 | 取决于 workflow 复杂度 |
+
+- Direct MCP 工具直接查询本地索引，无额外持久化开销——适合 Agent 每步决策。
+- Harness workflow 生成结构化报告（JSON + Markdown）、记录 run state、写入 artifacts——适合需要审计追踪或确定性输出的场景。
+- `workflow.find` 的 MCP compact path 经优化后 p95 从约 7.2s 降至约 0.83s（88% 下降），保持 artifact 输出但不展开逐结果 heavy enrichment。
+
+### Release Gate
+
+默认 `agent` profile 上线前，8 项 release gate 全部通过：
+
+| Gate | 状态 |
+|---|---|
+| 默认 profile = agent | ✅ |
+| agent profile wrong_entry_tool_rate < 20% | ✅ (0%) |
+| agent profile broad_search_before_mcp ≈ 0% | ✅ (0%) |
+| agent profile immediate_fallback_after_mcp ≈ 0% | ✅ (0%) |
+| agent profile task_success ≥ full/debug | ✅ (100%) |
+| workflow.find compact p95 ≤ 2000ms | ✅ (829ms) |
+| 核心回归测试通过 | ✅ (103/103) |
+| 未删除任何工具和代码 | ✅ |
+
+详细报告见 [docs/mcp-default-profile-release-readiness.md](docs/mcp-default-profile-release-readiness.md)。
 
 ## Backend-only and local-first
 
@@ -343,10 +379,11 @@ Use `Read` only when exact source text is needed.
 
 | 文档 | 说明 |
 |---|---|
-| [docs/mcp-tools.md](docs/mcp-tools.md) | MCP 工具说明、推荐工作流与 CLI workflow 示例 |
+| [docs/mcp-tools.md](docs/mcp-tools.md) | MCP 工具说明、Profile 体系、入口路由表 |
+| [docs/mcp-default-profile-release-readiness.md](docs/mcp-default-profile-release-readiness.md) | 默认 agent profile 上线 Release Gate |
+| [docs/profile-ab-report.md](docs/profile-ab-report.md) | MCP Profile A/B 验证报告 |
+| [docs/workflow-find-optimization-report.md](docs/workflow-find-optimization-report.md) | workflow.find MCP 性能优化报告 |
 | [docs/git-hooks.md](docs/git-hooks.md) | `pre-commit-impact` hook 的安装、覆盖和备份行为 |
-| [docs/agent-adoption-test.md](docs/agent-adoption-test.md) | 如何验证 Agent 是否先用 CodeGraph |
-| [docs/agent-adoption-p0-test.md](docs/agent-adoption-p0-test.md) | `coverage_gaps`、`pre_edit_check`、workflow commands、git hook 验证 |
 | [docs/benchmark.md](docs/benchmark.md) | benchmark 与 regression gate |
 | [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) | 当前语言/框架限制 |
 
