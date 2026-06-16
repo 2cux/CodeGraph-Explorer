@@ -167,10 +167,14 @@ def test_harness_docs_generates_markdown(
     assert docs_path.exists()
     content = docs_path.read_text(encoding="utf-8")
     assert "# Harness Modules" in content
-    assert "### `workflow.impact`" in content
-    assert "### `doctor.run`" in content
-    assert "### `enrich.validate`" in content
-    assert "- Version: `1.0.0`" in content
+    assert "| `workflow.impact` | `workflow` | `stable` |" in content
+    assert "## workflow.impact" in content
+    assert "## doctor.run" in content
+    assert "## enrich.validate" in content
+    assert "Input schema:" in content
+    assert '"change_type"' in content
+    assert "Artifacts:" in content
+    assert "- report.md" in content
 
 
 def test_harness_status_finds_run_from_nested_directory(

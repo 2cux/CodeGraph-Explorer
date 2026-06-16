@@ -136,6 +136,12 @@ codegraph workflow find login
 
 这些命令是确定性的 CLI 入口，适合作为 MCP fallback，也适合作为本地自动化的稳定执行目标。
 
+## Harness
+
+CodeGraph Harness 是内部执行框架，用于统一 workflow、run 状态、日志和报告产物。
+
+实现位于 `backend/codegraph/harness/`，模块清单与输入输出契约见 [docs/harness-modules.md](docs/harness-modules.md)。
+
 ## Optional pre-commit impact hook
 
 如果你希望在提交前做一次 warning-only 的本地影响检查，可以安装可选 pre-commit hook：
