@@ -99,7 +99,7 @@ class WorkflowFindModule:
     manifest = manifest_for("workflow.find")
 
     def run(self, ctx, input_data: dict[str, Any]) -> dict[str, Any]:
-        normalized_input = _normalize_input(input_data)
+        normalized_input = _normalize_input(input_data, caller="mcp_harness")
         if not normalized_input["query"]:
             raise ValueError("workflow.find requires a non-empty 'query'")
 
@@ -128,21 +128,58 @@ class WorkflowFindModule:
             },
         )
         ctx.artifact_json("report.json", result)
-        ctx.artifact_text("report.md", build_workflow_find_markdown(result))
+        # MCP mode: only generate heavy markdown when explicitly requested.
+        # Otherwise write a lightweight summary to satisfy harness invariants.
+        if normalized_input.get("format") == "markdown":
+            ctx.artifact_text("report.md", build_workflow_find_markdown(result))
+        else:
+            ctx.artifact_text("report.md", _lightweight_markdown_summary(result))
         return result
 
 
-def _normalize_input(input_data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize workflow.find inputs."""
+def _normalize_input(
+    input_data: dict[str, Any],
+    caller: str | None = None,
+) -> dict[str, Any]:
+    """Normalize workflow.find inputs.
+
+    Args:
+        input_data: Raw input dict from the caller.
+        caller: ``"mcp_harness"`` when called from MCP harness_run;
+                ``None`` for CLI / direct callers.
+
+    MCP harness mode applies compact defaults:
+    - ``include_details`` defaults to ``False`` (unless explicitly set)
+    - ``format`` defaults to ``"json"`` (unless explicitly set)
+    - ``limit`` capped at 5 (all callers)
+
+    CLI callers keep the existing defaults:
+    - ``include_details`` defaults to ``True``
+    - ``format`` defaults to ``"markdown"``
+    """
+    is_mcp = caller == "mcp_harness"
+
+    # include_details: MCP defaults to False, CLI defaults to True
+    if "include_details" in input_data:
+        include_details = coerce_bool(input_data["include_details"], default=True)
+    else:
+        include_details = False if is_mcp else True
+
+    # format: MCP defaults to "json", CLI defaults to "markdown"
+    if "format" in input_data:
+        fmt = str(input_data["format"] or "markdown")
+    else:
+        fmt = "json" if is_mcp else "markdown"
+
     return {
         "query": str(input_data.get("query", "")).strip(),
         "types": coerce_str_list(input_data.get("types")),
         "paths": coerce_str_list(input_data.get("paths")),
-        "limit": max(1, min(int(input_data.get("limit", 10) or 10), 100)),
-        "include_details": coerce_bool(input_data.get("include_details"), default=True),
+        "limit": max(1, min(int(input_data.get("limit", 5) if input_data.get("limit") is not None else 5), 100)),
+        "include_details": include_details,
         "include_snippets": coerce_bool(input_data.get("include_snippets"), default=False),
         "include_tests": coerce_bool(input_data.get("include_tests"), default=True),
-        "format": str(input_data.get("format", "markdown") or "markdown"),
+        "format": fmt,
     }
 
 
@@ -415,6 +452,65 @@ def _match_reason(search_item: dict[str, Any]) -> str:
     if match_sources:
         return f"Matched via {', '.join(match_sources)}."
     return "Matched by indexed symbol search."
+
+
+def _lightweight_markdown_summary(result: dict[str, Any]) -> str:
+    """Generate a compact markdown summary for MCP harness mode.
+
+    Unlike ``build_workflow_find_markdown``, this does NOT expand
+    per-result details, snippets, or heavy enrichment content.
+    It satisfies the harness invariant that ``report.md`` must exist
+    without the ~800ms cost of full markdown generation.
+    """
+    query = result.get("query", "?")
+    total = result.get("total", 0)
+    confidence = result.get("confidence", "unknown")
+    results = result.get("results", [])
+    candidates = result.get("candidates", [])
+    warnings = result.get("warnings", [])
+
+    lines = [
+        f"# workflow.find: {query}",
+        "",
+        f"- **Results:** {len(results)}",
+        f"- **Candidates:** {len(candidates)}",
+        f"- **Total matches:** {total}",
+        f"- **Confidence:** {confidence}",
+        "",
+    ]
+
+    if results:
+        lines.append("## Top Results")
+        lines.append("")
+        for r in results[:5]:
+            symbol_id = r.get("symbol_id", "?")
+            symbol = r.get("symbol", "?")
+            file_path = r.get("file", "?")
+            lines.append(f"- `{symbol}` ({r.get('type', '?')}) — `{symbol_id}`")
+            lines.append(f"  File: {file_path}")
+        lines.append("")
+
+    if candidates:
+        lines.append("## Other Candidates")
+        lines.append("")
+        for c in candidates[:5]:
+            lines.append(f"- `{c.get('symbol', '?')}` — `{c.get('symbol_id', '?')}`")
+        lines.append("")
+
+    if warnings:
+        lines.append("## Warnings")
+        lines.append("")
+        for w in warnings:
+            if isinstance(w, dict):
+                lines.append(f"- {w.get('message', str(w))}")
+            else:
+                lines.append(f"- {w}")
+        lines.append("")
+
+    lines.append("> **Note:** This is a lightweight summary generated in MCP "
+                 "harness mode. Use `format=markdown` or CLI `codegraph workflow "
+                 "find` for a full report with details and snippets.")
+    return "\n".join(lines)
 
 
 def _call_mcp_helper(project_root: Path, helper, *args: Any, **kwargs: Any) -> Any:
