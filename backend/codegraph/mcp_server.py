@@ -73,6 +73,7 @@ from codegraph.harness.mcp_tools import (
     list_harness_manifests,
     run_harness_module,
 )
+from codegraph.mcp.profiles import apply_profile, get_active_profile, log_profile
 from codegraph.indexer.scanner import _is_safe_path
 from codegraph.indexer.status import detect_status, get_index_status
 from codegraph.storage.file_store import FileStore
@@ -8029,6 +8030,21 @@ def main() -> None:
             _log("Watch mode enabled — index will auto-sync on file changes.")
         except Exception as e:
             _log(f"Warning: Failed to start watch mode: {e}")
+
+    # ── MCP Tool Profile ─────────────────────────────────────────────────
+    # Filter the MCP tool surface based on CODEGRAPH_MCP_PROFILE env var.
+    # Tools are registered at import time via @mcp.tool() decorators.
+    # This removes tools not in the active profile before the server starts.
+    # No tool implementations are deleted — only the MCP surface changes.
+    profile = get_active_profile()
+    log_profile(profile)
+    removed = apply_profile(mcp, profile)
+    if removed:
+        print(
+            f"[codegraph] {len(removed)} tool(s) hidden by '{profile}' profile: "
+            f"{', '.join(sorted(removed))}",
+            file=sys.stderr,
+        )
 
     mcp.run(transport="stdio")
 
