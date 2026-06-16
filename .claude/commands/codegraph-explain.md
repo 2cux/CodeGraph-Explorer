@@ -1,10 +1,25 @@
 # CodeGraph Explain Workflow
 
-Use this workflow to understand a symbol or file before opening full source.
+Use this workflow to understand what a symbol or file does BEFORE opening full source.
+
+**Use this for:** "what does this module do?" / "what is this function responsible for?"
+**Do NOT use for:** locating symbols (use `/codegraph-find`), impact before editing (use `/codegraph-impact`)
+
+## Entry Selection
+
+| Task | Use |
+|---|---|
+| Need to locate a symbol/file? | `/codegraph-find` |
+| Need to understand what code does? | `/codegraph-explain` |
+| Need to edit/refactor/change code? | `/codegraph-impact` |
+| Need to find missing tests? | `/codegraph-test-audit` |
+| Need broader task context? | `codegraph_build_context_pack` |
 
 ## Rules
 
 - Do not start by reading the whole file.
+- Do not start with `codegraph_find` when you already know the symbol name
+  — go directly to `codegraph_explain`.
 - First check index health with `codegraph_repo_status`.
 - Then call `codegraph_explain`.
 - If relationships are needed, call `codegraph_get_neighbors`.

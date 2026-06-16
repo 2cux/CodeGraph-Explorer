@@ -1,11 +1,26 @@
 # CodeGraph Impact Workflow
 
-Use this workflow before editing shared code, public APIs, routes, services,
-types, or framework entry points.
+Use this workflow BEFORE editing, refactoring, or changing shared code,
+public APIs, routes, services, types, or framework entry points.
+
+**Use this for:** refactor/change/update/edit tasks — checking blast radius before touching code.
+**Do NOT use for:** locating symbols (use `/codegraph-find`), understanding code (use `/codegraph-explain`)
+
+## Entry Selection
+
+| Task | Use |
+|---|---|
+| Need to locate a symbol/file? | `/codegraph-find` |
+| Need to understand what code does? | `/codegraph-explain` |
+| Need to edit/refactor/change code? | `/codegraph-impact` |
+| Need to find missing tests? | `/codegraph-test-audit` |
+| Need broader task context? | `codegraph_build_context_pack` |
 
 ## Rules
 
 - Do not start with broad Grep/Glob/Read.
+- Do not start with `codegraph_find` when the task is about editing/refactoring
+  — go directly to `codegraph_pre_edit_check` or `codegraph_get_impact`.
 - First check index health with `codegraph_repo_status`.
 - If planned files are known, call `codegraph_pre_edit_check`.
 - If a specific symbol is known, call `codegraph_get_impact`.

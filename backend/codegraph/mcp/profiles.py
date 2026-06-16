@@ -1,13 +1,21 @@
 """MCP Tool Profiles — control which tools are exposed based on user profile.
 
 Profiles:
-    agent — High-level task entry tools for coding agents.
-    full  — All stable tools (agent + primitive search/graph tools).
-    debug — All stable tools + harness/debug introspection tools.
+    agent   — High-level task entry tools for coding agents (default).
+    full    — All stable tools (agent + primitive search/graph tools).
+    harness — Harness run/status/artifacts tools for test automation and debugging.
+    debug   — All stable tools + harness/debug introspection tools.
+
+Profile hierarchy::
+
+    agent:   6 tools — high-level task entry
+    full:   13 tools — agent + stable primitives (no harness)
+    harness: 4 tools — harness list/run/status/artifacts only
+    debug:  17 tools — full + harness
 
 Usage:
-    Set ``CODEGRAPH_MCP_PROFILE`` to one of ``agent``, ``full``, or ``debug``.
-    Unknown values fall back to ``agent`` with a clear log warning.
+    Set ``CODEGRAPH_MCP_PROFILE`` to one of ``agent``, ``full``, ``harness``,
+    or ``debug``.  Unknown values fall back to ``agent`` with a clear log warning.
 
 Design:
     Profiles are defined declaratively as sets of tool names.  The module
@@ -26,7 +34,7 @@ from typing import Set
 
 # ── Profile tool sets ─────────────────────────────────────────────────────
 
-# Agent profile: high-level task entry tools only.
+# Agent profile: high-level task entry tools for coding agents.
 # Reserved / unsafe / harness / debug tools are excluded.
 AGENT_TOOLS: Set[str] = {
     "codegraph_repo_status",
@@ -52,23 +60,26 @@ FULL_TOOLS: Set[str] = (
     }
 )
 
+# Harness profile: harness list/run/status/artifacts tools only.
+# For test automation, harness debugging, run artifact queries.
+# Does NOT include agent tools, full tools, or debug tools.
+HARNESS_TOOLS: Set[str] = {
+    "codegraph_harness_list",
+    "codegraph_harness_run",
+    "codegraph_harness_status",
+    "codegraph_harness_artifacts",
+}
+
 # Debug profile: full tools + harness/debug introspection tools.
-DEBUG_TOOLS: Set[str] = (
-    FULL_TOOLS
-    | {
-        "codegraph_harness_list",
-        "codegraph_harness_run",
-        "codegraph_harness_status",
-        "codegraph_harness_artifacts",
-    }
-)
+DEBUG_TOOLS: Set[str] = FULL_TOOLS | HARNESS_TOOLS
 
 # ── Profile registry ──────────────────────────────────────────────────────
 
 PROFILES: dict[str, dict[str, object]] = {
     "agent": {
         "description": (
-            "Default minimal MCP surface for coding agents."
+            "Recommended default for coding agents. "
+            "High-level task entry tools only."
         ),
         "tools": AGENT_TOOLS,
         "policy": "High-level task tools only. No harness/debug primitives.",
@@ -78,7 +89,18 @@ PROFILES: dict[str, dict[str, object]] = {
             "Advanced user profile with stable high-level and primitive tools."
         ),
         "tools": FULL_TOOLS,
-        "policy": "Stable tools only; excludes harness debug tools by default.",
+        "policy": "Stable tools only; excludes harness debug tools.",
+    },
+    "harness": {
+        "description": (
+            "Harness-only profile for test automation, harness debugging, "
+            "and run artifact queries."
+        ),
+        "tools": HARNESS_TOOLS,
+        "policy": (
+            "Only harness list/run/status/artifacts. "
+            "No search/explain/impact tools."
+        ),
     },
     "debug": {
         "description": (
@@ -103,7 +125,7 @@ def get_active_profile() -> str:
     """Read ``CODEGRAPH_MCP_PROFILE`` and return the canonical profile name.
 
     Returns:
-        One of ``"agent"``, ``"full"``, ``"debug"``.
+        One of ``"agent"``, ``"full"``, ``"harness"``, ``"debug"``.
 
     Unknown profile values trigger a warning on stderr and fall back to
     ``"agent"`` so the server stays usable.
@@ -156,7 +178,7 @@ def apply_profile(mcp_instance: object, profile: str) -> list[str]:
 
     Args:
         mcp_instance: A ``FastMCP`` instance (e.g. the module-level ``mcp``).
-        profile: One of ``"agent"``, ``"full"``, ``"debug"``.
+        profile: One of ``"agent"``, ``"full"``, ``"harness"``, ``"debug"``.
 
     Returns:
         List of tool names that were *removed* (for logging / test assertions).

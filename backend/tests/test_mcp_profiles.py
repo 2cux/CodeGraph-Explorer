@@ -3,10 +3,12 @@
 Covers:
     - agent profile exposes only high-level task tools
     - full profile exposes stable tools (agent + primitives)
-    - debug profile exposes stable tools + harness/debug tools
+    - harness profile exposes only 4 harness tools
+    - debug profile = full + harness (17 tools)
     - unknown profile falls back to agent with warning
-    - reserved/unsafe/harness tools excluded from agent profile
+    - reserved/unsafe/harness tools excluded from agent and full profiles
     - existing tools are never deleted (only hidden from MCP surface)
+    - descriptions contain key boundary words
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from codegraph.mcp.profiles import (
     AGENT_TOOLS,
     DEBUG_TOOLS,
     FULL_TOOLS,
+    HARNESS_TOOLS,
     PROFILES,
     VALID_PROFILES,
     UNKNOWN_FALLBACK_PROFILE,
@@ -54,22 +57,27 @@ FULL_EXPECTED = AGENT_EXPECTED | {
     "codegraph_get_impact",
 }
 
-DEBUG_EXPECTED = FULL_EXPECTED | {
+HARNESS_EXPECTED = {
     "codegraph_harness_list",
     "codegraph_harness_run",
     "codegraph_harness_status",
     "codegraph_harness_artifacts",
 }
 
+DEBUG_EXPECTED = FULL_EXPECTED | HARNESS_EXPECTED
+
 
 class TestProfileToolSets:
-    """Verify the three built-in profile tool sets."""
+    """Verify the four built-in profile tool sets."""
 
     def test_agent_tools_match_expected(self):
         assert AGENT_TOOLS == AGENT_EXPECTED
 
     def test_full_tools_match_expected(self):
         assert FULL_TOOLS == FULL_EXPECTED
+
+    def test_harness_tools_match_expected(self):
+        assert HARNESS_TOOLS == HARNESS_EXPECTED
 
     def test_debug_tools_match_expected(self):
         assert DEBUG_TOOLS == DEBUG_EXPECTED
@@ -80,16 +88,24 @@ class TestProfileToolSets:
     def test_full_subset_of_debug(self):
         assert FULL_TOOLS <= DEBUG_TOOLS
 
-    def test_harness_tools_not_in_agent(self):
-        harness = DEBUG_TOOLS - FULL_TOOLS
-        assert harness
-        for tool in harness:
+    def test_harness_subset_of_debug(self):
+        assert HARNESS_TOOLS <= DEBUG_TOOLS
+
+    def test_harness_not_in_agent(self):
+        for tool in HARNESS_TOOLS:
             assert tool not in AGENT_TOOLS
 
-    def test_harness_tools_not_in_full(self):
-        harness = DEBUG_TOOLS - FULL_TOOLS
-        for tool in harness:
+    def test_harness_not_in_full(self):
+        for tool in HARNESS_TOOLS:
             assert tool not in FULL_TOOLS
+
+    def test_agent_not_in_harness(self):
+        for tool in AGENT_TOOLS:
+            assert tool not in HARNESS_TOOLS
+
+    def test_full_not_subset_of_harness(self):
+        """Full profile should NOT be a subset of harness profile."""
+        assert not (FULL_TOOLS <= HARNESS_TOOLS)
 
 
 class TestGetActiveProfile:
@@ -114,6 +130,10 @@ class TestGetActiveProfile:
     def test_explicit_debug(self, monkeypatch):
         monkeypatch.setenv("CODEGRAPH_MCP_PROFILE", "debug")
         assert get_active_profile() == "debug"
+
+    def test_explicit_harness(self, monkeypatch):
+        monkeypatch.setenv("CODEGRAPH_MCP_PROFILE", "harness")
+        assert get_active_profile() == "harness"
 
     def test_case_insensitive(self, monkeypatch):
         monkeypatch.setenv("CODEGRAPH_MCP_PROFILE", "AGENT")
@@ -154,6 +174,10 @@ class TestGetAllowedTools:
     def test_debug_allowed(self):
         tools = get_allowed_tools("debug")
         assert tools == DEBUG_TOOLS
+
+    def test_harness_allowed(self):
+        tools = get_allowed_tools("harness")
+        assert tools == HARNESS_TOOLS
 
     def test_unknown_profile_returns_agent_tools(self):
         tools = get_allowed_tools("nonexistent")
@@ -330,6 +354,112 @@ class TestRegistryConsistency:
     def test_debug_has_exactly_17_tools(self):
         """full(13) + harness(4) = 17"""
         assert len(DEBUG_TOOLS) == 17
+
+    def test_harness_has_exactly_4_tools(self):
+        """Only 4 harness tools"""
+        assert len(HARNESS_TOOLS) == 4
+
+    def test_profiles_count_is_4(self):
+        """agent, full, harness, debug = 4 profiles"""
+        assert len(PROFILES) == 4
+
+    def test_all_four_profiles_in_valid_set(self):
+        for name in ["agent", "full", "harness", "debug"]:
+            assert name in VALID_PROFILES
+
+    def test_debug_equals_full_plus_harness(self):
+        assert DEBUG_TOOLS == (FULL_TOOLS | HARNESS_TOOLS)
+
+
+class TestHarnessProfile:
+    """Dedicated tests for the harness profile."""
+
+    def test_harness_has_4_tools(self):
+        assert len(HARNESS_TOOLS) == 4
+
+    def test_harness_only_has_harness_tools(self):
+        for tool in HARNESS_TOOLS:
+            assert tool.startswith("codegraph_harness_"), (
+                f"Non-harness tool '{tool}' in harness profile"
+            )
+
+    def test_apply_harness_profile(self):
+        all_tools = sorted(DEBUG_TOOLS)
+        mcp, tools_dict = self._make_mock_mcp(all_tools)
+
+        removed = apply_profile(mcp, "harness")
+
+        remaining = set(tools_dict.keys())
+        assert remaining == HARNESS_TOOLS
+        # All non-harness tools should have been removed
+        for tool in DEBUG_TOOLS - HARNESS_TOOLS:
+            assert tool in removed
+
+    @staticmethod
+    def _make_mock_mcp(tool_names):
+        mcp = MagicMock()
+        tools_dict = {name: MagicMock() for name in tool_names}
+        tool_manager = MagicMock()
+        tool_manager._tools = tools_dict
+        tool_manager.remove_tool = lambda name: tools_dict.pop(name, None)
+        mcp._tool_manager = tool_manager
+        return mcp, tools_dict
+
+    def test_harness_profile_log(self, capsys):
+        log_profile("harness")
+        captured = capsys.readouterr()
+        assert "harness" in captured.err
+        assert str(len(HARNESS_TOOLS)) in captured.err
+
+
+class TestDescriptionBoundaries:
+    """Verify MCP tool descriptions contain key boundary words.
+
+    These guard against regressions where tool descriptions lose their
+    entry-routing clues, which would increase tool_confusion_rate.
+    """
+
+    def test_find_mentions_not_for_impact(self):
+        import codegraph.mcp_server as mcp_mod
+        doc = (mcp_mod.codegraph_find.__doc__ or "").lower()
+        assert "not for impact" in doc or "not for refactor" in doc or \
+            "locate" in doc or "symbol location" in doc, (
+            "codegraph_find description should clarify it is for location, "
+            "not for impact/refactor"
+        )
+
+    def test_pre_edit_check_mentions_before_editing(self):
+        import codegraph.mcp_server as mcp_mod
+        doc = (mcp_mod.pre_edit_check.__doc__ or "").lower()
+        assert "before editing" in doc or "before refactoring" in doc or \
+            "refactor" in doc, (
+            "codegraph_pre_edit_check description should mention "
+            "before editing/refactoring/changing"
+        )
+
+    def test_coverage_gaps_mentions_heuristic(self):
+        import codegraph.mcp_server as mcp_mod
+        doc = (mcp_mod.coverage_gaps.__doc__ or "").lower()
+        assert "heuristic" in doc or "not runtime" in doc or \
+            "not line coverage" in doc, (
+            "codegraph_coverage_gaps description should mention "
+            "heuristic / not runtime line coverage"
+        )
+
+    def test_explain_mentions_understanding(self):
+        import codegraph.mcp_server as mcp_mod
+        doc = (mcp_mod.codegraph_explain.__doc__ or "").lower()
+        assert "understand" in doc or "what" in doc, (
+            "codegraph_explain description should mention "
+            "understand / what does this do"
+        )
+
+    def test_build_context_pack_mentions_broad_context(self):
+        import codegraph.mcp_server as mcp_mod
+        doc = (mcp_mod.build_context_pack.__doc__ or "").lower()
+        assert "broad" in doc or "context" in doc, (
+            "codegraph_build_context_pack description should mention broad context"
+        )
 
 
 class TestNoDeletion:

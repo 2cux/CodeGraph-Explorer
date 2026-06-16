@@ -1,6 +1,34 @@
 # MCP Tools Reference
 
-CodeGraph Explorer exposes 13 MCP tools for AI coding agents to query the code graph.
+CodeGraph Explorer exposes 17 MCP tools organized into 4 profiles. The default
+profile is `agent` (6 high-level tools). See the profile section below for details.
+
+## MCP Profiles
+
+Set via `CODEGRAPH_MCP_PROFILE` environment variable:
+
+| Profile | Tools | Description |
+|---|---|---|
+| `agent` | 6 | **Default.** Recommended for coding agents. High-level task entry tools only. |
+| `full` | 13 | Advanced users. Agent tools + stable primitives (`search_symbols`, `get_callers`, `get_neighbors`, etc.) |
+| `harness` | 4 | Harness automation only. `harness_list`, `harness_run`, `harness_status`, `harness_artifacts`. |
+| `debug` | 17 | CodeGraph development/debug. Full + harness. |
+
+- Unset → defaults to `agent`.
+- Unknown profile → falls back to `agent` with stderr warning.
+- `agent` and `full` profiles never expose harness tools.
+- `harness` profile only exposes harness tools — no search/explain/impact tools.
+
+## Entry Routing
+
+| Task | Recommended Tool |
+|---|---|
+| Need to locate a symbol/file? | `codegraph_find` |
+| Need to understand what code does? | `codegraph_explain` |
+| Need to edit/refactor/change code? | `codegraph_pre_edit_check` or `/codegraph-impact` |
+| Need to find missing tests? | `codegraph_coverage_gaps` or `/codegraph-test-audit` |
+| Need broader task context? | `codegraph_build_context_pack` |
+| Need run artifacts / debug Harness? | Use `harness` or `debug` profile (not `agent`) |
 
 ## Tool Overview
 

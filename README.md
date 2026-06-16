@@ -78,6 +78,60 @@ codegraph configure all --force
 codegraph doctor
 ```
 
+## MCP Profiles
+
+CodeGraph Explorer 提供四种 MCP tool profile，通过环境变量控制 Agent 看到的工具面：
+
+```bash
+# 推荐默认 (6 个高层工具 — 适合普通编码 Agent)
+CODEGRAPH_MCP_PROFILE=agent
+
+# 高级用户 (13 个稳定工具 — 包含底层 graph primitives)
+CODEGRAPH_MCP_PROFILE=full
+
+# Harness 自动化 (4 个 harness 工具 — run/status/artifacts)
+CODEGRAPH_MCP_PROFILE=harness
+
+# 开发调试 (17 个全部工具 — full + harness)
+CODEGRAPH_MCP_PROFILE=debug
+```
+
+| Profile | Tools | 用途 |
+|---|---|---|
+| `agent` | 6 | 推荐默认 — 普通编码 Agent 高频工具 |
+| `full` | 13 | 高级用户 — 手动图探索、深层调用链分析 |
+| `harness` | 4 | Harness 自动化 — run/status/artifacts 查询 |
+| `debug` | 17 | CodeGraph 开发调试 — full + harness |
+
+- 未设置 `CODEGRAPH_MCP_PROFILE` 时默认使用 `agent` profile。
+- 未知 profile 值 fallback 到 `agent` 并输出 stderr warning。
+- `agent` 和 `full` profile 不暴露 harness tools。
+- `codegraph configure all` 默认写入 `agent` profile。
+- 需要完整工具时显式设置 `CODEGRAPH_MCP_PROFILE=full`。
+- 需要 harness 自动化时显式设置 `CODEGRAPH_MCP_PROFILE=harness`。
+
+### Agent Profile 工具列表
+
+| Tool | 用途 |
+|---|---|
+| `codegraph_repo_status` | 检查索引新鲜度 |
+| `codegraph_find` | 定位 symbol/class/function/route — 不要用于 impact/refactor |
+| `codegraph_explain` | 解释 symbol/file — 读源码前理解"这做了什么" |
+| `codegraph_pre_edit_check` | 编辑/重构/修改前检查影响面 |
+| `codegraph_coverage_gaps` | 测试覆盖缺口审计 (heuristic graph signal) |
+| `codegraph_build_context_pack` | 大范围任务上下文 — scan/deepen/impact 模式 |
+
+### Entry Routing (入口选择)
+
+| 任务 | 工具 |
+|---|---|
+| Need to locate a symbol/file? | `codegraph_find` |
+| Need to understand what code does? | `codegraph_explain` |
+| Need to edit/refactor/change code? | `codegraph_pre_edit_check` |
+| Need to find missing tests? | `codegraph_coverage_gaps` |
+| Need broader task context? | `codegraph_build_context_pack` |
+| Need run artifacts / debug Harness? | 使用 `harness` or `debug` profile |
+
 ## Workflow-first：让 Agent 先用 CodeGraph
 
 MCP 工具本身是被动的，Agent 不一定会自动优先使用它们。CodeGraph Explorer 提供可选 workflow commands，让用户显式进入 CodeGraph-first 流程。

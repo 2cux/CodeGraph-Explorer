@@ -1,7 +1,20 @@
 # CodeGraph Test Audit Workflow
 
 Use this workflow to find production symbols or files that appear to lack
-test coverage signals.
+test coverage signals (heuristic graph signal, not runtime line coverage).
+
+**Use this for:** test audit / missing tests / uncovered production symbols.
+**Do NOT use for:** locating symbols (use `/codegraph-find`), impact before editing (use `/codegraph-impact`)
+
+## Entry Selection
+
+| Task | Use |
+|---|---|
+| Need to locate a symbol/file? | `/codegraph-find` |
+| Need to understand what code does? | `/codegraph-explain` |
+| Need to edit/refactor/change code? | `/codegraph-impact` |
+| Need to find missing tests? | `/codegraph-test-audit` |
+| Need broader task context? | `codegraph_build_context_pack` |
 
 ## Rules
 

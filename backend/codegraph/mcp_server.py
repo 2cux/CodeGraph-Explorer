@@ -3373,14 +3373,22 @@ def codegraph_find(
     mode: str = "quick",
     response_mode: str = "compact",
 ) -> dict[str, Any]:
-    """Find "login" function and show where it is → query="login", types="function".
-    Find "MemoryService" with details → query="MemoryService", include_details=true.
-    Use this before grep/read when you need symbol location plus enough detail
-    to choose the next CodeGraph tool.
+    """Find "login" function/class/route location before reading files;
+    use for symbol location, not for impact/refactor planning.
+
+    Use this before grep/read when you need to locate a symbol and get
+    enough detail to choose the next CodeGraph tool.
     Lower cost than search_symbols + get_symbol for common find-and-inspect workflows.
 
     Fuses codegraph_search_symbols + codegraph_get_symbol common chain
     into a single call. Returns top matches with optional details and snippets.
+
+    Entry routing:
+      - Need to locate a symbol/file?              → codegraph_find
+      - Need to understand what code does?         → codegraph_explain
+      - Need to edit/refactor/change code?         → codegraph_pre_edit_check
+      - Need to find missing tests?                → codegraph_coverage_gaps
+      - Need broader task context?                 → codegraph_build_context_pack
 
     Args:
         query: Symbol name to search for (e.g. "login", "MemoryService")
@@ -4987,10 +4995,14 @@ def pre_edit_check(
     limit: int = 50,
     response_mode: str = "compact",
 ) -> dict[str, Any]:
-    """Check impact before editing planned files or symbols.
+    """Check impact before editing, refactoring, or changing files/symbols.
 
-    Use this when you know which files you plan to modify but do not yet
-    know all affected symbols. It is the task-level entry point for impact
+    Use this BEFORE editing shared types, routes, services, or public APIs.
+    Suitable for refactor/change/update/edit tasks — use BEFORE codegraph_find
+    when you know you're about to modify code.
+
+    This is the task-level entry point for impact analysis: you don't need
+    to first map files to symbols manually.
     analysis — you don't need to first map files to symbols manually.
 
     Use codegraph_pre_edit_check when you know the files you plan to edit.
@@ -6603,6 +6615,9 @@ def codegraph_explain(
 ) -> dict[str, Any]:
     """Return a structured, evidence-backed explanation of a symbol or file.
 
+    Use this to understand what a symbol or file does BEFORE reading source.
+    Suitable for "what does this module do?" / "what is this function responsible for?".
+
     Uses deterministic heuristics over indexed metadata, relationships,
     docstrings, and limited source snippets. No LLM, no embeddings.
 
@@ -6785,9 +6800,14 @@ def build_context_pack(
     response_mode: str = "compact",
     next_token: str | None = None,
 ) -> dict[str, Any]:
-    """PRIMARY TOOL. Task: "fix MemoryService bug" → call this with task="fix MemoryService bug".
-    Task: "implement repo profile service" → returns relevant files, symbols,
-    relationships, source snippets, and next tools.
+    """PRIMARY TOOL for broad context tasks. Task: "fix MemoryService bug"
+    → call this with task="fix MemoryService bug".
+
+    Use for broad context / scan / deepen / impact modes.
+    Suitable for "understand a code area or task context before starting."
+    NOT for single-symbol precise location — use codegraph_find for that.
+
+    Returns relevant files, symbols, relationships, source snippets, and next tools.
     Use first for implementation, debugging, review, refactoring, or impact
     analysis before grep/glob/read-heavy exploration.
     Lower token cost than reading many files up front; use Read only for
@@ -7861,6 +7881,8 @@ def coverage_gaps(
     Lists production symbols and files without confident tested_by coverage signals.
     Use for test audit: which modules appear untested, which symbols have only
     low-confidence test links, and which files to inspect before writing tests.
+
+    This is a heuristic graph signal, not runtime line coverage.
     This is a heuristic graph signal, not runtime line coverage.
 
     Args:

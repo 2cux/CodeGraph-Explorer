@@ -1,7 +1,23 @@
 # CodeGraph Find Workflow
 
-Use this workflow to find functions, classes, methods, routes, services, or
-framework entry points.
+Use this workflow ONLY to locate functions, classes, methods, routes, services,
+or framework entry points.
+
+**Do NOT use this workflow for:**
+- Understanding what code does → use `/codegraph-explain`
+- Checking impact before editing → use `/codegraph-impact`
+- Finding missing tests → use `/codegraph-test-audit`
+- Broad task context → use `codegraph_build_context_pack`
+
+## Entry Selection
+
+| Task | Use |
+|---|---|
+| Need to locate a symbol/file? | `/codegraph-find` |
+| Need to understand what code does? | `/codegraph-explain` |
+| Need to edit/refactor/change code? | `/codegraph-impact` |
+| Need to find missing tests? | `/codegraph-test-audit` |
+| Need broader task context? | `codegraph_build_context_pack` |
 
 ## Rules
 
