@@ -66,6 +66,13 @@ from codegraph.graph.impact import classify_edge_resolution
 from codegraph.graph.models import CodeGraph, EdgeType, GraphEdge, GraphNode, NodeType, Resolution
 from codegraph.graph.store import GraphStore
 from codegraph.graph.warnings import build_warning, build_stale_index_warning
+from codegraph.harness.mcp_tools import (
+    MAX_ARTIFACT_READ_BYTES,
+    get_harness_artifacts,
+    get_harness_status,
+    list_harness_manifests,
+    run_harness_module,
+)
 from codegraph.indexer.scanner import _is_safe_path
 from codegraph.indexer.status import detect_status, get_index_status
 from codegraph.storage.file_store import FileStore
@@ -239,6 +246,9 @@ ERROR_CODES = {
     "SYMBOL_NOT_FOUND": "SYMBOL_NOT_FOUND",
     "AMBIGUOUS_SYMBOL": "AMBIGUOUS_SYMBOL",
     "INVALID_ARGUMENT": "INVALID_ARGUMENT",
+    "RUN_NOT_FOUND": "RUN_NOT_FOUND",
+    "ARTIFACT_NOT_FOUND": "ARTIFACT_NOT_FOUND",
+    "ARTIFACT_TOO_LARGE": "ARTIFACT_TOO_LARGE",
     "GRAPH_LOAD_FAILED": "GRAPH_LOAD_FAILED",
     "INTERNAL_ERROR": "INTERNAL_ERROR",
 }
@@ -7680,6 +7690,157 @@ def repo_summary(
         data=data,
         tool="codegraph_repo_summary",
         warnings=_collect_warnings(),
+    )
+
+
+# ── Tool: harness_list ─────────────────────────────────────────────────────
+
+
+def _resolve_harness_project_root() -> Path:
+    """Resolve the project root used by Harness MCP tools."""
+    if _project_root:
+        return Path(_project_root).resolve()
+    env_root = os.environ.get("CODEGRAPH_PROJECT_ROOT", "")
+    if env_root:
+        return Path(env_root).resolve()
+    return Path.cwd().resolve()
+
+
+@mcp.tool(name="codegraph_harness_list")
+def codegraph_harness_list() -> dict[str, Any]:
+    """List builtin Harness module manifests available to MCP callers."""
+    data = {
+        "modules": list_harness_manifests(),
+        "count": len(list_harness_manifests()),
+    }
+    return _respond_ok(
+        data=data,
+        tool="codegraph_harness_list",
+        item_count=data["count"],
+        response_mode="standard",
+    )
+
+
+@mcp.tool(name="codegraph_harness_run")
+def codegraph_harness_run(
+    module_id: str,
+    input: dict[str, Any] | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Run one builtin Harness module and return its normalized result."""
+    try:
+        data = run_harness_module(
+            module_id=module_id,
+            input_data=input,
+            persist=persist,
+            project_root=_resolve_harness_project_root(),
+        )
+    except FileNotFoundError as exc:
+        return _respond_error(
+            code=ERROR_CODES["RUN_NOT_FOUND"],
+            message=str(exc),
+            tool="codegraph_harness_run",
+        )
+    except ValueError as exc:
+        message = str(exc)
+        code = (
+            ERROR_CODES["ARTIFACT_TOO_LARGE"]
+            if "max readable size" in message
+            else ERROR_CODES["INVALID_ARGUMENT"]
+        )
+        return _respond_error(
+            code=code,
+            message=message,
+            tool="codegraph_harness_run",
+        )
+    except Exception as exc:
+        return _respond_error(
+            code=ERROR_CODES["INTERNAL_ERROR"],
+            message=str(exc),
+            tool="codegraph_harness_run",
+        )
+    return _respond_ok(
+        data=data,
+        tool="codegraph_harness_run",
+        response_mode="standard",
+        item_count=len(data.get("artifacts", {})),
+    )
+
+
+@mcp.tool(name="codegraph_harness_status")
+def codegraph_harness_status(run_id: str) -> dict[str, Any]:
+    """Read the persisted state for one Harness run."""
+    try:
+        data = get_harness_status(
+            run_id=run_id,
+            project_root=_resolve_harness_project_root(),
+        )
+    except FileNotFoundError as exc:
+        return _respond_error(
+            code=ERROR_CODES["RUN_NOT_FOUND"],
+            message=str(exc),
+            tool="codegraph_harness_status",
+        )
+    except ValueError as exc:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message=str(exc),
+            tool="codegraph_harness_status",
+        )
+    return _respond_ok(
+        data=data,
+        tool="codegraph_harness_status",
+        response_mode="standard",
+        item_count=len(data.get("artifacts", {})),
+    )
+
+
+@mcp.tool(name="codegraph_harness_artifacts")
+def codegraph_harness_artifacts(
+    run_id: str,
+    artifact_name: str | None = None,
+    include_content: bool = False,
+    max_bytes: int = MAX_ARTIFACT_READ_BYTES,
+) -> dict[str, Any]:
+    """List run artifacts. Content reads are opt-in and capped at 32KB."""
+    try:
+        data = get_harness_artifacts(
+            run_id=run_id,
+            project_root=_resolve_harness_project_root(),
+            artifact_name=artifact_name,
+            include_content=include_content,
+            max_bytes=max_bytes,
+        )
+    except FileNotFoundError as exc:
+        message = str(exc)
+        code = (
+            ERROR_CODES["ARTIFACT_NOT_FOUND"]
+            if "Artifact not found" in message or "Artifact file missing" in message
+            else ERROR_CODES["RUN_NOT_FOUND"]
+        )
+        return _respond_error(
+            code=code,
+            message=message,
+            tool="codegraph_harness_artifacts",
+        )
+    except ValueError as exc:
+        message = str(exc)
+        code = (
+            ERROR_CODES["ARTIFACT_TOO_LARGE"]
+            if "max readable size" in message or "max_bytes" in message
+            else ERROR_CODES["INVALID_ARGUMENT"]
+        )
+        return _respond_error(
+            code=code,
+            message=message,
+            tool="codegraph_harness_artifacts",
+        )
+    return _respond_ok(
+        data=data,
+        tool="codegraph_harness_artifacts",
+        response_mode="standard",
+        item_count=len(data.get("artifacts", [])) or (1 if data.get("artifact") else 0),
+        max_bytes=max_bytes,
     )
 
 
