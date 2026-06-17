@@ -168,6 +168,7 @@ def search_symbols(
             "id": node.id,
             "symbol_id": node.id,
             "name": node.name,
+            "qualified_name": node.qualified_name,
             "type": node.type.value,
             "file_path": node.file_path,
             "score": score,

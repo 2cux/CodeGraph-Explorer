@@ -1999,7 +1999,10 @@ def _resolve_node(store: GraphStore, symbol_id: str) -> GraphNode | None:
         return node
     symbol_lower = symbol_id.lower()
     for n in store.all_nodes():
-        if n.name.lower() == symbol_lower or symbol_lower in n.id.lower():
+        if (n.name.lower() == symbol_lower
+            or symbol_lower in n.id.lower()
+            or (n.qualified_name and n.qualified_name.lower() == symbol_lower)
+            or (n.qualified_name and symbol_lower in n.qualified_name.lower())):
             return n
     return None
 
@@ -2028,9 +2031,11 @@ def _resolve_node_detailed(
     symbol_lower = symbol_id.lower()
     candidates: list[dict[str, Any]] = []
 
-    # First pass: exact name match (highest priority)
+    # First pass: exact name or qualified_name match (highest priority)
     for n in store.all_nodes():
-        if n.name.lower() == symbol_lower:
+        name_match = n.name.lower() == symbol_lower
+        qn_match = n.qualified_name and n.qualified_name.lower() == symbol_lower
+        if name_match or qn_match:
             # Check type/path hints
             if expected_type:
                 ntype = n.type.value if isinstance(n.type, NodeType) else str(n.type)
@@ -2042,7 +2047,7 @@ def _resolve_node_detailed(
             return {
                 "node": n,
                 "exact_match": False,
-                "match_reason": "exact_name",
+                "match_reason": "exact_qualified_name" if (qn_match and not name_match) else "exact_name",
                 "candidates": [],
             }
 
@@ -2059,6 +2064,8 @@ def _resolve_node_detailed(
             candidates.append(_node_to_summary(n))
         elif n.name and symbol_lower in n.name.lower():
             candidates.append(_node_to_summary(n))
+        elif n.qualified_name and symbol_lower in n.qualified_name.lower():
+            candidates.append(_node_to_summary(n))
 
     if not candidates:
         # Try without hints as fallback
@@ -2066,6 +2073,8 @@ def _resolve_node_detailed(
             if symbol_lower in n.id.lower():
                 candidates.append(_node_to_summary(n))
             elif n.name and symbol_lower in n.name.lower():
+                candidates.append(_node_to_summary(n))
+            elif n.qualified_name and symbol_lower in n.qualified_name.lower():
                 candidates.append(_node_to_summary(n))
 
     if not candidates:
@@ -2108,11 +2117,13 @@ def _resolve_input_symbol(
     resolve: bool,
     expected_type: str | None = None,
     path_hint: str | None = None,
+    qualified_name: str | None = None,
 ) -> dict[str, Any] | None:
-    """Resolve symbol from either direct symbol_id or fuzzy symbol+resolve.
+    """Resolve symbol from direct symbol_id, qualified_name, or fuzzy symbol+resolve.
 
     Mode A: symbol_id provided directly (e.g. "app/api/auth.py::login")
-    Mode B: symbol + resolve=true with optional expected_type/path_hint
+    Mode B: qualified_name provided (e.g. "app.api.auth.login")
+    Mode C: symbol + resolve=true with optional expected_type/path_hint
 
     Returns same structure as _resolve_node_detailed, or None if neither
     input mode is usable.
@@ -2120,6 +2131,12 @@ def _resolve_input_symbol(
     if symbol_id:
         return _resolve_node_detailed(
             store, symbol_id,
+            expected_type=expected_type,
+            path_hint=path_hint,
+        )
+    elif qualified_name:
+        return _resolve_node_detailed(
+            store, qualified_name,
             expected_type=expected_type,
             path_hint=path_hint,
         )
@@ -2137,6 +2154,7 @@ def _node_to_summary(node: GraphNode) -> dict[str, Any]:
     return {
         "symbol_id": node.id,
         "name": node.name,
+        "qualified_name": node.qualified_name,
         "type": node.type.value if isinstance(node.type, NodeType) else str(node.type),
         "file_path": node.file_path,
         "line_start": node.location.line_start if node.location else None,
@@ -3203,7 +3221,8 @@ def search_symbols(
 
 @mcp.tool(name="codegraph_get_symbol")
 def get_symbol(
-    symbol_id: str,
+    symbol_id: str | None = None,
+    qualified_name: str | None = None,
     resolve: bool = True,
     expected_type: str | None = None,
     path_hint: str | None = None,
@@ -3227,6 +3246,7 @@ def get_symbol(
     Args:
         symbol_id: Symbol node ID (e.g. "app/api/auth.py::login")
                    or a symbol name for fuzzy lookup
+        qualified_name: Fully qualified name for resolution (e.g. "app.api.auth.login")
         resolve: If true, attempt fuzzy resolution when exact ID fails (default true)
         expected_type: Hint for expected node type when resolving (e.g. "function")
         path_hint: Hint for expected file path when resolving (e.g. "app/api")
@@ -3259,14 +3279,22 @@ def get_symbol(
             tool="codegraph_get_symbol",
         )
 
+    lookup_id = symbol_id or qualified_name or ""
+    if not lookup_id:
+        return _respond_error(
+            code=ERROR_CODES["INVALID_ARGUMENT"],
+            message="Either 'symbol_id' or 'qualified_name' must be provided.",
+            tool="codegraph_get_symbol",
+        )
+
     if resolve:
         result = _resolve_node_detailed(
-            store, symbol_id,
+            store, lookup_id,
             expected_type=expected_type,
             path_hint=path_hint,
         )
     else:
-        node = store.get_node(symbol_id)
+        node = store.get_node(lookup_id)
         result = {
             "node": node,
             "exact_match": True,
@@ -3277,7 +3305,7 @@ def get_symbol(
     if result is None:
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
-            message=f"No symbol found matching '{symbol_id}'",
+            message=f"No symbol found matching '{lookup_id}'",
             tool="codegraph_get_symbol",
             details=_get_project_info(),
         )
@@ -3479,6 +3507,9 @@ def codegraph_find(
     for item in items[:effective_limit]:
         entry: dict[str, Any] = {
             "symbol": item["name"],
+            "symbol_id": item.get("symbol_id", ""),
+            "qualified_name": item.get("qualified_name", ""),
+            "lookup_key": item.get("symbol_id", ""),
             "type": item["type"],
             "file": item["file_path"],
             "line_start": item.get("line_start"),
@@ -3509,10 +3540,12 @@ def codegraph_find(
         })
         entry["evidence"] = evidence_items
 
-        # Fetch the store node once — shared by details, snippets, and standard mode
-        node: GraphNode | None = None
-        if include_details or include_snippets or response_mode == "standard":
-            node = store.get_node(item["symbol_id"])
+        # Fetch the store node once — shared by identity fields, details, snippets, and standard mode
+        node: GraphNode | None = store.get_node(item["symbol_id"])
+
+        # Enrich qualified_name from the authoritative store node when available
+        if node and node.qualified_name:
+            entry["qualified_name"] = node.qualified_name
 
         # Optionally enrich with details from the store node
         if include_details:
@@ -3560,8 +3593,6 @@ def codegraph_find(
 
         if response_mode == "standard":
             if node:
-                entry["symbol_id"] = node.id
-                entry["qualified_name"] = node.qualified_name
                 entry["module"] = node.module
                 entry["visibility"] = node.visibility
                 entry["language_id"] = node.language_id
@@ -3695,6 +3726,7 @@ def _traverse_callers(
 def get_callers(
     symbol_id: str | None = None,
     symbol: str | None = None,
+    qualified_name: str | None = None,
     resolve: bool = True,
     expected_type: str | None = None,
     path_hint: str | None = None,
@@ -3721,11 +3753,13 @@ def get_callers(
     Lower token cost than repeated grep for upstream references and call chains.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
-    Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
+    Input mode B (qualified): qualified_name="app.api.auth.login"
+    Input mode C (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
 
     Args:
         symbol_id: Exact symbol node ID (mode A)
-        symbol: Symbol name for fuzzy resolution (mode B, requires resolve=true)
+        symbol: Symbol name for fuzzy resolution (mode C, requires resolve=true)
+        qualified_name: Fully qualified name for resolution (mode B, e.g. "app.api.auth.login")
         resolve: If true, resolve symbol via fuzzy matching (default true)
         expected_type: Hint for expected node type when resolving, e.g. "function"
         path_hint: Hint for expected file path when resolving, e.g. "app/api"
@@ -3783,10 +3817,10 @@ def get_callers(
             tool="codegraph_get_callers",
         )
 
-    if not symbol_id and not symbol:
+    if not symbol_id and not symbol and not qualified_name:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
-            message="Either 'symbol_id' or 'symbol' must be provided.",
+            message="Either 'symbol_id', 'qualified_name', or 'symbol' must be provided.",
             tool="codegraph_get_callers",
         )
 
@@ -3794,8 +3828,9 @@ def get_callers(
         store, symbol_id, symbol, resolve,
         expected_type=expected_type,
         path_hint=path_hint,
+        qualified_name=qualified_name,
     )
-    query_str = symbol_id or symbol or ""
+    query_str = symbol_id or qualified_name or symbol or ""
     if result is None:
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
@@ -3960,6 +3995,7 @@ def _traverse_callees(
 def get_callees(
     symbol_id: str | None = None,
     symbol: str | None = None,
+    qualified_name: str | None = None,
     resolve: bool = True,
     expected_type: str | None = None,
     path_hint: str | None = None,
@@ -4048,10 +4084,10 @@ def get_callees(
             tool="codegraph_get_callees",
         )
 
-    if not symbol_id and not symbol:
+    if not symbol_id and not symbol and not qualified_name:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
-            message="Either 'symbol_id' or 'symbol' must be provided.",
+            message="Either 'symbol_id', 'qualified_name', or 'symbol' must be provided.",
             tool="codegraph_get_callees",
         )
 
@@ -4059,8 +4095,9 @@ def get_callees(
         store, symbol_id, symbol, resolve,
         expected_type=expected_type,
         path_hint=path_hint,
+        qualified_name=qualified_name,
     )
-    query_str = symbol_id or symbol or ""
+    query_str = symbol_id or qualified_name or symbol or ""
     if result is None:
         return _respond_error(
             code=ERROR_CODES["SYMBOL_NOT_FOUND"],
@@ -4163,6 +4200,7 @@ def get_callees(
 def get_neighbors(
     symbol_id: str | None = None,
     symbol: str | None = None,
+    qualified_name: str | None = None,
     resolve: bool = True,
     expected_type: str | None = None,
     path_hint: str | None = None,
@@ -4188,11 +4226,13 @@ def get_neighbors(
     own group.
 
     Input mode A (direct): symbol_id="app/api/auth.py::login"
-    Input mode B (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
+    Input mode B (qualified): qualified_name="app.api.auth.login"
+    Input mode C (fuzzy): symbol="login", resolve=true, expected_type="function", path_hint="app/api"
 
     Args:
         symbol_id: Exact symbol node ID (mode A)
-        symbol: Symbol name for fuzzy resolution (mode B, requires resolve=true)
+        symbol: Symbol name for fuzzy resolution (mode C, requires resolve=true)
+        qualified_name: Fully qualified name for resolution (mode B, e.g. "app.api.auth.login")
         resolve: If true, resolve symbol via fuzzy matching (default true)
         expected_type: Hint for expected node type when resolving, e.g. "function"
         path_hint: Hint for expected file path when resolving, e.g. "app/api"
@@ -4274,10 +4314,10 @@ def get_neighbors(
             tool="codegraph_get_neighbors",
         )
 
-    if not symbol_id and not symbol:
+    if not symbol_id and not symbol and not qualified_name:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
-            message="Either 'symbol_id' or 'symbol' must be provided.",
+            message="Either 'symbol_id', 'qualified_name', or 'symbol' must be provided.",
             tool="codegraph_get_neighbors",
         )
 
@@ -4285,8 +4325,9 @@ def get_neighbors(
         store, symbol_id, symbol, resolve,
         expected_type=expected_type,
         path_hint=path_hint,
+        qualified_name=qualified_name,
     )
-    query_str = symbol_id or symbol or ""
+    query_str = symbol_id or qualified_name or symbol or ""
     if result is None:
         # ── Failure resilience (Req 3.3) ──────────────────────────────
         fallback = _build_failure_fallback(store, query_str, path_hint=path_hint)
@@ -4540,6 +4581,7 @@ def get_neighbors(
 def get_impact(
     symbol_id: str | None = None,
     symbol: str | None = None,
+    qualified_name: str | None = None,
     resolve: bool = True,
     expected_type: str | None = None,
     path_hint: str | None = None,
@@ -4646,10 +4688,10 @@ def get_impact(
             tool="codegraph_get_impact",
         )
 
-    if not symbol_id and not symbol:
+    if not symbol_id and not symbol and not qualified_name:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
-            message="Either 'symbol_id' or 'symbol' must be provided.",
+            message="Either 'symbol_id', 'qualified_name', or 'symbol' must be provided.",
             tool="codegraph_get_impact",
         )
 
@@ -4657,8 +4699,9 @@ def get_impact(
         store, symbol_id, symbol, resolve,
         expected_type=expected_type,
         path_hint=path_hint,
+        qualified_name=qualified_name,
     )
-    query_str = symbol_id or symbol or ""
+    query_str = symbol_id or qualified_name or symbol or ""
     if result is None:
         # ── Failure resilience (Req 3.3) ──────────────────────────────
         fallback = _build_failure_fallback(store, query_str, path_hint=path_hint)
@@ -6606,6 +6649,7 @@ def _build_impact_result(
 @mcp.tool(name="codegraph_explain")
 def codegraph_explain(
     symbol: str | None = None,
+    symbol_id: str | None = None,
     file: str | None = None,
     include_snippet: bool = True,
     include_tests: bool = True,
@@ -6627,6 +6671,7 @@ def codegraph_explain(
 
     Args:
         symbol: Symbol name or ID to explain (e.g. "ReceiptService.rowToRecord")
+        symbol_id: Exact symbol node ID (e.g. "src/receiptService.ts::rowToRecord")
         file: File path relative to project root (e.g. "src/receiptService.ts")
         include_snippet: Include source code snippet (default true)
         include_tests: Include test coverage signal (default true)
@@ -6635,11 +6680,12 @@ def codegraph_explain(
         response_mode: "compact" (default) or "standard"
     """
     symbol_str = (symbol or "").strip()
+    symbol_id_str = (symbol_id or "").strip()
     file_str = (file or "").strip()
-    if not symbol_str and not file_str:
+    if not symbol_str and not symbol_id_str and not file_str:
         return _respond_error(
             code=ERROR_CODES["INVALID_ARGUMENT"],
-            message="At least one of 'symbol' or 'file' must be provided.",
+            message="At least one of 'symbol_id', 'symbol', or 'file' must be provided.",
             tool="codegraph_explain",
         )
 
@@ -6664,22 +6710,23 @@ def codegraph_explain(
     fuzzy_warning: str | None = None
     project_root = str(cg_dir.parent) if cg_dir else None
 
-    if symbol_str:
+    if symbol_str or symbol_id_str:
         path_hint: str | None = file_str if file_str else None
         resolved = _resolve_input_symbol(
             store,
-            symbol_id=None,
-            symbol=symbol_str,
+            symbol_id=symbol_id_str if symbol_id_str else None,
+            symbol=symbol_str if symbol_str else None,
             resolve=True,
             expected_type=None,
             path_hint=path_hint,
         )
+        query_str = symbol_id_str or symbol_str
         if resolved is None:
             # ── Failure resilience (Req 3.3) ──────────────────────────
-            fallback = _build_failure_fallback(store, symbol_str, path_hint=file_str if file_str else None)
+            fallback = _build_failure_fallback(store, query_str, path_hint=file_str if file_str else None)
             return _respond_error(
                 code=ERROR_CODES["SYMBOL_NOT_FOUND"],
-                message=f"No symbol found matching '{symbol_str}'",
+                message=f"No symbol found matching '{query_str}'",
                 tool="codegraph_explain",
                 details=_get_project_info(fallback=fallback),
             )
@@ -6699,9 +6746,9 @@ def codegraph_explain(
                 ]
             return _respond_error(
                 code=ERROR_CODES["AMBIGUOUS_SYMBOL"],
-                message=f"Multiple symbols match '{symbol_str}'. Provide a more specific symbol name or path_hint.",
+                message=f"Multiple symbols match '{query_str}'. Provide a more specific symbol name or path_hint.",
                 tool="codegraph_explain",
-                details={"candidates": candidates_out},
+                details={"query": query_str, "candidates": candidates_out},
             )
 
         node = resolved["node"]
@@ -6710,13 +6757,13 @@ def codegraph_explain(
         candidates_note: dict[str, Any] | None = None
         if not resolved.get("exact_match"):
             fuzzy_warning = (
-                f"No exact match for '{symbol_str}'. "
+                f"No exact match for '{query_str}'. "
                 f"Using closest match: {node.name} ({node.id})."
             )
             candidates_note = _build_candidates_note(
                 node.id,
                 resolved.get("candidates", []),
-                selected_reason=f"Best fuzzy match for '{symbol_str}'",
+                selected_reason=f"Best fuzzy match for '{query_str}'",
             )
 
         # ── Source snippet with declaration (Req 3.5) ───────────────────
